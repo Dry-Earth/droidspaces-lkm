@@ -4,7 +4,7 @@
 
 [![Build](https://github.com/misaka5202/droidspaces-lkm/actions/workflows/build.yml/badge.svg)](https://github.com/misaka5202/droidspaces-lkm/actions/workflows/build.yml)
 
-[中文说明](docs/README.zh.md) · [Releases](../../releases/latest) · [KMI coverage](docs/KMI-COVERAGE.md)
+**English** | [简体中文](README.zh-CN.md) · [Releases](../../releases/latest) · [KMI coverage](docs/KMI-COVERAGE.md)
 
 ---
 

@@ -2,7 +2,7 @@
 
 **在原始 GKI 内核上补齐容器能力，无需重编内核、无需刷 boot。**
 
-[English](../README.md) · [Releases](../../releases/latest) · [KMI 覆盖矩阵](KMI-COVERAGE.md)
+[**English**](README.md) | **简体中文** · [Releases](../../releases/latest) · [KMI 覆盖矩阵](docs/KMI-COVERAGE.md)
 
 ---
 
@@ -153,7 +153,7 @@ droidspaces check                          # 应显示 All required features fou
 **仅 arm64。** 非 GKI 内核、非 ARM64 设备不受支持。
 
 每个模块都为每个 KMI 从 DDK 镜像里**该 KMI 自己的内核源码树**构建；
-完整矩阵与各 KMI 的构建陷阱见 [KMI-COVERAGE.md](KMI-COVERAGE.md)。
+完整矩阵与各 KMI 的构建陷阱见 [KMI-COVERAGE.md](docs/KMI-COVERAGE.md)。
 
 > 同一 KMI 标签的厂商内核 ABI 仍可能有差异。装之前先确认 `uname -r` 里的
 > KMI 标签，装完看 `/data/adb/droidspaces_lkm.log`。
@@ -188,7 +188,7 @@ cat $CG/cpu.max           # 50000
 cat $CG/pids.stats        # refused=N, layout=1
 ```
 
-实现细节、保证与限制：[extra/cgrouplimits/README.md](../extra/cgrouplimits/README.md)。
+实现细节、保证与限制：[extra/cgrouplimits/README.md](extra/cgrouplimits/README.md)。
 
 **请手动加载。** 它们会在运行时解析符号并安装 kprobe；不进开机自启，
 意味着任何异常交互都不可能让设备开不了机。
@@ -269,7 +269,7 @@ Droidspaces 实际使用的探测方式。
   BTI 守卫属性、卸载时还原。它创建设备节点时，驱动没给 mode 就用 `0600` + root。
 - 模块参数全部是 `0444`，运行期不可写。
 
-每个版本修了什么见 [CHANGELOG.md](CHANGELOG.md)。
+每个版本修了什么见 [CHANGELOG.md](docs/CHANGELOG.md)。
 
 ## 排障
 
@@ -335,7 +335,7 @@ Droidspaces 实际使用的探测方式。
 - ARM Mali：`/dev/mali0` 是私有 ioctl 接口，Linux Mesa 需要
   `CONFIG_DRM_PANFROST`（内核编译期选项）。此时由 `vkms` 提供 render node。
 
-anland 桌面部署记录：[ANLAND-DEPLOY.md](ANLAND-DEPLOY.md)。
+anland 桌面部署记录：[ANLAND-DEPLOY.md](docs/ANLAND-DEPLOY.md)。
 
 ## 构建与发布
 
