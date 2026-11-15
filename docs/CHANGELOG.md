@@ -13,6 +13,77 @@
 `10001`–`10003` 这种小数字；如果新版本还用 `100`，KernelSU 更新器会认为
 100 < 10003 而不推送更新。日期编码天然单调递增，不会再因为版本号重置而倒退。
 
+## v0.1.15 — 清掉 7476 行死代码，pids/cpu 抽出共享层
+
+`versionCode` 20261130。纯内部整理，不改运行时行为。
+
+### 一、删除从未参与构建的目录（-7476 行）
+
+| 目录 | 行数 | 为什么是死代码 |
+|---|---|---|
+| `extra/pids/` | 1066 | **和 `cgrouplimits/pids_mod.c` 是两套完整的 pids 控制器实现**。构建脚本只引用 `cgrouplimits` 那份 |
+| `extra/net_macvlan/` | 2136 | macvlan 实际从**内核树自带** `drivers/net/macvlan.c` 编译 |
+| `extra/net_macvlan_61/` | 1845 | 同上，另一份副本 |
+| `extra/vkms/` | 1894 | vkms 实际从**内核树自带** `drivers/gpu/drm/vkms` 编译 |
+| `extra/vgem/` | 535 | 从未被任何地方引用 |
+
+顺带清掉 `extra/cgrouplimits/` 里被提交进仓库的编译产物
+（`.ko` / `.o` / `.mod` / `.mod.c` / `Module.symvers` / `modules.order`），
+以及 `module/service.sh` 里指向已删目录的过时注释。
+
+### 二、pids / cpu 抽出共享层
+
+`pids_mod.c`（901 行）和 `cpu_mod.c`（902 行）原先各自实现了一整套
+cgroup 布局校验，但只有 **15% 的行逐字相同** —— 因为 cpu 那份是照着 pids
+抄的（`cpu_mod.c` 里还留着注释「同 droid_lkm_pids 的做法」）。
+
+**真正的问题是校验强度已经漂移：**
+
+| 校验 | pids | cpu（改前） |
+|---|---|---|
+| `init_css_set.dfl_cgrp == &cgrp_dfl_root.cgrp` | ✅ | ✅ |
+| `init_task.cgroups == &init_css_set` | ✅ | ❌ **缺失** |
+
+只做第一重时，如果 `task_struct.cgroups` 的偏移算错，会在 fork 路径上写坏
+内存，而且现场离肇事点很远——和 rhashtable 那个坑是同一性质。
+
+新增 `common.c`（138 行）+ `common.h`（91 行），提供：
+
+```c
+ctl_read_ptr()        安全读内核指针（nofault）
+ctl_is_kptr()         判内核指针
+ctl_anchors_resolve() 解析 cgroup_subsys / init_css_set / cgrp_dfl_root / init_task
+ctl_subsys_count()    数 cgroup_subsys[] 里真实的控制器数
+ctl_layout_probe()    修正编译期偏移 + 两重校验
+```
+
+`pids_mod.c` 901→861，`cpu_mod.c` 902→880，两边都调 `ctl_layout_probe()`，
+**cpu 侧因此自动获得之前缺失的第二重校验**。
+
+`common.o` 分别链进两个 `.ko`（`droid_lkm_pids-y := pids_mod.o common.o ...`），
+**两个模块仍然各自独立、可以单独 insmod / rmmod** —— 这一点和 `kr/`
+（KallRecon）一样，是刻意的重复，不能合并。
+
+### 三、确认过的「不是重复」
+
+- `lkm4ctr` 不含 cgroup 控制器代码（`cgroup_add_dfl_cftypes` 0 处）→ 与
+  `droid_lkm_pids` / `droid_lkm_cpu` 无功能重叠
+- `lkm4ctr` 注册的是自己的 `lkm4ctr_diagfs`，**不是** devtmpfs → 与
+  `devtmpfs_lkm` 无重叠
+- kprobe 目标互不冲突：pids → `cgroup_controllers_show` / `proc_cgroupstats_show`；
+  cpu → `cgroup_rmdir`；uart_guard → `uart_get_info` / `console_show`
+
+### 验证
+
+两个模块都重新编译通过，`readelf -sW` 确认 `ctl_layout_probe` 等 5 个函数
+在两个 `.ko` 里都是**定义**（不是未定义引用）。
+
+### 过程记录
+
+改这两个文件时，我三次把 `\n` 写成真实换行导致编译失败（Python 生成代码的
+老问题）。第一次编译"通过"其实是增量缓存——`cpu_mod.c` 的 .o 没重编。
+删掉所有产物重新编译才暴露出来。教训：**改完必须清干净再编**。
+
 ## v0.1.14 — 甩掉内核 rhashtable（这才是 5.10 崩溃的真凶）
 
 `versionCode` 20261129。

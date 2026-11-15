@@ -41,6 +41,7 @@
 #include <linux/smp.h>
 
 #include "kr/core.h"
+#include "common.h"
 
 #define TAG "droid_lkm_pids"
 #define pids_info(fmt, ...)  pr_info("[" TAG "] " fmt, ##__VA_ARGS__)
@@ -152,73 +153,32 @@ static unsigned long ctl_kargs_cset_off;
 static unsigned long ctl_kn_priv_off;
 static bool ctl_layout_ok;
 
-static bool ctl_read_ptr(unsigned long addr, unsigned long *out)
-{
-	return copy_from_kernel_nofault(out, (void *)addr, sizeof(*out)) == 0;
-}
 
-static bool ctl_is_kptr(unsigned long v)
-{
-	return v && (v & 0xffff000000000000UL) == 0xffff000000000000UL;
-}
 
 static void ctl_layout_init(void)
 {
-	unsigned long subsys, init_css, dfl_root, init_task_addr;
-	unsigned long expect_root, v;
-	int phone_count = 0;
-	int i;
+	struct ctl_layout lay;
+	int ret;
 
-	subsys = kallrecon_klp("cgroup_subsys");
-	init_css = kallrecon_klp("init_css_set");
-	dfl_root = kallrecon_klp("cgrp_dfl_root");
-	init_task_addr = kallrecon_klp("init_task");
-
-	if (!subsys || !init_css || !dfl_root || !init_task_addr) {
-		pids_warn("layout symbols missing (subsys=%d init_css=%d "
-			  "dfl_root=%d init_task=%d)\n",
-			  !!subsys, !!init_css, !!dfl_root, !!init_task_addr);
+	/*
+	 * 布局探测（解析锚点 → 数控制器 → 修正偏移 → 两重校验）搬到
+	 * common.c，和 droid_lkm_cpu 共用一份。原先两个模块各写一遍，
+	 * 而且校验强度已经漂移（cpu 少了 init_task.cgroups 那一重）。
+	 */
+	ret = ctl_layout_probe(&lay, "droid_lkm_pids");
+	if (ret) {
+		pids_warn("layout probe failed (%d), hooks stay off\n", ret);
 		return;
 	}
 
-	/* 数 cgroup_subsys[] 里的指针数量：内核实际编进的控制器数 */
-	for (i = 0; i < 64; i++) {
-		if (!ctl_read_ptr(subsys + i * 8, &v))
-			break;
-		if (!ctl_is_kptr(v))
-			break;
-		phone_count++;
-	}
-
-	/* offsetof 是编译期的（模块按自己的头文件编译），修正为运行时实际值 */
-	ctl_css_dfl_cgrp_off = offsetof(struct css_set, dfl_cgrp) +
-		(long)(phone_count - (int)CGROUP_SUBSYS_COUNT) * 8;
-	ctl_task_cgroups_off = offsetof(struct task_struct, cgroups);
+	ctl_css_dfl_cgrp_off = lay.css_dfl_cgrp_off;
+	ctl_task_cgroups_off = lay.task_cgroups_off;
 	ctl_kargs_cset_off = offsetof(struct kernel_clone_args, cset);
-	ctl_kn_priv_off = offsetof(struct kernfs_node, priv);
-
-	/* 校验 1：init_css_set.dfl_cgrp 必须等于 &cgrp_dfl_root.cgrp */
-	expect_root = dfl_root + offsetof(struct cgroup_root, cgrp);
-	if (!ctl_read_ptr(init_css + ctl_css_dfl_cgrp_off, &v) ||
-	    v != expect_root) {
-		pids_warn("css_set.dfl_cgrp unverified: controllers=%d "
-			  "off=%lu got=0x%lx want=0x%lx\n",
-			  phone_count, ctl_css_dfl_cgrp_off, v, expect_root);
-		return;
-	}
-
-	/* 校验 2：init_task.cgroups 必须等于 &init_css_set */
-	if (!ctl_read_ptr(init_task_addr + ctl_task_cgroups_off, &v) ||
-	    v != init_css) {
-		pids_warn("task_struct.cgroups unverified: off=%lu "
-			  "got=0x%lx want=0x%lx\n",
-			  ctl_task_cgroups_off, v, init_css);
-		return;
-	}
+	ctl_kn_priv_off = lay.kn_priv_off;
 
 	ctl_layout_ok = true;
 	pids_info("layout verified: controllers=%d (built against %d)\n",
-		  phone_count, (int)CGROUP_SUBSYS_COUNT);
+		  lay.controllers, lay.built_against);
 }
 
 static struct cgroup *ctl_css_dfl_cgrp(struct css_set *cset)

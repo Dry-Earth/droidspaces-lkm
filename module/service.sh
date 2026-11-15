@@ -32,7 +32,8 @@
 #
 #   本仓库对 vkms 打了一个补丁: 上游 driver_features 只有
 #   MODESET|ATOMIC|GEM, 不建 render node; 加上 DRIVER_RENDER 后才会生成
-#   /dev/dri/renderD128。见 extra/vkms/Makefile 的说明。
+#   /dev/dri/renderD128。补丁见 scripts/patch_vkms_debugfs.py（同一处改的是
+#   上游 drm_crtc_add_crc_entry 依赖 DEBUG_FS 的问题）。
 #
 #   必须在容器启动前加载, 否则 Droidspaces 扫描 /dev 时看不到它。
 #
