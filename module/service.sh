@@ -1,15 +1,16 @@
 #!/system/bin/sh
-# Droidspaces LKM - 开机加载
+# service.sh - late_start 阶段加载模块
 #
-# 在原始 GKI 内核上补齐 Droidspaces 所需的容器能力。
+# 按 KernelSU 文档，service.sh 在 late_start service 阶段执行，非阻塞，
+# 是"跑开机脚本"的推荐阶段。本模块只往内核里 insmod，不碰系统分区，
+# 因此不需要 post-fs-data.sh（那个阶段是阻塞的，能不用就不用）。
 #
-# 模块目录结构 (打包时生成):
-#   ko/lkm4ctr-<kmi>.ko
-#   ko/devtmpfs_lkm-<kmi>.ko
-#   ko/macvlan-<kmi>.ko
-#   ko/ip6table_nat-<kmi>.ko
-#   ko/vkms-<kmi>.ko
+# 目录约定（打包时生成）：
+#   ko/<模块名>-<kmi>.ko
 #
+# MODDIR 用规范写法取，不硬编码 /data/adb/modules/droidspaces_lkm。
+
+# ---- 以下为各模块的加载顺序与原因 ----
 # 加载顺序有讲究:
 #   1) lkm4ctr       - PID/UTS/IPC namespace, Droidspaces 的硬性前提
 #   2) devtmpfs_lkm  - 注册 devtmpfs (Droidspaces 靠 /proc/filesystems 判断)

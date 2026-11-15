@@ -18,6 +18,22 @@ stability of the result is your problem, and every system update means starting
 over. The modules avoid all of that. One set covers seven KMIs, matched against
 `uname -r`, so the device model stops mattering.
 
+## Project status
+
+**No stable release yet.** Every tag published from this repository is a
+GitHub **pre-release** (preview). Treat them as builds to try and report on, not
+as a version to depend on. The first stable release will be tagged once the
+loadable-hook backend has full hardware regression across all seven KMIs.
+
+| | |
+|---|---|
+| What CI does | Compiles every KMI, fails the build on error, keeps the `.ko` files as Actions artifacts. **Never publishes.** |
+| What Release does | Runs only on a tag push (`vX.Y.Z`), builds, and publishes a **pre-release** with the modules, per-KMI zips and a source snapshot. |
+| Where to report | [New issue](https://github.com/misaka5202/droidspaces-lkm/issues/new/choose) — the form asks for exactly the data needed to tell a build problem from an environment mismatch. |
+
+`update.json` is only bumped when a release is meant to reach users through the
+KernelSU updater, so it currently points at the forthcoming `v0.1.0`.
+
 ## What it fixes
 
 `droidspaces check` on an unpatched vendor kernel:
@@ -316,16 +332,43 @@ Deployment notes for a Wayland desktop over anland:
 
 ## Build
 
-CI builds inside the DDK container, which carries the real `vmlinux`,
-`Module.symvers` and matching clang for each KMI:
+Two workflows, deliberately separate:
 
-```bash
-make -C /opt/ddk/kdir/<kmi> M=<source-dir> modules
+| Workflow | Trigger | Publishes? |
+|---|---|---|
+| [`ci.yml`](.github/workflows/ci.yml) | push to `master`, pull request, manual | No — artifacts only |
+| [`release.yml`](.github/workflows/release.yml) | tag `vX.Y.Z`, manual with a tag | Yes — **pre-release only** |
+
+Both call the reusable [`build.yml`](.github/workflows/build.yml), which only
+compiles and packages. Keeping publishing out of CI means a green check can
+never put a broken artifact in front of users, and a release always corresponds
+to a tag somebody chose.
+
+To cut a preview:
+
+```sh
+git tag v0.1.0
+git push origin v0.1.0
 ```
 
-The per-KMI driver sources (vkms, macvlan) come from that KMI's own tree, not
-from a shared copy — their APIs move between releases. See
-[scripts/build_modules.sh](scripts/build_modules.sh).
+To try a CI build without tagging, download the `ko-*` artifacts from the run.
+
+### Module layout
+
+The installable module follows the KernelSU module guide — no `META-INF`, no
+`system/` overlay (nothing here modifies `/system`):
+
+```
+module/
+├── module.prop      metadata; version is what the updater compares
+├── customize.sh     install-time: arch check, KMI hint, ui_print
+├── service.sh       late_start: insmod the per-KMI .ko files
+├── uninstall.sh     cleans up; deliberately does not rmmod (see below)
+└── action.sh        the Action button: one screen of state + capability checks
+```
+
+Scripts take their own directory with `MODDIR=${0%/*}` rather than hardcoding
+`/data/adb/modules/<id>`, so the module survives being installed elsewhere.
 
 ## Sources and licensing
 
