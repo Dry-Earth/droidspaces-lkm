@@ -16,7 +16,7 @@ echo
 
 echo "=== 加载状态 ==="
 if lsmod | grep -qE '^(lkm4ctr|devtmpfs_lkm)'; then
-    lsmod | grep -E '^(lkm4ctr|devtmpfs_lkm|ip6table_nat|macvlan|vkms|droid_lkm_pids|droid_lkm_cpu)'
+    lsmod | grep -E '^(lkm4ctr|devtmpfs_lkm|ip6table_nat|macvlan|vkms|droid_lkm_pids|droid_lkm_cpu|uart_guard)'
 else
     echo "未加载"
 fi
