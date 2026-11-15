@@ -13,6 +13,24 @@
 `10001`–`10003` 这种小数字；如果新版本还用 `100`，KernelSU 更新器会认为
 100 < 10003 而不推送更新。日期编码天然单调递增，不会再因为版本号重置而倒退。
 
+## v0.1.1 — 开机循环保护真正生效
+
+`versionCode` 20261116。
+
+v0.1.0 的开机保护有个设计漏洞：计数器在 `service.sh` 跑完就清零，而模块正是
+在 `service.sh` 里 insmod 的。实际发生过的情况是「service.sh 报了完成 → 之后
+整个系统卡死」，那时计数器已经被清掉，保护完全不会触发。
+
+清零点改到 `boot-completed.sh`——KernelSU 在系统真正启动完成后才调用它，那时
+zygote 和 system_server 都已经起来，卡死不会被误判成成功。只有走到这一步才算
+这次开机真的成功，否则连续 3 次后自动禁用。
+
+另外 `action.sh` 的 devtmpfs 检查修了：`/proc/filesystems` 的格式是
+`nodev<TAB>devtmpfs`，文件系统名在第二列，原来用 `^devtmpfs` 永远匹配不到，
+所以「操作」按钮一直报「devtmpfs 未注册」，而 `droidspaces check` 显示
+`[✓] devtmpfs support`。现在还会额外标出挂载后的节点数——`devtmpfs_probe=2`
+只注册不建节点，所以是 0，如实显示。
+
 ## v0.1.0 — 第一个打过 tag 的预览版
 
 `versionCode` 20261115。

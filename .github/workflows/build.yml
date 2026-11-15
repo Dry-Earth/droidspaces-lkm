@@ -247,7 +247,7 @@ jobs:
 
           cp dist/*.ko "$STAGE/ko/"
           cp module/module.prop module/customize.sh module/post-fs-data.sh module/service.sh \
-          module/uninstall.sh module/action.sh "$STAGE/"
+          module/uninstall.sh module/action.sh module/boot-completed.sh "$STAGE/"
           chmod 755 "$STAGE"/*.sh
           sed -i 's/\r$//' "$STAGE"/*.sh "$STAGE/module.prop"
 
@@ -268,7 +268,7 @@ jobs:
             rm -rf "$S"; mkdir -p "$S/ko"
             cp dist/*-"$kmi".ko "$S/ko/"
             cp module/module.prop module/customize.sh module/post-fs-data.sh module/service.sh \
-            module/uninstall.sh module/action.sh "$S/"
+            module/uninstall.sh module/action.sh module/boot-completed.sh "$S/"
             chmod 755 "$S"/*.sh
             sed -i 's/\r$//' "$S"/*.sh "$S/module.prop"
             ( cd "$S" && zip -qr1 "$GITHUB_WORKSPACE/dist/droidspaces-lkm-$kmi-arm64.zip" . )

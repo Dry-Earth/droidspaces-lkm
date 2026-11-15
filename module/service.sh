@@ -204,10 +204,10 @@ MODDIR="/data/adb/modules/droidspaces_lkm"
 [ -f "$MODDIR/disable_pids" ] || load_mod droid_lkm_pids ""
 [ -f "$MODDIR/disable_cpu" ] || load_mod droid_lkm_cpu ""
 
-# 走到这里说明加载流程跑完了。清零开机计数器，表示本次开机是成功的。
-# （只看"脚本跑完"，不逐个校验模块是否 insmod 成功：模块本身加载失败不会
-# 导致 panic，不需要触发自动禁用那套保护。）
-rm -f /data/adb/droidspaces_lkm.bootcount
+# 注意：这里**不清零**开机计数器。
+# service.sh 只代表"模块加载流程跑完"，不代表系统能正常起来 —— 加载成功后
+# 卡死的情况真实发生过。清零交给 boot-completed.sh，那是 Android 真正启动
+# 完成的信号。
 
 echo "--- lsmod ---" >> "$LOG"
 lsmod | grep -E '^(lkm4ctr|devtmpfs_lkm|ip6table_nat|macvlan|vkms|droid_lkm_pids|droid_lkm_cpu)' >> "$LOG" 2>/dev/null
