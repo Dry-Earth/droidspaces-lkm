@@ -160,10 +160,42 @@ ko_vermagic_ok() {
 }
 
 
+# 5.10 / 5.15 各有两代共用同一个内核版本号：
+#   5.10 → android12-5.10 与 android13-5.10
+#   5.15 → android13-5.15 与 android14-5.15
+# 内核串里没有 androidNN 字样时（例如 5.10.269-gki-g...），我们只能猜。
+# 猜错了不会炸机——insmod 会因 vermagic 不符失败——但用户看到的是"模块装不上"。
+# 所以这里用 ko 自带的 vermagic 去认，而不是靠猜：两代都试，谁对得上用谁。
+find_sibling_ko() {
+    local base="$1" cur="$2" sib n
+    case "$cur" in
+        android12-5.10) sib=android13-5.10 ;;
+        android13-5.10) sib=android12-5.10 ;;
+        android13-5.15) sib=android14-5.15 ;;
+        android14-5.15) sib=android13-5.15 ;;
+        *) return 1 ;;
+    esac
+    n="$MODDIR/ko/$base-$sib.ko"
+    [ -f "$n" ] || return 1
+    ko_vermagic_ok "$n" || return 1
+    dlog "[KMI] $base: $cur 的 vermagic 不符，改用 $sib"
+    echo "$n"
+}
+
 find_ko() {
     local base="$1"
     local f="$MODDIR/ko/$base-$KMI.ko"
-    if [ -n "$KMI" ] && [ -f "$f" ]; then echo "$f"; return 0; fi
+    if [ -n "$KMI" ] && [ -f "$f" ]; then
+        # 5.10/5.15 这种双代的组合，vermagic 说了算
+        if ko_vermagic_ok "$f"; then
+            echo "$f"; return 0
+        fi
+        if f2=$(find_sibling_ko "$base" "$KMI"); then
+            echo "$f2"; return 0
+        fi
+        dlog "[MISS] $base: $KMI 的 vermagic 与 $(uname -r) 不符，且没有能对上的同代 ko"
+        return 1
+    fi
     # 不再"随便挑一个 KMI 的 ko"。之前 KMI 没识别出来时，ls | head -1 会
     # 挑到别的 KMI，insmod 必然 unknown symbol，用户看到"所有模块都装不上"，
     # 真正原因却被掩盖了（见 issues/1）。
@@ -243,19 +275,46 @@ load_mod() {
         return 0
     fi
 
-    local out
-    if [ -n "$params" ]; then
-        out=$(insmod "$ko" $params 2>&1)
-    else
-        out=$(insmod "$ko" 2>&1)
+    local out rc cand _sib
+    local -a cands=("$ko")
+    # 5.10 / 5.15 各有两代共用同一个内核版本（android12-5.10 与 android13-5.10、
+    # android13-5.15 与 android14-5.15）。内核串里没有 androidNN 时 KMI 只能猜，
+    # 猜错时代的 vermagic 只到 5.10 这个粒度、分辨不出来，insmod 会因符号版本
+    # 不符失败。这里换另一代的 ko 再试一次，比让用户自己去猜 KMI 靠谱。
+    case "$KMI" in
+        android12-5.10) _sib=android13-5.10 ;;
+        android13-5.10) _sib=android12-5.10 ;;
+        android13-5.15) _sib=android14-5.15 ;;
+        android14-5.15) _sib=android13-5.15 ;;
+        *)              _sib="" ;;
+    esac
+    if [ -n "$_sib" ] && [ -f "$MODDIR/ko/$base-$_sib.ko" ]; then
+        cands+=("$MODDIR/ko/$base-$_sib.ko")
     fi
 
-    if [ $? -eq 0 ] && grep -q "^${base} " /proc/modules 2>/dev/null; then
-        dlog "[OK]   $base  ($(basename "$ko"))${params:+ $params}"
-        return 0
+    # 黑名单：上一次开机死在加载这个模块上，就不再试
+    if [ -f "$STATE_DIR/blacklist" ] && grep -qx "$base" "$STATE_DIR/blacklist" 2>/dev/null; then
+        dlog "[SKIP] $base 在上次开机的黑名单里（加载它会卡死），跳过"
+        return 1
     fi
 
-    dlog "[FAIL] $base: ${out:-无输出}"
+    for cand in "${cands[@]}"; do
+        # 面包屑：卡死时这行会留在磁盘上，下次开机就知道死在哪个模块
+        printf '%s\n' "$base" > "$STATE_DIR/loading" 2>/dev/null
+        sync
+        if [ -n "$params" ]; then
+            out=$(insmod "$cand" $params 2>&1)
+        else
+            out=$(insmod "$cand" 2>&1)
+        fi
+        if grep -q "^${base} " /proc/modules 2>/dev/null; then
+            rm -f "$STATE_DIR/loading" 2>/dev/null
+            [ "$cand" != "$ko" ] && dlog "[KMI] $base: ${KMI} 不符，实际用的是 $(basename "$cand")"
+            dlog "[OK]   $base  ($(basename "$cand"))${params:+ $params}"
+            return 0
+        fi
+        [ "$cand" != "$ko" ] || dlog "[TRY] $base: $(basename "$cand") 失败: ${out:-无输出}"
+    done
     # 把内核日志里的具体缺符号抄下来，避免用户只能看到一个笼统报错
     ko_load_error "$base"
     return 1

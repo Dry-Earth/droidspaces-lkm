@@ -41,6 +41,27 @@ if [ -f "$SNAP" ]; then
     cp -f "$SNAP" "$PREV" 2>/dev/null
 fi
 
+# ---------------------------------------------------------------------------
+# 面包屑判定：上次开机是不是死在某个模块的 insmod 上
+#
+# service.sh 在每个 insmod 前把模块名写进 loading 并 sync，成功后删掉。
+# 如果这次开机它还躺在那儿，就说明上一次开机是在加载那个模块的时候死的
+# —— 不是"某个模块有问题"这种猜测，而是有名字的结论。
+#
+# 直接把它拉黑，而不是让用户反复重启去试：卡开机是最难受的故障形态。
+# ---------------------------------------------------------------------------
+if [ -f "$STATE_DIR/loading" ]; then
+    _dead=$(head -1 "$STATE_DIR/loading" 2>/dev/null)
+    if [ -n "$_dead" ]; then
+        plog "上次开机死在加载 $_dead 上（面包屑还在），已加入黑名单"
+        printf '%s\n' "$_dead" >> "$STATE_DIR/blacklist" 2>/dev/null
+        sort -u "$STATE_DIR/blacklist" -o "$STATE_DIR/blacklist" 2>/dev/null
+        cp -f "$STATE_DIR/loading" "$STATE_DIR/crash-module.txt" 2>/dev/null
+        rm -f "$STATE_DIR/loading"
+        sync
+    fi
+fi
+
 cur=$(cat "$COUNT" 2>/dev/null)
 case "$cur" in
     ''|*[!0-9]*) cur=0 ;;
