@@ -292,6 +292,14 @@ static struct task_struct *(*p_css_task_iter_next)(struct css_task_iter *it);
 static void (*p_css_task_iter_end)(struct css_task_iter *it);
 static int (*p_send_sig_info)(int sig, struct kernel_siginfo *info,
 			      struct task_struct *p);
+/*
+ * [5.10] cgroup_rm_cftypes 在 5.10 里存在但**没有导出**（EXPORT_SYMBOL_GPL
+ * 是 6.1 才加的）。直接链接会让 insmod 报
+ *   Unknown symbol cgroup_rm_cftypes
+ * 整个模块装不上。改成运行时解析；解析不到时**不安装** CFTYPE，否则卸载
+ * 时摘不掉，cgroup 子系统会留着指向已卸载模块的悬空指针（UAF）。
+ */
+static int (*p_cgroup_rm_cftypes)(struct cftype *cfts);
 
 static void (*p_rstat_flush_hold)(struct cgroup *cgrp);
 static unsigned long long (*p_task_sched_runtime)(struct task_struct *p);
@@ -348,6 +356,9 @@ static void cpu_resolve_syms(void)
 		(void *)kallrecon_klp("cgroup_rstat_flush_release");
 	p_task_sched_runtime =
 		(void *)kallrecon_klp("task_sched_runtime");
+	/* 5.10 未导出，解析不到就不安装 cftype（见声明处注释） */
+	p_cgroup_rm_cftypes =
+		(void *)kallrecon_klp("cgroup_rm_cftypes");
 }
 
 /*
@@ -827,11 +838,15 @@ static int __init droid_lkm_cpu_init(void)
 	cpu_resolve_syms();
 	cpu_layout_init();
 
-	ret = cgroup_add_dfl_cftypes(memory_ss, cpu_max_files);
-	if (ret)
-		cpu_err("cgroup_add_dfl_cftypes failed: %d\n", ret);
-	else
-		cpu_files_live = true;
+	if (!p_cgroup_rm_cftypes) {
+		cpu_warn("cgroup_rm_cftypes unresolved; skipping cftypes (installing them would leave a dangling cftype on unload)\n");
+	} else {
+		ret = cgroup_add_dfl_cftypes(memory_ss, cpu_max_files);
+		if (ret)
+			cpu_err("cgroup_add_dfl_cftypes failed: %d\n", ret);
+		else
+			cpu_files_live = true;
+	}
 
 	cpu_install_rmdir_probe();
 	cpu_sysctl_register();
@@ -860,7 +875,7 @@ static void __exit droid_lkm_cpu_exit(void)
 		cpu_sysctl_hdr = NULL;
 	}
 	if (cpu_files_live)
-		cgroup_rm_cftypes(cpu_max_files);
+		p_cgroup_rm_cftypes(cpu_max_files);
 
 	/* 逐个摘除并释放：必须先 drop 我们持有的 cgroup 引用，
 	 * 否则对应 cgroup 永远回收不了（内存泄漏）。 */
