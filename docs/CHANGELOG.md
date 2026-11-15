@@ -13,6 +13,76 @@
 `10001`–`10003` 这种小数字；如果新版本还用 `100`，KernelSU 更新器会认为
 100 < 10003 而不推送更新。日期编码天然单调递增，不会再因为版本号重置而倒退。
 
+## v0.1.14 — 甩掉内核 rhashtable（这才是 5.10 崩溃的真凶）
+
+`versionCode` 20261129。
+
+对照 [Dere3046/_patchHarmony](https://github.com/Dere3046/_patchHarmony) 的
+**issue #12** 查出来的。那台设备是 **vivo MT6989 6.1.145**，和我们同一个 SoC 家族。
+
+### 机制
+
+`struct ipc_namespace` 是我们自己 `kzalloc` 的，大小按**编译期** `sizeof()` 算：
+
+```c
+ns = kzalloc(sizeof(struct ipc_namespace), GFP_KERNEL_ACCOUNT);
+```
+
+但 `rhashtable_init()` / `rhashtable_insert_slow()` 是**内核里的**函数，它们按
+**内核的** `struct rhashtable` 布局去初始化嵌在 `ids[]` 里的 `key_ht`。
+
+内核对不齐就写穿了我们自己的结构体 —— 堆破坏，表现为随机 panic 或直接卡死。
+而现场离肇事点很远，几乎无法定位。
+
+Dere3046 那台的实测差值：
+
+```
+module 编译期认为  ns @ 0x4e0
+设备实际           ns @ 0x4f8     ← 差 0x18
+```
+
+24 字节 = `sizeof(struct ipc_ids)` 272 vs 280，×3（`ids[3]`）。
+
+### 我们的情况
+
+5.10 的 `lkm4ctr.ko` 里有 **3 个内核 rhashtable 符号**：
+
+```
+rhashtable_init
+rhashtable_destroy
+rhashtable_insert_slow
+```
+
+他们修好后的判据是 `nm -u | grep rhashtable` **归零**。
+
+### 修法
+
+我们的 SysV IPC 对象**全部由本模块自己分配、自己使用**，内核从不接触。
+所以不需要内核那个哈希表 —— 用一条模块私有的单链表就够：
+
+- `ipc_keylist_lookup/insert/unlink/clear`（util.c）
+- `ipc_init_ids` 不再调 `rhashtable_init`
+- `ipc_findkey` 改成线性扫描
+- `ipc_addid` 改成链表头插入
+- msg/sem/shm 的销毁路径改成 `ipc_keylist_clear`
+- `ipc_kht_params` 整个删掉
+
+容器里 SysV IPC 对象数量很小，线性扫描的开销可以忽略，换来的是**对内核
+结构体布局完全不敏感**。
+
+### 验证
+
+本地构建 `nm -u lkm4ctr.ko | grep -c rhashtable` → **0**（改前 3）。
+
+补丁编号 `0008-ipc-keylist-no-rhashtable.patch`，8 个补丁依次应用 + 编译通过。
+
+### 为什么这可能就是 5.10 的真凶
+
+那位用户的内核是自己用 GitHub Actions + clang 22 重编的
+`5.10.269-gki-g658b84f13496-dirty`。**自定义 config 正是最容易让
+`struct rhashtable` / `struct ipc_ids` 尺寸偏离标准 GKI 的情况** ——
+而我们的老代码一旦被调起来就会写越界。
+
 ## v0.1.13 — v0.1.12 在真机上根本跑不起来
 
 `versionCode` 20261128。**别再装 v0.1.12。**
