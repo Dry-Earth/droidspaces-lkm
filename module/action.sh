@@ -34,6 +34,13 @@ if [ -f "$STATE_DIR/snapshot.txt" ]; then
     snap_age=$(wc -c < "$STATE_DIR/snapshot.txt" 2>/dev/null)
 fi
 echo "状态快照: ${snap_age:-无} 字节"
+if [ -f "$STATE_DIR/crash-module.txt" ]; then
+    echo "上次卡死: $(cat "$STATE_DIR/crash-module.txt" 2>/dev/null) ← 是在加载它时死的"
+fi
+if [ -f "$STATE_DIR/blacklist" ]; then
+    echo "黑名单  : $(tr '
+' ' ' < "$STATE_DIR/blacklist" 2>/dev/null)"
+fi
 echo
 
 echo "=== 加载状态 ==="
