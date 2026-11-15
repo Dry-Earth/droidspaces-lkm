@@ -318,6 +318,42 @@ else
     warn "uart_guard @ $KMI (缺少 extra/uart_guard)"
 fi
 
+# ---------------------------------------------------------------------------
+# mali_nsfix —— 让 Mali kbase 驱动在 PID namespace 里可用
+#
+# kbase_create_context() 用 task_struct->tgid（init ns 的值）去 find_get_pid()，
+# 而 find_get_pid → find_vpid 在调用者的 ns 里查；容器内两者不等，查找失败，
+# GPU context 创建被拒（-ESRCH，"Failed to get pid pointer"）。
+# 本模块 kprobe find_get_pid，调用者位于 mali_kbase* 模块内时返回调用者自己的
+# group_leader —— 宿主机进程本来就是这个结果，所以对 Android 是无操作。
+#
+# 实验性：只编译，不进完整性断言；编译失败只警告，不阻断发布。
+# ---------------------------------------------------------------------------
+log "=== mali_nsfix @ $KMI ==="
+MN="$WS/extra/mali_nsfix"
+if [ -d "$MN" ]; then
+    find "$MN" -name '*.o' -delete 2>/dev/null || true
+    find "$MN" -name '.*.cmd' -delete 2>/dev/null || true
+    find "$MN" -name '*.ko' -delete 2>/dev/null || true
+    rm -f "$MN"/modules.order "$MN"/Module.symvers 2>/dev/null || true
+    if make -C "$KDIR" M="$MN" KCFLAGS="$GUARD_CFLAGS" modules -j"$NPROC"; then
+        if [ -f "$MN/mali_nsfix.ko" ]; then
+            cp "$MN/mali_nsfix.ko" "$OUT/mali_nsfix-$KMI.ko" && log "  [OK]"
+        else
+            warn "mali_nsfix @ $KMI (没有产物)"
+        fi
+    else
+        warn "mali_nsfix @ $KMI (编译失败，实验模块，不阻断)"
+    fi
+    find "$MN" -name '*.o' -delete 2>/dev/null || true
+    find "$MN" -name '.*.cmd' -delete 2>/dev/null || true
+    find "$MN" -name '*.ko' -delete 2>/dev/null || true
+    rm -f "$MN"/modules.order "$MN"/Module.symvers 2>/dev/null || true
+else
+    warn "mali_nsfix @ $KMI (缺少 extra/mali_nsfix)"
+fi
+
+
 
 # ---------------------------------------------------------------------------
 # 产物符号自检
