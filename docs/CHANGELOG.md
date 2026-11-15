@@ -30,6 +30,11 @@
 `/data/adb/modules/<id>`；`customize.sh` 不再依赖 `set_perm` 这类 Magisk 安装器
 辅助函数；新增 `action.sh`，「操作」按钮可以直接给出加载状态和能力自检结果。
 
+新增**开机循环保护**（`post-fs-data.sh`）：模块会往内核里 insmod 并改写函数
+入口，万一某个版本在特定内核上 panic，后果是重启 -> 再 panic -> 无限循环，
+只能靠物理按键进安全模式。现在每次开机计数 +1，`service.sh` 走完流程后清零；
+连续 3 次没走到成功就自动创建 `disable`，让设备能正常开机。
+
 另外修了 KMI 识别：通用 GKI 内核（如 `5.10.269-gki-...`）的内核串里没有
 `androidN` 子串，之前会识别失败，然后**随手挑一个别的 KMI 的 .ko 去加载**，
 报 `unknown symbol`，把真因掩盖掉。现在改成内核版本优先推导，并且拒绝跨 KMI
