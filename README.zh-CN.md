@@ -158,6 +158,52 @@ droidspaces check                          # 应显示 All required features fou
 > 同一 KMI 标签的厂商内核 ABI 仍可能有差异。装之前先确认 `uname -r` 里的
 > KMI 标签，装完看 `/data/adb/droidspaces_lkm.log`。
 
+## 配合它跑 Linux 桌面（Anland 6.x）
+
+这个模块只负责「让容器能跑」。想在手机上看到真正的 Linux 窗口，还需要
+**Anland 6.x** 那一套 —— 而 `vkms` 正是两边的接口：厂商内核通常没开
+`CONFIG_DRM_VKMS`，只有 `card0` 没有 `renderD128`，Wayland 合成器会直接拒绝启动。
+
+```
+droidspaces-lkm（本项目）
+  └─ vkms.ko  →  /dev/dri/renderD128        ← 没有它，合成器起不来
+        │
+        ▼
+Droidspaces-anland6-rootfs（镜像）
+  └─ 容器内的 anlandx 会话（wayland 链接 + rootless Xwayland + mini-wm）
+        │
+        ▼
+Anland 6.x 宿主三件套
+  ├─ anland-awl 模块（waylandbridge 守护进程，Wayland 服务端）
+  ├─ com.anlandnext（显示端，每个窗口一个 Android Activity）
+  └─ com.anland.shell（启动器，只负责把应用跑起来）
+```
+
+一步到位用
+[Droidspaces-anland6-rootfs](https://github.com/misaka5202/Droidspaces-anland6-rootfs)
+的安装脚本（宿主侧模块、APK、绑定挂载、守护进程配置一次配完）：
+
+```bash
+adb push scripts/setup-anland6-host.sh /data/local/tmp/
+adb shell su -c 'sh /data/local/tmp/setup-anland6-host.sh'
+```
+
+装完用它的诊断脚本确认整条链路：
+
+```bash
+adb shell su -c 'sh /data/local/tmp/verify-anland6-host.sh'
+```
+
+它会按「宿主 → 容器 → 显示」三层逐项打勾。**其中「render node」一项对应的就是
+本项目的 `vkms.ko`** —— 如果那一项失败，回到上面确认 `vkms` 是否加载。
+
+完整的宿主侧步骤、常见断点和排错表见
+[桌面与 Anland](https://github.com/misaka5202/Droidspaces-anland6-rootfs/blob/main/docs/zh/桌面与Anland.md)。
+
+> **不要装 Anland 5.x 那一套**（`virtual-drm-daemon.zip` / `app-debug.apk` /
+> `/run/display.sock` 绑定）。5.x 用私有显示协议 + 打过补丁的合成器，6.x 用
+> Wayland 本身做帧交换，两套路由同时存在会互相打断。
+
 ## cgroup 限制
 
 `--cpus` 和 `--pids-limit` 是两项无法靠开关配置补上的能力：`CONFIG_CFS_BANDWIDTH=n`

@@ -170,6 +170,55 @@ matrix and the per-KMI build traps.
 > tag in `uname -r` first, and read `/data/adb/droidspaces_lkm.log` after
 > installing.
 
+## Running a Linux desktop (Anland 6.x)
+
+This project only makes containers *work*. To actually see Linux windows on the
+phone you need **Anland 6.x** — and `vkms` is the seam between the two. Vendor
+kernels normally ship without `CONFIG_DRM_VKMS`, so there is a `card0` but no
+`renderD128`, and Wayland compositors refuse to start.
+
+```
+droidspaces-lkm (this project)
+  └─ vkms.ko  →  /dev/dri/renderD128        <- without it the compositor cannot start
+        │
+        ▼
+Droidspaces-anland6-rootfs (image)
+  └─ anlandx session inside the container (wayland link + rootless Xwayland + mini-wm)
+        │
+        ▼
+Anland 6.x host trio
+  ├─ anland-awl module (waylandbridge daemon, the Wayland server)
+  ├─ com.anlandnext (display side, one Android Activity per window)
+  └─ com.anland.shell (launcher; it only starts apps)
+```
+
+Use the setup script from
+[Droidspaces-anland6-rootfs](https://github.com/misaka5202/Droidspaces-anland6-rootfs)
+to wire the whole host side in one go (module, APKs, bind mount, daemon config):
+
+```bash
+adb push scripts/setup-anland6-host.sh /data/local/tmp/
+adb shell su -c 'sh /data/local/tmp/setup-anland6-host.sh'
+```
+
+Then verify the chain:
+
+```bash
+adb shell su -c 'sh /data/local/tmp/verify-anland6-host.sh'
+```
+
+It checks host, container and display layers in turn. **Its "render node" check is
+exactly this project's `vkms.ko`** — if that line fails, come back and confirm
+that `vkms` loaded.
+
+Full host-side steps, failure table and troubleshooting:
+[Desktop and Anland](https://github.com/misaka5202/Droidspaces-anland6-rootfs/blob/main/docs/en/desktop-and-anland.md).
+
+> **Do not install the Anland 5.x set** (`virtual-drm-daemon.zip` /
+> `app-debug.apk` / the `/run/display.sock` bind mount). 5.x exchanges frames over
+> a private display protocol with patched compositors; 6.x makes Wayland itself
+> the protocol. Both routes at once break each other.
+
 ## cgroup limits
 
 `--cpus` and `--pids-limit` are the two knobs that cannot be fixed by toggling a
