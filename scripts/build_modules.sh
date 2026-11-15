@@ -147,6 +147,16 @@ if [ -n "$KSRC" ] && [ -d "$KSRC/drivers/gpu/drm/vkms" ]; then
         SKIP_VKMS=1
     fi
 
+    # drm_debugfs_create_files / drm_crtc_add_crc_entry 由
+    # drm-$(CONFIG_DEBUG_FS) 提供。GKI 的 gdefconfig 没打开 DEBUG_FS，
+    # 相当一部分真机是 n —— 那些内核里这两个符号根本不存在，vkms 直接
+    # "Unknown symbol" 装不上（实测 5.10.269-gki）。
+    # 两处都是纯调试功能，去掉不影响 render node。
+    if ! python3 "$WS/scripts/patch_vkms_debugfs.py" "$DST"; then
+        warn "vkms @ $KMI (DEBUG_FS 兼容补丁失败, 跳过出货)"
+        SKIP_VKMS=1
+    fi
+
     log "  driver_features: $(grep -h 'driver_features' "$DST/vkms_drv.c" 2>/dev/null | head -1 | tr -s ' ')"
 
     if [ "${SKIP_VKMS:-0}" = "1" ]; then
