@@ -17,6 +17,19 @@
 
 `versionCode` 20261115。
 
+**钩子后端默认仍是 kprobe。** inline 文本改写后端已编入，但默认关闭
+（`inline_hooks=0`）。它要改写 55 个函数的入口，其中包括 `__arm64_sys_openat`、
+`getuid` 系列、`prepare_creds`、`get_fs_type` 这些每次系统调用或权限检查都要走的
+路径。手动加载实测正常，但由 `service.sh` 在开机阶段加载时，测试机出现了整个系统
+卡死（无 panic、adb 失联、管理器 ANR），且无法用手动加载复现。在定位根因之前，
+默认必须是影响面更小的那个后端。想实验：
+
+```sh
+insmod lkm4ctr-android14-6.1.ko inline_hooks=1
+```
+
+不要放进开机自启。
+
 这一版没有内核代码变化，改的是**发布与安装方式**，因为之前的形态有两个真问题：
 
 - **zram 模块把 `.ko` 放进 `system/lib/modules/`**。KernelSU 只有在装了

@@ -26,3 +26,30 @@ echo '| File | Note |'
 echo '|---|---|'
 echo '| `droidspaces-lkm-arm64.zip` | All kernels in one package, picks the right one at boot |'
 echo '| `source-*.tar.gz` | Source snapshot (GPL-2.0) |'
+
+# 重要：说明当前默认后端，避免用户以为出了问题
+cat <<'NOTE'
+
+## Status
+
+This is a **preview**. Two things worth knowing before installing.
+
+**Hook backend: kprobe.** `lkm4ctr` redirects kernel functions with kprobes by
+default. An inline text-patching backend is compiled in but **off by default**
+(`inline_hooks=0`): it rewrites the entry of 55 functions, including
+`__arm64_sys_openat`, the `getuid` family, `prepare_creds` and `get_fs_type`.
+Manual loading works, but loading it at boot hung the test device with no panic
+and no reproducible trace, so it is not the default until that is understood.
+To experiment:
+
+```sh
+insmod lkm4ctr-android14-6.1.ko inline_hooks=1
+```
+
+Do not put that in autoload.
+
+**Boot-loop protection.** The module counts boots and clears the count once the
+load sequence completes; three consecutive boots that do not reach that point
+create `disable` automatically. If the device misbehaves, force reboot a few
+times and it will disable itself.
+NOTE
