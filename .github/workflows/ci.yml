@@ -36,6 +36,7 @@ jobs:
     uses: ./.github/workflows/build.yml
     with:
       kmis: ${{ inputs.kmis || '' }}
+      package: false   # CI 不做模块打包，产物只留 ko-* artifact
 
   # 汇总一次，让 PR 上能一眼看到各 KMI 产出了哪些 .ko
   summarize:

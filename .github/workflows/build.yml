@@ -39,6 +39,11 @@ on:
         required: false
         type: string
         default: 'lkm4ctr'
+      package:
+        description: '是否打包模块 zip 与源码快照（只有发布需要）'
+        required: false
+        type: boolean
+        default: false
   workflow_dispatch:
     inputs:
       kmis:
@@ -182,7 +187,9 @@ jobs:
   package:
     name: Package
     needs: [prepare, build]
-    if: always() && needs.build.result != 'cancelled'
+    # CI 只用 ko-* artifact 做汇总，不需要模块 zip 和源码快照；
+    # 打包只在发布时做，省掉 CI 关键路径上的一次压缩。
+    if: always() && needs.build.result != 'cancelled' && inputs.package
     runs-on: ubuntu-latest
     steps:
       - name: 检出
