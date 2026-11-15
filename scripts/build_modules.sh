@@ -26,6 +26,34 @@ FAILED=()
 log() { echo ">>> $*"; }
 warn() { echo "::warning::$*"; FAILED+=("$*"); }
 
+
+# ---------------------------------------------------------------------------
+# 符号类型自检：模块内定义为 OBJECT（数据）的符号，不能被 CALL26（函数调用）引用
+#
+# 这是 v0.1.15 那个 panic 的特征：kallrecon_klp 其实是函数指针变量，
+# common.c 里写成了函数。符号名相同所以链接过得去，但运行时是跳到那个
+# 数据变量的地址执行，写坏内核内存，几十毫秒后在完全无关的路径上崩。
+#
+# 静态类型检查跨编译单元看不到这种错，只有看最终产物的重定位类型才能发现。
+# ---------------------------------------------------------------------------
+reloc_audit() {
+    local ko="$1" objf callf bad
+    command -v readelf >/dev/null 2>&1 || return 0
+    objf=$(mktemp); callf=$(mktemp)
+    readelf -sW "$ko" 2>/dev/null | awk '$4=="OBJECT"{print $8}' | sort -u > "$objf"
+    readelf -rW "$ko" 2>/dev/null | awk '$3=="R_AARCH64_CALL26"{print $5}' | sort -u > "$callf"
+    bad=$(comm -12 "$objf" "$callf" 2>/dev/null)
+    rm -f "$objf" "$callf"
+    if [ -n "$bad" ]; then
+        warn "RELO C: $(basename "$ko") 对数据符号发起了函数调用（声明类型写错）:"
+        printf '%s
+' "$bad" | while read -r x; do warn "        $x"; done
+        return 1
+    fi
+    return 0
+}
+
+
 # DDK 的 kdir 可能只有 vmlinux/symvers, 源码在别处; 两个位置都试
 KSRC=""
 for c in "$KDIR" "$KDIR/../src" "/opt/ddk/src/$KMI" "/opt/ddk/kernel/$KMI"; do
@@ -307,32 +335,6 @@ fi
 echo
 echo "=== $KMI 符号自检 ==="
 BAD_SYMS="__stack_chk_guard cgroup_rm_cftypes drm_crtc_add_crc_entry"
-
-# ---------------------------------------------------------------------------
-# 符号类型自检：模块内定义为 OBJECT（数据）的符号，不能被 CALL26（函数调用）引用
-#
-# 这是 v0.1.15 那个 panic 的特征：kallrecon_klp 其实是函数指针变量，
-# common.c 里写成了函数。符号名相同所以链接过得去，但运行时是跳到那个
-# 数据变量的地址执行，写坏内核内存，几十毫秒后在完全无关的路径上崩。
-#
-# 静态类型检查跨编译单元看不到这种错，只有看最终产物的重定位类型才能发现。
-# ---------------------------------------------------------------------------
-reloc_audit() {
-    local ko="$1" objf callf bad
-    command -v readelf >/dev/null 2>&1 || return 0
-    objf=$(mktemp); callf=$(mktemp)
-    readelf -sW "$ko" 2>/dev/null | awk '$4=="OBJECT"{print $8}' | sort -u > "$objf"
-    readelf -rW "$ko" 2>/dev/null | awk '$3=="R_AARCH64_CALL26"{print $5}' | sort -u > "$callf"
-    bad=$(comm -12 "$objf" "$callf" 2>/dev/null)
-    rm -f "$objf" "$callf"
-    if [ -n "$bad" ]; then
-        warn "RELO C: $(basename "$ko") 对数据符号发起了函数调用（声明类型写错）:"
-        printf '%s
-' "$bad" | while read -r x; do warn "        $x"; done
-        return 1
-    fi
-    return 0
-}
 bad=0
 for ko in "$OUT"/*-"$KMI".ko; do
     [ -f "$ko" ] || continue
@@ -361,4 +363,25 @@ if [ ${#FAILED[@]} -gt 0 ]; then
     printf '  - %s\n' "${FAILED[@]}"
 fi
 # 不返回非 0: 部分模块失败不应中断整条矩阵, 其余 KMI 还应继续产出。
+
+  # ---------------------------------------------------------------------
+  # 产物完整性：8 个模块一个都不能少
+  #
+  # 教训：v0.1.18 里我加的 reloc_audit 因为定义在调用点之后而「永远失败」，
+  # 失败分支是「删产物 + continue」，构建照样绿 —— 结果所有 KMI 的 pids/cpu
+  # 都被静默删掉，包发出去了才发现只有 6 个模块。
+  #
+  # 所以这里明确点名缺失项并返回非 0：宁可这一格红，也不要发出残缺的包。
+  # ---------------------------------------------------------------------
+  missing=""
+  for want in lkm4ctr devtmpfs_lkm ip6table_nat macvlan vkms droid_lkm_pids droid_lkm_cpu uart_guard; do
+      [ -f "$OUT/$want-$KMI.ko" ] || missing="$missing $want"
+  done
+  if [ -n "$missing" ]; then
+      echo "  [FAIL] $KMI 缺少模块:$missing"
+      echo "         残缺的模块包不能发布"
+      exit 1
+  fi
+  echo "  [OK] 8/8 模块齐全"
+
 exit 0
