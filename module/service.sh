@@ -149,6 +149,26 @@ find_ko() {
     return 0
 }
 
+# 参数是否真的被这个 .ko 支持。
+#
+# insmod 报 "unknown parameter" 的唯一成因就是传了模块没声明的参数。
+# 设备上不一定有 modinfo，所以直接在 .ko 里找参数名——模块参数会以字符串
+# 形式留在 __param / .modinfo 段里，能找到就说明支持。
+ko_has_param() {
+    local ko="$1" name="$2"
+    grep -aq "$name" "$ko" 2>/dev/null
+}
+
+# 从内核日志里捞出 insmod 失败的具体原因。
+#
+# "unknown symbol in module" 只是个笼统结论，真正缺哪个符号在内核日志里：
+#   lkm4ctr: Unknown symbol foo_bar (err -2)
+# 把它抄进模块日志，用户报问题时一眼能看到缺什么，不用再去猜。
+ko_load_error() {
+    local mod="$1"
+    dmesg 2>/dev/null | grep -E "Unknown symbol|unknown parameter|disagrees about version"         | tail -3 | sed 's/^/             /'
+}
+
 load_mod() {
     local base="$1" params="$2"
     local ko
@@ -168,6 +188,20 @@ load_mod() {
         return 1
     fi
 
+    # 只传这个 .ko 真支持的参数，否则内核会回 "unknown parameter"
+    if [ -n "$params" ]; then
+        local kept="" pname
+        for p in $params; do
+            pname=${p%%=*}
+            if ko_has_param "$ko" "$pname"; then
+                kept="$kept $p"
+            else
+                echo "[WARN] $base 不支持参数 $pname，已忽略" >> "$LOG"
+            fi
+        done
+        params=${kept# }
+    fi
+
     # 判断是否已加载: 用模块名而不是文件名, 因为文件名带 KMI 后缀
     if grep -q "^${base} " /proc/modules 2>/dev/null; then
         echo "[SKIP] $base 已加载" >> "$LOG"
@@ -185,7 +219,10 @@ load_mod() {
         echo "[OK]   $base  ($(basename "$ko"))${params:+ $params}" >> "$LOG"
         return 0
     fi
+
     echo "[FAIL] $base: ${out:-无输出}" >> "$LOG"
+    # 把内核日志里的具体缺符号抄下来，避免用户只能看到一个笼统报错
+    ko_load_error "$base" >> "$LOG"
     return 1
 }
 
