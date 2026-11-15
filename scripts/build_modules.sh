@@ -237,6 +237,13 @@ for m in pids cpu; do
     if make -C "$KDIR" M="$SRC" MODULE="droid_lkm_$m" KCFLAGS="$GUARD_CFLAGS" modules -j"$NPROC"; then
         if [ -f "$SRC/droid_lkm_$m.ko" ]; then
             cp "$SRC/droid_lkm_$m.ko" "$OUT/droid_lkm_$m-$KMI.ko"
+          # 符号类型自检：防止"函数指针变量被误声明成函数"这类
+          # 符号名对得上、运行时语义全错的问题流出去
+          if ! reloc_audit "$OUT/droid_lkm_$m-$KMI.ko"; then
+              warn "droid_lkm_$m @ $KMI 符号类型自检失败，已删除产物"
+              rm -f "$OUT/droid_lkm_$m-$KMI.ko"
+              continue
+          fi
             log "  [OK]"
         else
             warn "droid_lkm_$m @ $KMI (没有产物)"
@@ -300,6 +307,32 @@ fi
 echo
 echo "=== $KMI 符号自检 ==="
 BAD_SYMS="__stack_chk_guard cgroup_rm_cftypes drm_crtc_add_crc_entry"
+
+# ---------------------------------------------------------------------------
+# 符号类型自检：模块内定义为 OBJECT（数据）的符号，不能被 CALL26（函数调用）引用
+#
+# 这是 v0.1.15 那个 panic 的特征：kallrecon_klp 其实是函数指针变量，
+# common.c 里写成了函数。符号名相同所以链接过得去，但运行时是跳到那个
+# 数据变量的地址执行，写坏内核内存，几十毫秒后在完全无关的路径上崩。
+#
+# 静态类型检查跨编译单元看不到这种错，只有看最终产物的重定位类型才能发现。
+# ---------------------------------------------------------------------------
+reloc_audit() {
+    local ko="$1" objf callf bad
+    command -v readelf >/dev/null 2>&1 || return 0
+    objf=$(mktemp); callf=$(mktemp)
+    readelf -sW "$ko" 2>/dev/null | awk '$4=="OBJECT"{print $8}' | sort -u > "$objf"
+    readelf -rW "$ko" 2>/dev/null | awk '$3=="R_AARCH64_CALL26"{print $5}' | sort -u > "$callf"
+    bad=$(comm -12 "$objf" "$callf" 2>/dev/null)
+    rm -f "$objf" "$callf"
+    if [ -n "$bad" ]; then
+        warn "RELO C: $(basename "$ko") 对数据符号发起了函数调用（声明类型写错）:"
+        printf '%s
+' "$bad" | while read -r x; do warn "        $x"; done
+        return 1
+    fi
+    return 0
+}
 bad=0
 for ko in "$OUT"/*-"$KMI".ko; do
     [ -f "$ko" ] || continue
