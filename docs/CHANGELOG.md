@@ -1,6 +1,41 @@
 # Changelog
 
-## v1.0.3
+## 版本号说明
+
+这个项目**还没有正式版本**。目前所有发布都是 GitHub pre-release（预览版）。
+
+早期开发阶段误用了 `1.0.x` 这套版本号，看起来像是已经稳定。那些构建没有经过
+跨机型回归，发布后也已经全部删除。为了让版本号如实反映成熟度，版本重新从
+`0.1.0` 开始，早期构建按 `0.0.x` 归档在这里——**它们从未打过 tag**，保留下来
+只是因为每一步修的是什么值得记。
+
+`versionCode` 用日期编码（`v0.1.0` → `20261115`）。原因是老的 `1.0.x` 用的是
+`10001`–`10003` 这种小数字；如果新版本还用 `100`，KernelSU 更新器会认为
+100 < 10003 而不推送更新。日期编码天然单调递增，不会再因为版本号重置而倒退。
+
+## v0.1.0 — 第一个打过 tag 的预览版
+
+`versionCode` 20261115。
+
+这一版没有内核代码变化，改的是**发布与安装方式**，因为之前的形态有两个真问题：
+
+- **zram 模块把 `.ko` 放进 `system/lib/modules/`**。KernelSU 只有在装了
+  metamodule（如 meta-overlayfs）时才挂载 `system/`，没装的用户装完什么都不会
+  发生，也没有任何提示。现在改放模块自己的 `ko/` 目录，直接从那里 insmod。
+- **CI 与发布耦合**。CI 绿灯就能产出 Release，意味着一次没经过真机验证的提交
+  也可能被推到用户面前。现在 `ci.yml` 只编译、产物留 artifact；`release.yml`
+  只在打 tag 时运行，并且强制 `--prerelease`。
+
+模块目录也按 KernelSU 模块规范重整：脚本统一用 `MODDIR=${0%/*}`，不再硬编码
+`/data/adb/modules/<id>`；`customize.sh` 不再依赖 `set_perm` 这类 Magisk 安装器
+辅助函数；新增 `action.sh`，「操作」按钮可以直接给出加载状态和能力自检结果。
+
+另外修了 KMI 识别：通用 GKI 内核（如 `5.10.269-gki-...`）的内核串里没有
+`androidN` 子串，之前会识别失败，然后**随手挑一个别的 KMI 的 .ko 去加载**，
+报 `unknown symbol`，把真因掩盖掉。现在改成内核版本优先推导，并且拒绝跨 KMI
+猜测。
+
+## 0.0.4 — 早期构建，从未打 tag
 
 Finishes the inline hook backend and closes two hazards in the code that
 enables it. Compile-verified only: the handset was offline for this release.
@@ -34,7 +69,7 @@ android12-5.10 / 13-5.10 / 13-5.15 / 14-5.15 reject under
 `-Wdeclaration-after-statement`. Those four KMIs silently lost `lkm4ctr` while
 the job still reported success.
 
-## v1.0.2
+## 0.0.3 — 早期构建，从未打 tag
 
 The hook engine no longer runs on kprobe on stock firmware. Same functionality,
 different mechanism, plus one privilege escalation that the v1.0.1 audit
@@ -102,7 +137,7 @@ breaking.
   485 us/fork with the module unloaded, min-of-8. The inline figures for this
   release were not measured -- the handset dropped off USB before the run.
 
-## v1.0.1
+## 0.0.2 — 早期构建，从未打 tag
 
 Security audit of the C code. Three findings, all fixed. Nothing here changes
 how the modules are used; they close holes that only mattered once a container
@@ -146,7 +181,7 @@ was running untrusted workloads.
 
 - Build warning-free at `W=1`; a write-only local in the CPU tick loop is gone.
 
-## v1.0
+## 0.0.1 — 早期构建，从未打 tag
 
 First stable release. Every check `droidspaces check` performs now passes on a
 stock 6.1.157 vendor kernel.
