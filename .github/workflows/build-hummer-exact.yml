@@ -38,12 +38,13 @@ env:
   MODULES_REPO: LineageOS/android_kernel_oneplus_sm8750-modules
   MAGISKBOOT_URL_CACHED: https://github.com/Dry-Earth/LKM-Droidspaces/releases/download/test-assets/libmagiskboot-x86_64.so
   MAGISK_APK_URL: https://github.com/topjohnwu/Magisk/releases/download/v31.1/Magisk-v31.1.apk
-  DDK_IMAGE: ghcr.io/ylarod/ddk-min:android15-6.6-${{ inputs.ddk_release }}
 
 jobs:
   build:
     runs-on: ubuntu-24.04
     timeout-minutes: 300
+    env:
+      DDK_IMAGE: ghcr.io/ylarod/ddk-min:android15-6.6-${{ inputs.ddk_release }}
 
     steps:
       - name: Free disk space
