@@ -13,6 +13,45 @@
 `10001`–`10003` 这种小数字；如果新版本还用 `100`，KernelSU 更新器会认为
 100 < 10003 而不推送更新。日期编码天然单调递增，不会再因为版本号重置而倒退。
 
+## v0.1.11 — inline 装之前先判入口状态
+
+`versionCode` 20261126。
+
+对照 [Dere3046/_patchHarmony](https://github.com/Dere3046/_patchHarmony) 的实现查出来的问题：
+**我们的入口状态探测写好了，但没有任何地方调用它。**
+
+`hk_inline_probe()` 从实现那天起就是死代码——`hk_inline_apply()` 只校验参数，
+从来不看入口长什么样，于是 `hk_inline_hook` 直接覆盖入口。
+
+后果最典型的一条：**5.10/5.15 GKI 用 `-fpatchable-function-entry` 在函数入口
+预留 ftrace patch 点**（`mov x9, lr`）。把它覆盖掉会破坏 ftrace 的记账，tracing
+一 arm 就崩。开机阶段 ftrace 正在初始化，所以「手动 insmod 没事、开机加载卡死」
+完全解释得通——这正是我们那个一直没结案的 inline 卡开机。
+
+HooKern（他们用的引擎）对这种情况有专门的 `HK_INLINE_PATCHSITE` 状态并且在装前
+拒绝。**我们同一个状态机也有，连注释都一样（"ftrace patch site at entry"），
+就是没接上。**
+
+修法：
+
+- 新增 `hk_inline_probe_addr()` —— 按地址探测。原来 `hk_inline_probe()` 只能按
+  符号名查，而 shadow_hook 自己解析符号、只有地址，所以接不上。
+- `shadow_inline_install()` 在装之前调用它，`state != HK_INLINE_PLAIN` 就返回
+  `-EOPNOTSUPP`，由 shadow_hook 现有的逻辑落到 kprobe。
+
+判据与 HooKern 一致，八种状态全部覆盖：符号没解析到、入口读不出来、重定位器
+拒绝、入口已有分支桩、**ftrace patch 点**、入口里有直接 `b`、窗口被别的活钩子占住。
+
+### 顺带核对的两件事（确认我们本来就是对的）
+
+- **写路径**：我们 inline 走的是 `hk_write_kernel()`，先查
+  `hk_patch_kernel_primitive_ok()`，能用内核原语就用，够不着才退到 fixmap。
+  和他们对 MTK 的结论一致（他们说「模块自己映射别名写」会被内核保护打挂，
+  他们彻底删了那条路——我们的 inline 引擎本来就没走那条）。
+- **CFI**：他们为 5.10/5.15 用 `#pragma clang attribute` 覆盖整个区域，因为
+  `SYSCALL_DEFINE` 把函数体放在内层函数里、外层 `__nocfi` 到不了。我们代码里
+  没有真正的 `SYSCALL_DEFINE` 宏，包装函数都是普通 `__nocfi` 函数，**这一条不适用**。
+
 ## v0.1.10 — 补上 v0.1.9 漏掉的证据固化
 
 `versionCode` 20261125。**v0.1.9 的 `hang-report.txt` 永远不会生成**，别用。
