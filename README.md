@@ -93,11 +93,13 @@ they are the reason this project exists at v1.0.0 rather than v0.x.
 | `vkms.ko` | Virtual DRM device, provides a render node | `DRM_VKMS` (with `DRIVER_RENDER` patch) | ✅ |
 | `droid_lkm_pids.ko` | Emulated pids controller | `CGROUP_PIDS` | ✅ |
 | `droid_lkm_cpu.ko` | Time-slice CPU quota | `CFS_BANDWIDTH` | ✅ |
+| `uart_guard.ko` | tty attribute read protection (kprobe) | none (guards a vendor `uart_get_info` lock bug) | ✅ |
 
-**All seven load at boot.** The two emulation modules go last and cannot block
-the five above them: a failure there leaves a device that still boots and runs
-containers, just without the corresponding limit. To install but not load one,
-drop a `disable_pids` / `disable_cpu` file in the module directory.
+**All eight load at boot.** The three supplementary modules (`droid_lkm_pids`,
+`droid_lkm_cpu`, `uart_guard`) go last and cannot block the five above them: a
+failure there leaves a device that still boots and runs containers, just without
+the corresponding limit or tty guard. To install but not load one, drop a
+`disable_pids` / `disable_cpu` / `disable_uart_guard` file in the module directory.
 
 ## Install
 
@@ -156,7 +158,7 @@ droidspaces check                          # "All required features found!"
 | `droidspaces-lkm-android15-6.6-arm64.zip` | Android 15 / 6.6 |
 | `droidspaces-lkm-android16-6.12-arm64.zip` | Android 16 / 6.12 |
 
-`droidspaces-lkm-arm64.zip` carries all seven and picks the right one at boot.
+`droidspaces-lkm-arm64.zip` is the combined package: it carries the build for all 7 KMIs and picks the right one at boot from the kernel release plus `ro.board.first_api_level`. Pick a per-KMI zip instead if you want a smaller download.
 
 **arm64 only.** Non-GKI kernels and non-ARM64 devices are not supported.
 
@@ -165,7 +167,7 @@ the DDK image; see [docs/KMI-COVERAGE.md](docs/KMI-COVERAGE.md) for the exact
 matrix and the per-KMI build traps.
 
 > A vendor kernel with the same KMI tag can still differ in ABI. Check the KMI
-> tag in `uname -r` first, and read `/data/local/tmp/droidspaces-lkm.log` after
+> tag in `uname -r` first, and read `/data/adb/droidspaces_lkm.log` after
 > installing.
 
 ## cgroup limits
@@ -347,7 +349,7 @@ mismatch from a real failure.
 
 Also check the boot guard: if three consecutive boots never reach
 `boot-completed.sh`, the module disables itself and writes the reason to
-`/data/local/tmp/droidspaces-lkm.log`.
+`/data/adb/droidspaces_lkm.log` and `/data/adb/droidspaces_lkm.d/`.
 
 ## Important notes
 

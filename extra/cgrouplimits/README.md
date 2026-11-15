@@ -158,3 +158,46 @@ extra/cgrouplimits/
 ├── cpu_mod.c           cpu.max 时间片限流
 └── kr/                 KallRecon（复制自 net_ip6nat/kr）
 ```
+
+## 两个模块共用的部分（common.c）
+
+原先两个模块各写了一套 cgroup 布局校验，901 / 902 行里只有 15% 逐字相同
+—— cpu 那份照着 pids 抄的（`cpu_mod.c` 里还留着「同 droid_lkm_pids 的做法」
+这条注释）。真正的问题是**校验强度漂移了**：
+
+| 校验 | pids | cpu（改前） |
+|---|---|---|
+| `init_css_set.dfl_cgrp == &cgrp_dfl_root.cgrp` | ✅ | ✅ |
+| `init_task.cgroups == &init_css_set` | ✅ | ❌ **缺失** |
+
+只做第一重时，若 `task_struct.cgroups` 的偏移算错，会在 fork 路径上写坏内存，
+而且现场离肇事点很远。
+
+现在抽到 `common.c` / `common.h`：
+
+```
+ctl_read_ptr()        安全读内核指针（copy_from_kernel_nofault）
+ctl_is_kptr()         判内核指针
+ctl_anchors_resolve() 解析 4 个布局锚点符号
+ctl_subsys_count()    数 cgroup_subsys[] 里真实的控制器数
+ctl_layout_probe()    修正编译期偏移 + 两重校验
+```
+
+两边都调 `ctl_layout_probe()`，**cpu 侧因此自动获得之前缺的第二重校验**。
+
+`common.o` 分别链进两个 `.ko`，两个模块仍各自独立、可单独 insmod / rmmod。
+这一点和 `kr/`（KallRecon 也是各链一份）一样是**刻意的重复**，不能合并成一个模块。
+
+## IPC key 索引不用内核 rhashtable
+
+`struct ipc_namespace` 是模块自己 `kzalloc` 的（按编译期 `sizeof`），但
+`rhashtable_init()` 是内核函数，它按**内核的** `struct rhashtable` 布局去初始化
+嵌在 `ids[]` 里的 `key_ht`。目标内核的结构体一旦比构建时大，这次初始化就写穿
+我们自己的结构体 —— 堆破坏，表现为随机 panic 或卡死。
+
+（`Dere3046/_patchHarmony` issue #12 在一台 MT6989 6.1.145 上实测差 `0x18`：
+`sizeof(ipc_ids)` 272 vs 280 × 3。）
+
+修法：`vendor/ipc/` 里把 key 索引换成模块私有单链表
+（`ipc_keylist_lookup/insert/unlink/clear`），`nm -u *.ko | grep rhashtable` 归零。
+容器里 SysV IPC 对象很少，线性扫描开销可忽略，换来的是对内核布局完全不敏感。

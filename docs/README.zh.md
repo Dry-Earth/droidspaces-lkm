@@ -87,10 +87,12 @@ cgroup 控制器。多数厂商内核为了通过 GKI ABI 检查把这些都编�
 | `vkms.ko` | 虚拟 DRM 设备，提供 render node | `DRM_VKMS`（含 `DRIVER_RENDER` 补丁） | ✅ |
 | `droid_lkm_pids.ko` | 仿真 pids 控制器 | `CGROUP_PIDS` | ✅ |
 | `droid_lkm_cpu.ko` | 时间片 CPU 配额 | `CFS_BANDWIDTH` | ✅ |
+| `uart_guard.ko` | tty 属性读取保护（kprobe） | 无（防厂商内核 `uart_get_info` 锁崩） | ✅ |
 
-**七个模块全部开机加载。** 两个仿真模块排最后，不会挡住上面五个：它们
-失败时设备照常开机、照常跑容器，只是少了对应的限额。想"装但不加载"某个，
-在模块目录放 `disable_pids` / `disable_cpu` 文件即可。
+**八个模块全部开机加载。** 三个补充模块（`droid_lkm_pids` / `droid_lkm_cpu` /
+`uart_guard`）排在最后，不会挡住前面五个：它们失败时设备照常开机、照常跑容器，
+只是少了对应的限额或 tty 保护。想"装但不加载"某个，在模块目录放
+`disable_pids` / `disable_cpu` / `disable_uart_guard` 文件即可。
 
 ## 安装
 
@@ -146,7 +148,7 @@ droidspaces check                          # 应显示 All required features fou
 | `droidspaces-lkm-android15-6.6-arm64.zip` | Android 15 / 6.6 |
 | `droidspaces-lkm-android16-6.12-arm64.zip` | Android 16 / 6.12 |
 
-`droidspaces-lkm-arm64.zip` 包含全部七种，开机按内核自动选。
+`droidspaces-lkm-arm64.zip` 是**合并包**，里面包含全部 7 个 KMI 的产物，开机按内核版本 + `ro.board.first_api_level` 自动选对应那一份。想省空间可以只下按 KMI 分包的版本。
 
 **仅 arm64。** 非 GKI 内核、非 ARM64 设备不受支持。
 
@@ -154,7 +156,7 @@ droidspaces check                          # 应显示 All required features fou
 完整矩阵与各 KMI 的构建陷阱见 [KMI-COVERAGE.md](KMI-COVERAGE.md)。
 
 > 同一 KMI 标签的厂商内核 ABI 仍可能有差异。装之前先确认 `uname -r` 里的
-> KMI 标签，装完看 `/data/local/tmp/droidspaces-lkm.log`。
+> KMI 标签，装完看 `/data/adb/droidspaces_lkm.log`。
 
 ## cgroup 限制
 
@@ -308,7 +310,7 @@ Droidspaces 实际使用的探测方式。
 能力自检，足够区分"环境不匹配"和"真的坏了"。
 
 另外注意开机保护：连续三次开机都没走到 `boot-completed.sh`，模块会自动禁用自己，
-并把原因写进 `/data/local/tmp/droidspaces-lkm.log`。
+并把原因写进 `/data/adb/droidspaces_lkm.log` 和 `/data/adb/droidspaces_lkm.d/`。
 
 ## 重要提醒
 
