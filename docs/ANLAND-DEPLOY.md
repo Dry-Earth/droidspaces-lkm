@@ -1,5 +1,7 @@
 # anland Linux 桌面部署手册
 
+[English](ANLAND-DEPLOY.en.md) | **简体中文**
+
 在 **ARM Mali 平台（G720 级 GPU）** 上运行 Linux 桌面，
 画面通过 anland 显示在 Android 屏幕上。
 

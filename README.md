@@ -4,7 +4,7 @@
 
 [![Build](https://github.com/misaka5202/droidspaces-lkm/actions/workflows/build.yml/badge.svg)](https://github.com/misaka5202/droidspaces-lkm/actions/workflows/build.yml)
 
-**English** | [简体中文](README.zh-CN.md) · [Releases](../../releases/latest) · [KMI coverage](docs/KMI-COVERAGE.md)
+**English** | [简体中文](README.zh-CN.md) · [Releases](../../releases/latest) · [KMI coverage](docs/KMI-COVERAGE.en.md)
 
 ---
 
@@ -163,7 +163,7 @@ droidspaces check                          # "All required features found!"
 **arm64 only.** Non-GKI kernels and non-ARM64 devices are not supported.
 
 Every module is built for every KMI from that KMI's own kernel source tree in
-the DDK image; see [docs/KMI-COVERAGE.md](docs/KMI-COVERAGE.md) for the exact
+the DDK image; see [docs/KMI-COVERAGE.md](docs/KMI-COVERAGE.en.md) for the exact
 matrix and the per-KMI build traps.
 
 > A vendor kernel with the same KMI tag can still differ in ABI. Check the KMI
@@ -301,6 +301,7 @@ stating.
 - Module parameters are all `0444`; nothing is runtime-writable.
 
 See [docs/CHANGELOG.md](docs/CHANGELOG.md) for what each release fixed.
+The changelog is maintained in Chinese (this project is Chinese-first); every entry starts with a one-line summary of the change.
 
 ## Troubleshooting
 
@@ -379,7 +380,7 @@ actually use the GPU depends on the driver stack:
   render node instead.
 
 Deployment notes for a Wayland desktop over anland:
-[docs/ANLAND-DEPLOY.md](docs/ANLAND-DEPLOY.md).
+[docs/ANLAND-DEPLOY.md](docs/ANLAND-DEPLOY.en.md).
 
 ## Build
 
