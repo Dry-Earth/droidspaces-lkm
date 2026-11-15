@@ -56,11 +56,15 @@ reloc_audit() {
 
 # DDK 的 kdir 可能只有 vmlinux/symvers, 源码在别处; 两个位置都试
 KSRC=""
+if [ -n "${KSRC_OVERRIDE:-}" ] && [ -d "$KSRC_OVERRIDE" ]; then
+    KSRC="$KSRC_OVERRIDE"
+else
 for c in "$KDIR" "$KDIR/../src" "/opt/ddk/src/$KMI" "/opt/ddk/kernel/$KMI"; do
     if [ -d "$c/drivers/gpu/drm" ] || [ -d "$c/drivers/net" ]; then
         KSRC="$c"; break
     fi
 done
+fi
 
 log "KMI=$KMI"
 log "KDIR=$KDIR"
