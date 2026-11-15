@@ -13,6 +13,81 @@
 `10001`–`10003` 这种小数字；如果新版本还用 `100`，KernelSU 更新器会认为
 100 < 10003 而不推送更新。日期编码天然单调递增，不会再因为版本号重置而倒退。
 
+## v0.1.9 — 让卡开机这件事有据可查
+
+`versionCode` 20261124。
+
+5.10 用户报了卡开机，我们收到 bugreport 之后发现**什么都查不到**：
+
+| 想看的 | 实际 |
+|---|---|
+| 那次开机的内核日志 | `bootlog/dmesg.old.log` 是 840KB 全 `0x00`（KernelSU 导出失败） |
+| pstore | 空 —— 卡死不是 panic，pstore 只记 panic |
+| 我们的脚本日志 | 写在 `/data/local/tmp`，**bugreport 完全不抓这个目录** |
+| `/data/adb` 下的文件 | 只抓 `ls -l` 列表，不抓内容 |
+
+唯一确定的只有 `disable` 文件存在（我们的保护触发过），但**没法判断是不是我们的模块造成的**。
+
+### 四层改造
+
+**1. 日志同时进 kernel log**
+
+```sh
+dlog() {
+    printf '%s
+' "[$(date '+%m-%d %H:%M:%S')] $*" >> "$LOG"
+    printf '<6>droidspaces_lkm: %s
+' "$*" > /dev/kmsg
+}
+```
+
+KernelSU 的 bugreport 是**按内容**导出 dmesg 的（进 `bootlog.tar.gz`），
+所以进 kernel log 的日志才能被自动收走。`dlog` 必须 `return 0`——
+它出现在 `test && dlog ... || dlog ...` 里，`/dev/kmsg` 不可写时返回非 0
+会把成功误报成失败。
+
+**2. 日志文件移到 `/data/adb/`，不截断而是轮转**
+
+`/data/adb/droidspaces_lkm.log`，超过 256KB 轮转一份。
+
+**3. 后台快照守卫（卡死现场）**
+
+`service.sh` 加载完模块后起一个后台循环，**10 分钟内每 15 秒**把
+`uptime / 负载 / 每个模块的引用计数 / renderD128 有无 / dmesg 尾部 40 行`
+写进 `snapshot.txt` 并 `sync`。
+
+`sync` 是必须的：不 sync 的话数据还在 page cache 里，卡死重启就丢了。
+真卡死时，**最后一份 snapshot.txt 就是现场**。
+
+**4. 保护触发时固化证据**
+
+`post-fs-data.sh` 在开机最开头把上一轮的 `snapshot.txt` 复制成
+`prev-boot.txt`；等计数器超过 3、准备写 `disable` 时，再把它复制成
+`hang-report.txt`。这份文件不会被后续启动覆盖。
+
+### 排查时怎么取
+
+```sh
+adb pull /data/adb/droidspaces_lkm.d/hang-report.txt   # 卡死那次最后 15 秒的状态
+adb pull /data/adb/droidspaces_lkm.log                 # 跨重启的持久日志
+```
+
+没 adb 的话，点模块页的「操作」按钮，首屏直接显示：开机计数、`disable` 状态、
+`hang-report.txt` 在不在、状态快照多大。
+
+### 实测
+
+本机（6.1）跑一遍完整 `service.sh`：
+
+- dmesg 里出现 **30 行** `droidspaces_lkm:` 前缀的日志 ✅
+- `/data/adb/droidspaces_lkm.log` 1407 字节，每行带时间戳 ✅
+- `snapshot.txt` 稳定刷新（16:34:34 → 16:35:04），内容含 8 个模块的引用计数 ✅
+
+修复过程中自己踩了一个坑：一开始用 Python 生成脚本时 `
+` 被写成了**真实换行**，
+awk 的格式串因此变成未闭合字符串，模块列表整段为空。现在格式串里的换行
+统一用转义写法，并且实测确认有输出。
+
 ## v0.1.8 — 修 v0.1.7 把 vkms 弄丢的回归
 
 `versionCode` 20261123。

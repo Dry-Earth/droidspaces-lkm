@@ -16,6 +16,24 @@ MODDIR=${0%/*}
 COUNT=/data/adb/droidspaces_lkm.bootcount
 LIMIT=3
 
+# 与 service.sh 共用的状态目录
+STATE_DIR=/data/adb/droidspaces_lkm.d
+LOG=/data/adb/droidspaces_lkm.log
+SNAP=$STATE_DIR/snapshot.txt
+PREV=$STATE_DIR/prev-boot.txt
+HANG=$STATE_DIR/hang-report.txt
+mkdir -p "$STATE_DIR" 2>/dev/null
+chmod 755 "$STATE_DIR" 2>/dev/null
+
+# 日志同时进 kernel log。KernelSU 的 bugreport 只按内容导出 dmesg，
+# /data/local/tmp 根本不抓 —— 只写文件等于没写。
+plog() {
+    _line="[$(date '+%m-%d %H:%M:%S')] $*"
+    printf '%s\n' "$_line" >> "$LOG" 2>/dev/null
+    printf '<6>droidspaces_lkm: %s\n' "$*" > /dev/kmsg 2>/dev/null
+    return 0
+}
+
 cur=$(cat "$COUNT" 2>/dev/null)
 case "$cur" in
     ''|*[!0-9]*) cur=0 ;;
@@ -25,8 +43,14 @@ echo "$cur" > "$COUNT"
 
 if [ "$cur" -gt "$LIMIT" ]; then
     # 已经连续失败太多次：禁用自己，并留下证据
+    # 把卡死那次的最终快照另存一份：这是事后唯一能看到"卡在哪一步"的东西，
+    # 不能让它被下一轮覆盖。
+    if [ -f "$PREV" ]; then
+        cp -f "$PREV" "$HANG" 2>/dev/null
+    fi
     touch "$MODDIR/disable"
-    echo "$(date): 连续 $((cur - 1)) 次开机未成功加载，已自动禁用本模块" \
-        >> /data/local/tmp/droidspaces-lkm.log
+    plog "连续 $((cur - 1)) 次开机未成功加载，已自动禁用本模块"
+    plog "排查：adb pull /data/adb/droidspaces_lkm.d/hang-report.txt"
+    plog "      adb pull /data/adb/droidspaces_lkm.log"
     echo 0 > "$COUNT"
 fi

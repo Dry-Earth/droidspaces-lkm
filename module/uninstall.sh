@@ -10,5 +10,5 @@
 #
 # 所以模块驻留到下次重启；重启后模块目录已消失，自然不会再加载。
 
-rm -f /data/local/tmp/droidspaces-lkm.log
-rm -f /data/local/tmp/droidspaces-lkm.log.old
+rm -rf /data/adb/droidspaces_lkm.d
+rm -f /data/adb/droidspaces_lkm.log /data/adb/droidspaces_lkm.log.old

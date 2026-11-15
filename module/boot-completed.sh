@@ -13,4 +13,12 @@
 # 这个脚本要快：它不影响任何逻辑，只是删一个文件。
 
 rm -f /data/adb/droidspaces_lkm.bootcount
+
+# 开机成功：在 kernel log 和持久日志里各留一条，
+# 这样 bugreport 里能直接看出"这次开机到底成没成"。
+_msg="=== boot-completed：本次开机成功，计数器已清零 ==="
+printf '%s
+' "[$(date '+%m-%d %H:%M:%S')] $_msg" >> /data/adb/droidspaces_lkm.log 2>/dev/null
+printf '<6>droidspaces_lkm: %s
+' "$_msg" > /dev/kmsg 2>/dev/null
 exit 0

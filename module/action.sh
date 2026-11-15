@@ -6,12 +6,34 @@
 
 MODDIR=${0%/*}
 [ "$MODDIR" = "$0" ] && MODDIR=.
-LOG=/data/local/tmp/droidspaces-lkm.log
+LOG=/data/adb/droidspaces_lkm.log
+STATE_DIR=/data/adb/droidspaces_lkm.d
 
 echo "=== Droidspaces LKM ==="
 echo "内核    : $(uname -r)"
 echo "模块版本: $(grep -m1 '^version=' "$MODDIR/module.prop" 2>/dev/null | cut -d= -f2)"
 echo "架构    : $(uname -m)"
+echo
+
+echo "=== 开机状态 ==="
+count=$(cat /data/adb/droidspaces_lkm.bootcount 2>/dev/null)
+echo "开机计数: ${count:-无}（>3 会自禁用）"
+if [ -f "$MODDIR/disable" ]; then
+    echo "disable : 存在 —— 本模块已被开机保护自动禁用"
+else
+    echo "disable : 无"
+fi
+if [ -f "$STATE_DIR/hang-report.txt" ]; then
+    echo "卡死报告: 有 ($(wc -c < "$STATE_DIR/hang-report.txt" 2>/dev/null || echo 0) 字节)"
+    echo "          /data/adb/droidspaces_lkm.d/hang-report.txt"
+else
+    echo "卡死报告: 无"
+fi
+snap_age=""
+if [ -f "$STATE_DIR/snapshot.txt" ]; then
+    snap_age=$(wc -c < "$STATE_DIR/snapshot.txt" 2>/dev/null)
+fi
+echo "状态快照: ${snap_age:-无} 字节"
 echo
 
 echo "=== 加载状态 ==="
