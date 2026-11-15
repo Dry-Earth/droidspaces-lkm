@@ -5930,7 +5930,7 @@ index 0000000..b10dab9
 +#endif
 +#endif
 diff --git a/glue/shadow_hijack.c b/glue/shadow_hijack.c
-index d44dded..54acd0f 100644
+index d44dded..ee63003 100644
 --- a/glue/shadow_hijack.c
 +++ b/glue/shadow_hijack.c
 @@ -88,6 +88,9 @@
@@ -5943,27 +5943,45 @@ index d44dded..54acd0f 100644
  #include "lkm4ctr_log.h"
  
  #define SHADOW_HIJACK_VERSION	"1.0"
-@@ -1016,12 +1019,26 @@ int shadow_hook_install(struct shadow_hook *hook)
+@@ -1016,12 +1019,44 @@ int shadow_hook_install(struct shadow_hook *hook)
  	if (!hook->address)
  		return -ENOENT;
  
 -	*((unsigned long *)hook->original) = hook->address;
- 	new_retprobe = !hook->retprobe_installed;
- 	err = shadow_hook_retprobe_install(hook);
- 	if (err)
- 		return err;
- 
 +	/*
-+	 * [INLINE] 先试 inline 文本改写。成功后 hook->original 指向
-+	 * trampoline（不是被改写的入口），替换函数调用 original 时执行的是
-+	 * 被搬走的原始指令，不会落回补丁点，因此不需要递归保护。
++	 * [INLINE] 先试 inline 文本改写。成功后 hook->original 指向 trampoline
++	 * （不是被改写的入口），替换函数调用 original 时执行被搬走的原始指令，
++	 * 不会落回补丁点，因此不需要递归保护。
 +	 * 函数入口装不下改写窗口时引擎返回 -EOPNOTSUPP，此时回落到 kprobe。
 +	 */
 +	err = shadow_inline_install(hook);
 +	if (!err) {
 +		hook->inline_active = true;
++		/*
++		 * [NO-RETPROBE] inline 生效时**不装 kretprobe**。
++		 *
++		 * 那个 retprobe 的目的是"重定向期间持有模块引用"：ftrace 和 kprobe
++		 * 都是把调用劫持进替换函数，需要防中途卸载。inline 是入口直接跳过去，
++		 * 替换函数就在本模块里，这份引用没有意义；它反而给每次被 hook 的调用
++		 * 多带来一次陷阱 —— 正是本次改造要消掉的开销。
++		 *
++		 * 其回调里的 module_put() 在开 KCFI 的内核上还会触发 CFI 陷阱
++		 * （本机实测 pc=module_put+0xac，每次 hook 命中都炸）。
++		 *
++		 * 卸载安全改由 shadow_inline_remove() 的 RCU 同步 + 卸载检查保证。
++		 */
 +		return 0;
 +	}
++
++	pr_debug("shadow_hook: inline %s unavailable (%d), kprobe fallback\n",
++		 hook->resolved_name, err);
++
++	/* kprobe 路径必须保留 retprobe：它靠这个持有模块引用防中途卸载 */
+ 	new_retprobe = !hook->retprobe_installed;
+ 	err = shadow_hook_retprobe_install(hook);
+ 	if (err)
+ 		return err;
+ 
 +	pr_debug("shadow_hook: inline %s unavailable (%d), kprobe fallback\n",
 +		 hook->resolved_name, err);
 +
@@ -5971,7 +5989,7 @@ index d44dded..54acd0f 100644
  	memset(&hook->kp, 0, sizeof(hook->kp));
  	hook->kp.addr = (kprobe_opcode_t *)hook->address;
  	hook->kp.pre_handler = shadow_hook_pre_handler;
-@@ -1051,7 +1068,12 @@ void shadow_hook_remove(struct shadow_hook *hook)
+@@ -1051,7 +1086,12 @@ void shadow_hook_remove(struct shadow_hook *hook)
  	if (!hook->installed)
  		return;
  
@@ -5985,176 +6003,27 @@ index d44dded..54acd0f 100644
  	hook->installed = false;
  }
  EXPORT_SYMBOL_GPL(shadow_hook_remove);
-diff --git a/glue/shadow_hook.h b/glue/shadow_hook.h
-index 6a4e1fb..b48056e 100644
---- a/glue/shadow_hook.h
-+++ b/glue/shadow_hook.h
-@@ -76,6 +76,7 @@
- #include <linux/kernel.h>
- #include <linux/atomic.h>
- #include <linux/kprobes.h>
-+#include "hk/hk_inline.h"
- #include <linux/ftrace.h>
- #include <linux/list.h>
- #include <linux/module.h>
-@@ -170,7 +171,18 @@ struct shadow_hook {
- #if defined(CONFIG_FUNCTION_TRACER) && defined(CONFIG_DYNAMIC_FTRACE)
- 	struct ftrace_ops	ops;
- #else
--	struct kprobe		kp;
+diff --git a/glue/vendor_kernel_nsfs_lifecycle.c b/glue/vendor_kernel_nsfs_lifecycle.c
+index 966cd73..f029bcf 100644
+--- a/glue/vendor_kernel_nsfs_lifecycle.c
++++ b/glue/vendor_kernel_nsfs_lifecycle.c
+@@ -304,8 +304,14 @@ int vns_nsfs_lifecycle_init(void)
+ 			    installed);
+ 		return -ENOENT;
+ 	}
+-	if (!nsfs_evict_hook.retprobe_installed ||
+-	    !nsfs_path_hook.retprobe_installed) {
 +	/*
-+	 * [INLINE] 混合后端：优先 inline 文本改写，失败再用 kprobe 陷阱。
-+	 *
-+	 * inline 没有每次调用的异常开销（实测 fork 路径省约 90us/次），但要求
-+	 * 函数入口至少能容纳 5 条指令的改写窗口；像 __arm64_sys_msgget 这种
-+	 * 系统调用包装（bti + 几条 mov + 尾部 b）装不下，引擎会拒绝，此时回落
-+	 * 到 kprobe。热路径（fork/clone/copy_namespaces/wake_up_new_task 等）
-+	 * 都能走 inline。
++	 * [INLINE] inline 后端不装 retprobe（见 shadow_hijack.c 的 NO-RETPROBE
++	 * 说明），所以这里接受 inline_active 作为等效的卸载安全保证。
 +	 */
-+	struct hk_inline	inline_hook;
-+	bool			inline_active;
-+	struct kprobe		kp;		/* 仅 inline 失败时使用 */
- #endif
- 	bool			installed;
- 	struct kretprobe	retprobe;
-diff --git a/glue/shadow_inline.c b/glue/shadow_inline.c
-new file mode 100644
-index 0000000..76ee46c
---- /dev/null
-+++ b/glue/shadow_inline.c
-@@ -0,0 +1,131 @@
-+// SPDX-License-Identifier: GPL-2.0-only
-+/*
-+ * shadow_inline.c - inline text-patch backend for the shadow_hook engine.
-+ *
-+ * Why this exists
-+ * ---------------
-+ * shadow_hijack.c picks its backend at compile time: ftrace when the target
-+ * kernel has CONFIG_FUNCTION_TRACER && CONFIG_DYNAMIC_FTRACE, otherwise a
-+ * kprobe pre_handler that rewrites the trapped pc. Vendor GKI kernels commonly
-+ * build FUNCTION_TRACER out (this device: "CONFIG_FUNCTION_TRACER is not set"),
-+ * so the kprobe path is what actually runs on stock firmware.
-+ *
-+ * kprobe works but it is the wrong tool here:
-+ *
-+ *   - every hooked call costs a BRK exception on entry, and the hook engine
-+ *     also installs a kretprobe on the replacement so a second one comes back
-+ *     on the way out. The hot hooks (fork/clone, copy_namespaces,
-+ *     wake_up_new_task, prepare_creds) sit on the process-creation path, so
-+ *     that is paid on every fork.
-+ *   - the redirect is decided by a C handler that must reconstruct the
-+ *     pass-through case from the caller's return address.
-+ *   - a kprobe occupies the shared kprobe slot for that address, which the
-+ *     KernelSU/SUSFS/vendor-module ecosystem also uses.
-+ *
-+ * An inline hook writes a jump over the first instructions instead: no
-+ * exception, no handler, no slot. The displaced instructions are copied into a
-+ * trampoline and relocated, and the trampoline address becomes the "original"
-+ * that a replacement calls to reach genuine kernel behaviour. Because the
-+ * trampoline entry is a distinct address, the pass-through call no longer lands
-+ * on the patched prologue at all, which removes the recursion guard the other
-+ * two backends need.
-+ *
-+ * The relocation work is not new: glue/hk/ is the same engine devtmpfs_lkm has
-+ * been shipping (instruction decoding, BTI landing-pad handling, text write via
-+ * the kernel's own patching primitive, and an audit pass over the trampoline
-+ * bounds). It is vendored here rather than reimplemented.
-+ *
-+ * Only two addresses are needed, so hk_inline_hook_addr() is used instead of
-+ * the symbol-name entry point: shadow_hook already resolved the target (with
-+ * fallback across several candidate names, which the engine cannot do), and the
-+ * replacement is a static function inside this module whose name the kernel's
-+ * kallsyms may not carry.
-+ */
-+
-+#include <linux/kernel.h>
-+#include <linux/module.h>
-+#include <linux/mutex.h>
-+
-+#include "shadow_hook.h"
-+#include "hk/hk.h"
-+#include "hk/hk_inline.h"
-+
-+/* hk_init() must run once, before the first hook is applied. */
-+static DEFINE_MUTEX(shadow_inline_init_lock);
-+static bool shadow_inline_ready;
-+
-+static unsigned long shadow_inline_resolve_cb(const char *name)
-+{
-+	return shadow_hook_resolve(name);
-+}
-+
-+static int shadow_inline_init_once(void)
-+{
-+	static const struct hk_cfg cfg = {
-+		.resolve = shadow_inline_resolve_cb,
-+		.write = NULL,	/* 用内核自己的文本写入原语 */
-+	};
-+	int err = 0;
-+
-+	mutex_lock(&shadow_inline_init_lock);
-+	if (!shadow_inline_ready) {
-+		err = hk_init(&cfg);
-+		/* -EALREADY：别的子系统已经初始化过引擎，等同成功 */
-+		if (err && err != -EALREADY)
-+			pr_err("shadow_inline: hk_init failed: %d\n", err);
-+		else {
-+			if (err == -EALREADY)
-+				err = 0;
-+			shadow_inline_ready = true;
-+		}
-+	}
-+	mutex_unlock(&shadow_inline_init_lock);
-+	return err;
-+}
-+
-+/*
-+ * hook->address 已被 shadow_hijack.c 解析好，hook->function 是替换函数。
-+ * 成功后 hook->original 指向 trampoline，而不是被改写的入口地址 —— 这正是
-+ * inline 后端与另外两个后端的区别：替换函数调用 original 时执行的是被搬走
-+ * 的原始指令，不会再落回补丁点，因此不需要递归保护。
-+ */
-+int shadow_inline_install(struct shadow_hook *hook)
-+{
-+	int err;
-+
-+	if (!hook || !hook->address || !hook->function || !hook->original)
-+		return -EINVAL;
-+	if (hook->installed)
-+		return 0;
-+
-+	err = shadow_inline_init_once();
-+	if (err)
-+		return err;
-+
-+	err = hk_inline_hook_addr(&hook->inline_hook,
-+				  hook->resolved_name ? hook->resolved_name : "hook",
-+				  hook->address,
-+				  (unsigned long)hook->function);
-+	if (err) {
-+		pr_warn("shadow_inline: hook %s failed: %d\n",
-+			hook->resolved_name ? hook->resolved_name : "?", err);
-+		return err;
-+	}
-+
-+	*(unsigned long *)hook->original = hook->inline_hook.orig;
-+	hook->installed = true;
-+	return 0;
-+}
-+
-+void shadow_inline_remove(struct shadow_hook *hook)
-+{
-+	if (!hook || !hook->installed)
-+		return;
-+
-+	hk_inline_disable(&hook->inline_hook);
-+	hk_inline_free(&hook->inline_hook);
-+
-+	/* 还原成"直接调用真实函数"，避免卸载后 original 指向已释放的 trampoline */
-+	*(unsigned long *)hook->original = hook->address;
-+	hook->installed = false;
-+}
-\ No newline at end of file
++	if ((!nsfs_evict_hook.retprobe_installed &&
++	     !nsfs_evict_hook.inline_active) ||
++	    (!nsfs_path_hook.retprobe_installed &&
++	     !nsfs_path_hook.inline_active)) {
+ 		shadow_hook_remove_all(vns_nsfs_lifecycle_hooks);
+ 		LKM4CTR_ERR("vendor_kernel",
+ 			    "required NSFS lifetime hook lacks its unload-safety retprobe");
 diff --git a/vendor/Makefile b/vendor/Makefile
 index 89608a3..37a26b8 100644
 --- a/vendor/Makefile
