@@ -27,8 +27,8 @@ obj-m := droid_lkm_pids.o droid_lkm_cpu.o
 endif
 
 # 主源刻意不与模块同名：kbuild 对"单文件同名模块"会自依赖
-droid_lkm_pids-y := pids_mod.o $(KR_OBJS)
-droid_lkm_cpu-y  := cpu_mod.o  $(KR_OBJS)
+droid_lkm_pids-y := pids_mod.o common.o $(KR_OBJS)
+droid_lkm_cpu-y  := cpu_mod.o  common.o $(KR_OBJS)
 
 ccflags-y += -I$(src)
 ccflags-y += -Wno-declaration-after-statement -Wno-unused-variable \

@@ -51,6 +51,7 @@
 #include <linux/vmalloc.h>
 
 #include "kr/core.h"
+#include "common.h"
 
 #define TAG "droid_lkm_cpu"
 #define cpu_info(fmt, ...)  pr_info("[" TAG "] " fmt, ##__VA_ARGS__)
@@ -307,10 +308,6 @@ static void (*p_rstat_flush_release)(void);
 static unsigned long ctl_bstat_off;
 static unsigned long ctl_kn_priv_off;
 
-static bool ctl_read_ptr(unsigned long addr, unsigned long *out)
-{
-	return copy_from_kernel_nofault(out, (void *)addr, sizeof(*out)) == 0;
-}
 
 /*
  * cgroup 指针有效性校验。
@@ -372,39 +369,18 @@ static void cpu_resolve_syms(void)
  */
 static void __nocfi cpu_layout_init(void)
 {
-	unsigned long subsys, init_css, dfl_root, init_task_addr;
-	unsigned long expect_root, v;
-	int phone_count = 0, i;
+	struct ctl_layout lay;
+	int ret;
 
-	subsys = kallrecon_klp("cgroup_subsys");
-	init_css = kallrecon_klp("init_css_set");
-	dfl_root = kallrecon_klp("cgrp_dfl_root");
-	init_task_addr = kallrecon_klp("init_task");
-
-	if (!subsys || !init_css || !dfl_root || !init_task_addr) {
-		cpu_warn("layout symbols missing\n");
+	/*
+	 * 走共享层。这里原来只有一重校验（css_set.dfl_cgrp），缺了
+	 * task_struct.cgroups 那一重 —— 共享层把两重都做了，所以 cpu 这侧
+	 * 的校验强度顺带补齐。
+	 */
+	ret = ctl_layout_probe(&lay, "droid_lkm_cpu");
+	if (ret) {
+		cpu_warn("layout probe failed (%d)\n", ret);
 		return;
-	}
-
-	for (i = 0; i < 64; i++) {
-		if (!ctl_read_ptr(subsys + i * 8, &v))
-			break;
-		if (!v || (v & 0xffff000000000000UL) != 0xffff000000000000UL)
-			break;
-		phone_count++;
-	}
-
-	/* 校验 css_set.dfl_cgrp，用修正后的偏移 */
-	{
-		unsigned long dfl_off = offsetof(struct css_set, dfl_cgrp) +
-			(long)(phone_count - (int)CGROUP_SUBSYS_COUNT) * 8;
-
-		expect_root = dfl_root + offsetof(struct cgroup_root, cgrp);
-		if (!ctl_read_ptr(init_css + dfl_off, &v) || v != expect_root) {
-			cpu_warn("css_set.dfl_cgrp unverified (cnt=%d)\n",
-				 phone_count);
-			return;
-		}
 	}
 
 	/*
@@ -412,9 +388,11 @@ static void __nocfi cpu_layout_init(void)
 	 * SUBSYS_COUNT 差多少就修正多少 * 8（指针数组）。
 	 */
 	ctl_bstat_off = offsetof(struct cgroup, bstat) +
-		(long)(phone_count - (int)CGROUP_SUBSYS_COUNT) * 8;
+			(unsigned long)lay.delta_bytes;
+	ctl_kn_priv_off = lay.kn_priv_off;
+
 	cpu_info("layout ok: controllers=%d bstat_off=%lu\n",
-		 phone_count, ctl_bstat_off);
+		 lay.controllers, ctl_bstat_off);
 	cpu_info("syms: flush_hold=%px flush_release=%px\n",
 		 p_rstat_flush_hold, p_rstat_flush_release);
 }
