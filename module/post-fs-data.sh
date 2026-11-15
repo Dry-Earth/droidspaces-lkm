@@ -34,6 +34,13 @@ plog() {
     return 0
 }
 
+# 上一次启动留下的快照就是"卡死现场"。这次启动一开头先把它固定住，
+# 否则 service.sh 的快照守卫会把 snapshot.txt 覆盖成本次启动的样子，
+# 卡死那次的最后状态就永远丢了。
+if [ -f "$SNAP" ]; then
+    cp -f "$SNAP" "$PREV" 2>/dev/null
+fi
+
 cur=$(cat "$COUNT" 2>/dev/null)
 case "$cur" in
     ''|*[!0-9]*) cur=0 ;;
@@ -45,8 +52,11 @@ if [ "$cur" -gt "$LIMIT" ]; then
     # 已经连续失败太多次：禁用自己，并留下证据
     # 把卡死那次的最终快照另存一份：这是事后唯一能看到"卡在哪一步"的东西，
     # 不能让它被下一轮覆盖。
+    # 优先用开机时固化的 prev-boot.txt；升级上来的第一轮可能还没有，退回用当前的。
     if [ -f "$PREV" ]; then
         cp -f "$PREV" "$HANG" 2>/dev/null
+    elif [ -f "$SNAP" ]; then
+        cp -f "$SNAP" "$HANG" 2>/dev/null
     fi
     touch "$MODDIR/disable"
     plog "连续 $((cur - 1)) 次开机未成功加载，已自动禁用本模块"
