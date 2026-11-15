@@ -13,6 +13,82 @@
 `10001`–`10003` 这种小数字；如果新版本还用 `100`，KernelSU 更新器会认为
 100 < 10003 而不推送更新。日期编码天然单调递增，不会再因为版本号重置而倒退。
 
+## v0.1.17 — 修正 v0.1.15 引入的 panic（函数指针声明成函数）
+
+`versionCode` 20261132。**v0.1.15 和 v0.1.16 会 panic，立刻升级。**
+
+### 现场
+
+真机加载到 `droid_lkm_pids` 时 panic，面包屑（v0.1.13 加的）直接点名：
+
+```
+loading = droid_lkm_pids
+```
+
+日志停在这里：
+
+```
+[OK] lkm4ctr / devtmpfs_lkm / ip6table_nat / macvlan / vkms
+← 正在加载 droid_lkm_pids
+```
+
+panic 位置：
+
+```
+pc : _regulator_disable+0x68/0x20c
+lr : _regulator_disable+0x64/0x20c
+```
+
+**崩在电源管理路径**——和 pids 毫无关系，这是典型的内存被写坏之后在别处踩雷。
+
+### 根因
+
+`kallrecon_klp` 在 `kr/core.h` 里的真实类型是**函数指针变量**：
+
+```c
+extern unsigned long (*kallrecon_klp)(const char *name);
+```
+
+我在 v0.1.15 新建的 `common.c` 里写成了**函数**：
+
+```c
+extern unsigned long kallrecon_klp(const char *name);   // ← 错
+```
+
+符号名相同，所以**链接过得去**，但运行时语义完全不同：
+
+| | 重定位 | 实际行为 |
+|---|---|---|
+| v0.1.16（坏） | `R_AARCH64_CALL26` | 直接 `call` 到**存放指针的那个数据变量的地址**，等于执行随机指令 |
+| 修复后 | `R_AARCH64_PREL_PG_HI21` + `LDST64` | 先从内存**取出指针值**，再间接调用 |
+
+从 release 产物直接对比可以复现这个差异（`readelf -rW droid_lkm_pids.ko | grep kallrecon_klp`）。
+
+### 修法
+
+1. 声明改成 `extern unsigned long (*kallrecon_klp)(const char *name);`
+2. **加了判空**：它在 `kr` 初始化完成前是 `NULL`，直接调用会跳到 0
+3. 去掉 `common.c` 里的 `EXPORT_SYMBOL_GPL`（它是链进别的模块的 `.o`，不是独立模块）
+4. 去掉 `common.c` 里的 `MODULE_LICENSE`（模块信息只由主源文件提供）
+
+### 验证
+
+修复后两个模块的符号/重定位：
+
+```
+readelf -sW  → OBJECT GLOBAL kallrecon_klp      （数据符号）
+readelf -rW  → ADR_PREL_PG_HI21 + LDST64        （取指针值再间接调用）
+```
+
+### 教训
+
+**跨编译单元引用全局符号时，类型必须和定义处完全一致。** 符号名对得上就不会有链接错误，
+错的是运行时语义——而且错法极其隐蔽：不崩在调用点，崩在几十毫秒之后某个无关的
+内核路径上。
+
+`EXTRA_CFLAGS += -Werror` 抓不到这种错，因为它不是类型检查能发现的（跨 TUs，
+C 语言只看声明）。唯一可靠的防线是**核对定义处的声明**，以及 `readelf` 看重定位类型。
+
 ## v0.1.16 — KMI 判代际改用出厂 API level
 
 `versionCode` 20261131。
