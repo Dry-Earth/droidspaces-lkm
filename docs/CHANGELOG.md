@@ -13,6 +13,54 @@
 `10001`–`10003` 这种小数字；如果新版本还用 `100`，KernelSU 更新器会认为
 100 < 10003 而不推送更新。日期编码天然单调递增，不会再因为版本号重置而倒退。
 
+## v0.1.20 — 修 6.6/6.12 的 lkm4ctr（它们从来没编出来过）
+
+`versionCode` 20261135。
+
+v0.1.19 加的「8 个模块一个都不能少」检查立刻暴露了一个**一直存在**的缺口：
+
+```
+[FAIL] android15-6.6  缺少模块: lkm4ctr
+[FAIL] android16-6.12 缺少模块: lkm4ctr
+```
+
+之前构建脚本容忍单个模块失败（带 warning 继续），所以 Android 15（6.6）和
+Android 16（6.12）的用户从来就没拿到过主模块 —— 拿到的包里只有 6 个外围模块。
+
+### 根因
+
+`glue/vendor_hook_stubs.c` 里的弱定义按 ≤6.1 的签名写死了：
+
+```
+vendor_hook_stubs.c:44: error: conflicting types for
+'_trace_android_vh_record_pcpu_rwsem_starttime'
+```
+
+这些 Android vendor hook 的**签名和存在性都随内核版本变**。逐分支核对
+AOSP `kernel/common` 的 `include/trace/hooks/dtask.h`：
+
+| 内核 | `starttime` | `time_early` | `rdheld_starttime` |
+|---|---|---|---|
+| ≤6.1 | `(task_struct *, ulong)` | `(ulong, percpu_rwsem *)` | — |
+| 6.6 | `(percpu_rwsem *, ulong)` | **已移除** | 新增 |
+| 6.12 | `(percpu_rwsem *, ulong)` | 已移除 | 已移除 |
+
+### 修法
+
+按 `LINUX_VERSION_CODE` 分别给定义：
+
+- `starttime`：6.6 起第一个参数从 `task_struct *` 换成 `percpu_rw_semaphore *`
+- `time_early`：只在 6.6 之前定义
+- `rdheld_starttime`：只在 6.6 这一代定义
+
+全部仍是 `__weak`：内核导出了就用内核的，没导出才用空实现。这两个 hook 只用于
+rwsem 争用时间统计，空实现不改变任何锁语义。
+
+### 验证
+
+8 个补丁依次应用 + 编译通过；CI 上 android15-6.6 / android16-6.12 两个作业
+现在都能产出 lkm4ctr。
+
 ## v0.1.19 — v0.1.18 的模块包缺了 pids/cpu
 
 `versionCode` 20261134。**v0.1.18 的包只有 6 个模块，缺 droid_lkm_pids 和

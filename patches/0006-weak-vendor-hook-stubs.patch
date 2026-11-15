@@ -1,39 +1,41 @@
 diff --git a/glue/vendor_hook_stubs.c b/glue/vendor_hook_stubs.c
 new file mode 100644
-index 0000000..10ec663
+index 0000000..012e436
 --- /dev/null
 +++ b/glue/vendor_hook_stubs.c
-@@ -0,0 +1,57 @@
-+// SPDX-License-Identifier: GPL-2.0-only
+@@ -0,0 +1,82 @@
++// SPDX-License-Identifier: GPL-2.0
 +/*
-+ * vendor_hook_stubs.c - 给 Android vendor hook 提供 weak 兜底实现
++ * Android vendor hook 的弱定义。
 + *
-+ * 问题
++ * 背景
 + * ----
-+ * include/linux/percpu-rwsem.h 里的内联函数（percpu_down_read / percpu_up_read）
-+ * **无条件**调用这两个 vendor hook：
++ * Android 的 percpu-rwsem 争用计时是通过 vendor hook 做的：
 + *
-+ *   _trace_android_vh_record_pcpu_rwsem_starttime()
-+ *   _trace_android_vh_record_pcpu_rwsem_time_early()
++ *     call_android_vh_record_pcpu_rwsem_starttime(tsk, settime);
 + *
-+ * 只要模块里有代码走过 percpu-rwsem（本项目的 vendored overlayfs 用
-+ * inode_lock() 就会走到），编译出来就带这两个未定义符号。
++ * 这个宏在内核头文件里展开成 `_trace_android_vh_record_pcpu_rwsem_starttime(...)`。
++ * 多数 GKI 内核会导出它，但有些精简构建不会 —— 那样我们的模块 insmod 时会报
++ * `Unknown symbol _trace_android_vh_record_pcpu_rwsem_starttime`，整个模块装不上。
 + *
-+ * 它们由 CONFIG_ANDROID_VENDOR_HOOKS 生成，**不是所有厂商内核都开**。目标内核
-+ * 没开时，insmod 只会报一句
++ * 这里给弱定义：内核导出了就用内核的，没导出就用这个空实现。这两个 hook 只用于
++ * rwsem 争用时间统计，空实现不改变任何锁语义。
 + *
-+ *   unknown symbol in module, or unknown parameter
++ * 为什么不能只写一份签名
++ * ----------------------
++ * 这些 hook 的**签名和存在性都随内核版本变**，写死一份必然在某代上编译报
++ * `conflicting types`：
 + *
-+ * 把真正缺失的符号名埋掉——这正是大量用户反馈的那个报错。
++ *   内核       starttime                    time_early              rdheld_starttime
++ *   ≤6.1       (task_struct *, ulong)       (ulong, percpu_rwsem *)  —
++ *   6.6        (percpu_rwsem *, ulong)      已移除                   新增
++ *   6.12       (percpu_rwsem *, ulong)      已移除                   已移除
 + *
-+ * 做法
-+ * ----
-+ * 在这里提供 **weak** 空实现：
-+ *   - 内核导出同名符号时，链接优先用内核那份（模块内的引用绑定到本地定义，
-+ *     但语义上两者都是同一个空/真实 hook，不影响功能）
-+ *   - 内核没有时，引用解析到这里的空函数，模块照常加载
++ * 之前只按 ≤6.1 的签名写，结果 android15-6.6 和 android16-6.12 的 lkm4ctr
++ * **从来没编译成功过** —— 而且构建脚本当时容忍部分模块失败，所以这个缺口一直
++ * 被埋着，直到加上「8 个模块一个都不能少」的检查才暴露出来。
 + *
-+ * 这两个 hook 只用于 Android 的 rwsem 争用计时统计，空实现不改变任何锁语义。
++ * 签名来源：AOSP kernel/common 的 include/trace/hooks/dtask.h，三个分支逐一核对。
 + */
 +
 +#include <linux/kernel.h>
@@ -44,32 +46,56 @@ index 0000000..10ec663
 +#include <linux/version.h>
 +
 +/*
-+ * 签名必须与内核头文件里的声明完全一致，否则编译报冲突。
-+ * 头文件已经把它们声明为普通函数，这里用 __weak 给出弱定义。
++ * starttime：6.6 起第一个参数从 task_struct * 变成 percpu_rw_semaphore *。
++ * 用 __weak 给出与内核声明**完全一致**的弱定义，否则编译器报 conflicting types。
 + */
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 6, 0)
 +__weak void _trace_android_vh_record_pcpu_rwsem_starttime(
-+		struct task_struct *tsk, unsigned long settime)
++		struct percpu_rw_semaphore *sem, unsigned long settime_jiffies)
 +{
-+	/* 不做任何事：内核没开这个 vendor hook 时，统计缺失不影响正确性 */
++	/* 只影响争用计时统计，空实现不改变锁语义 */
 +}
++#else
++__weak void _trace_android_vh_record_pcpu_rwsem_starttime(
++		struct task_struct *tsk, unsigned long settime_jiffies)
++{
++}
++#endif
 +
 +/*
-+ * time_early 只在较新的内核（6.1+）里出现；老内核不声明它，这里的定义就是
-+ * 一段没有被引用的代码，链接器会丢弃，不会造成冲突。
++ * time_early：6.6 起被内核移除。只在 6.6 之前定义，否则新内核上会是一个
++ * 没有任何声明的多余符号（不报错，但没意义）。
 + */
++#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 6, 0)
 +__weak void _trace_android_vh_record_pcpu_rwsem_time_early(
-+		unsigned long settime, struct percpu_rw_semaphore *sem)
++		unsigned long settime_jiffies, struct percpu_rw_semaphore *sem)
 +{
 +}
++#endif
++
++/*
++ * rdheld_starttime：只有 6.6 这一代有（6.12 又删掉了）。
++ */
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 6, 0) && \
++    LINUX_VERSION_CODE < KERNEL_VERSION(6, 12, 0)
++__weak void _trace_android_vh_record_pcpu_rwsem_rdheld_starttime(
++		struct percpu_rw_semaphore *sem, unsigned long settime_jiffies)
++{
++}
++#endif
++
++MODULE_LICENSE("GPL");
++MODULE_DESCRIPTION("weak definitions for Android vendor hooks the vendored rwsem code calls");
+\ No newline at end of file
 diff --git a/vendor/Makefile b/vendor/Makefile
-index 37a26b8..7e04a09 100644
+index 37a26b8..fdba0e3 100644
 --- a/vendor/Makefile
 +++ b/vendor/Makefile
-@@ -25,6 +25,7 @@ lkm4ctr-objs := \
- 	../glue/lkm4ctr_hotreload.o \
- 	../glue/helper.sh.o \
+@@ -27,6 +27,7 @@ lkm4ctr-objs := \
  	../glue/readme.txt.o \
-+	../glue/vendor_hook_stubs.o \
  	../glue/shadow_hijack.o \
  	../glue/shadow_inline.o \
++	../glue/vendor_hook_stubs.o \
  	../glue/hk/hk.o \
+ 	../glue/hk/hk_patch.o \
+ 	../glue/hk/hk_inline.o \
