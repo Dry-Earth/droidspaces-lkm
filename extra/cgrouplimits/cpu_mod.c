@@ -53,6 +53,12 @@
 #include "kr/core.h"
 #include "common.h"
 
+/*
+ * 这个 6.6 厂商内核把 kern_path/backing_file_open 等 VFS 辅助函数放在
+ * Android 的 VFS 符号命名空间里导出；modpost 要求模块显式声明导入。
+ */
+MODULE_IMPORT_NS(VFS_internal_I_am_really_a_filesystem_and_am_NOT_a_driver);
+
 #define TAG "droid_lkm_cpu"
 #define cpu_info(fmt, ...)  pr_info("[" TAG "] " fmt, ##__VA_ARGS__)
 #define cpu_warn(fmt, ...)  pr_warn("[" TAG "] " fmt, ##__VA_ARGS__)

@@ -24,6 +24,9 @@ test -d /tmp/lkm4ctr/vendor || { echo "::error::missing /tmp/lkm4ctr/vendor"; ex
 
 mkdir -p "$OUT"
 
+echo "==> adapt lkm4ctr to the target kernel ABI"
+python3 /work/ci/adapt-lkm4ctr.py "$KSRC_OVERRIDE" /tmp/lkm4ctr
+
 bash /work/scripts/build_modules.sh "$KMI" "$KDIR" /work "$OUT"
 rc=$?
 
