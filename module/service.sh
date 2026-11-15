@@ -44,12 +44,47 @@
 
 MODDIR=${0%/*}
 [ "$MODDIR" = "$0" ] && MODDIR=.
-LOG="/data/local/tmp/droidspaces-lkm.log"
+# ---------------------------------------------------------------------------
+# 日志：三处同时落
+#
+# 为什么不能只写 /data/local/tmp：
+#   KernelSU 的 bugreport 只抓 /data/adb 的**文件名列表**（ls -l），
+#   /data/local/tmp 根本不抓；dmesg 才是按内容导出进 bootlog.tar.gz 的。
+#   所以日志必须同时进 kernel log，否则用户报上来的报告里一行都看不到。
+#
+#   /data/adb/droidspaces_lkm.log   持久化，跨重启保留，可 adb pull
+#   /dev/kmsg                      进 dmesg，被 bugreport 按内容抓走
+#
+# 不截断而是轮转：卡开机重启后，上一次的证据必须还在。
+# ---------------------------------------------------------------------------
+STATE_DIR=/data/adb/droidspaces_lkm.d
+LOG=/data/adb/droidspaces_lkm.log
+SNAP=$STATE_DIR/snapshot.txt
+PREV=$STATE_DIR/prev-boot.txt
+HANG=$STATE_DIR/hang-report.txt
+mkdir -p "$STATE_DIR" 2>/dev/null
+chmod 755 "$STATE_DIR" 2>/dev/null
 
-: > "$LOG"
-echo "=== Droidspaces LKM $(date) ===" >> "$LOG"
-echo "kernel:  $(uname -r)" >> "$LOG"
-echo "moddir:  $MODDIR" >> "$LOG"
+# 超过 256KB 就轮转一份，避免长期占空间
+if [ -f "$LOG" ] && [ "$(wc -c < "$LOG" 2>/dev/null || echo 0)" -gt 262144 ]; then
+    mv -f "$LOG" "$LOG.old" 2>/dev/null
+fi
+
+dlog() {
+    _line="[$(date '+%m-%d %H:%M:%S')] $*"
+    printf '%s
+' "$_line" >> "$LOG" 2>/dev/null
+    # 进 kernel log，bugreport 就是从这里按内容导出的
+    printf '<6>droidspaces_lkm: %s
+' "$*" > /dev/kmsg 2>/dev/null
+    # 必须返回 0：dlog 被用在 `test && dlog ... || dlog ...` 里，
+    # /dev/kmsg 不可写时返回非 0 会把成功误报成失败
+    return 0
+}
+
+dlog "=== Droidspaces LKM 启动 ==="
+dlog "kernel: $(uname -r)"
+dlog "moddir: $MODDIR"
 
 # 从内核版本推导 KMI 标签, 例如 android14-6.1
 # 6.1.157-android14-11-o-g... -> android14-6.1
@@ -106,7 +141,7 @@ if [ -z "$KMI" ]; then
     fi
     [ -n "$android" ] && [ -n "$major" ] && KMI="$android-$major"
 fi
-echo "kmi:     ${KMI:-未识别}" >> "$LOG"
+dlog "kmi:     ${KMI:-未识别}"
 
 # 选 ko: 优先精确 KMI, 否则退回目录里唯一的一组
 # 读 .ko 的 vermagic，和 uname -r 比"主版本.次版本"。只在无法确定 KMI
@@ -138,11 +173,11 @@ find_ko() {
     all=$(ls "$MODDIR/ko/$base"-*.ko 2>/dev/null)
     [ -z "$all" ] && return 1
     if [ "$(echo "$all" | wc -l)" -ne 1 ]; then
-        echo "[MISS] $base: KMI=${KMI:-未识别}，目录里有多份候选，拒绝猜" >> "$LOG"
+        dlog "[MISS] $base: KMI=${KMI:-未识别}，目录里有多份候选，拒绝猜"
         return 1
     fi
     if ! ko_vermagic_ok "$all"; then
-        echo "[MISS] $base: KMI=${KMI:-未识别}，$(basename "$all") 的 vermagic 与 $(uname -r) 不符" >> "$LOG"
+        dlog "[MISS] $base: KMI=${KMI:-未识别}，$(basename "$all") 的 vermagic 与 $(uname -r) 不符"
         return 1
     fi
     echo "$all"
@@ -166,14 +201,14 @@ ko_has_param() {
 # 把它抄进模块日志，用户报问题时一眼能看到缺什么，不用再去猜。
 ko_load_error() {
     local mod="$1"
-    dmesg 2>/dev/null | grep -E "Unknown symbol|unknown parameter|disagrees about version"         | tail -3 | sed 's/^/             /'
+    dmesg 2>/dev/null | grep -E "Unknown symbol|unknown parameter|disagrees about version"         | tail -3 | while read -r _l; do dlog "  [kernel] $_l"; done
 }
 
 load_mod() {
     local base="$1" params="$2"
     local ko
     if ! ko=$(find_ko "$base"); then
-        echo "[MISS] $base (KMI=${KMI:-?})" >> "$LOG"
+        dlog "[MISS] $base (KMI=${KMI:-?})"
         return 1
     fi
     local name
@@ -184,7 +219,7 @@ load_mod() {
     if ! ko_vermagic_ok "$ko"; then
         local vm
         vm=$(grep -ao 'vermagic=[^ ]*' "$ko" 2>/dev/null | head -1 | sed 's/^vermagic=//')
-        echo "[FAIL] $base: $(basename "$ko") 的 vermagic (${vm:-未知}) 与内核 $(uname -r) 不匹配，跳过" >> "$LOG"
+        dlog "[FAIL] $base: $(basename "$ko") 的 vermagic (${vm:-未知}) 与内核 $(uname -r) 不匹配，跳过"
         return 1
     fi
 
@@ -196,7 +231,7 @@ load_mod() {
             if ko_has_param "$ko" "$pname"; then
                 kept="$kept $p"
             else
-                echo "[WARN] $base 不支持参数 $pname，已忽略" >> "$LOG"
+                dlog "[WARN] $base 不支持参数 $pname，已忽略"
             fi
         done
         params=${kept# }
@@ -204,7 +239,7 @@ load_mod() {
 
     # 判断是否已加载: 用模块名而不是文件名, 因为文件名带 KMI 后缀
     if grep -q "^${base} " /proc/modules 2>/dev/null; then
-        echo "[SKIP] $base 已加载" >> "$LOG"
+        dlog "[SKIP] $base 已加载"
         return 0
     fi
 
@@ -216,17 +251,17 @@ load_mod() {
     fi
 
     if [ $? -eq 0 ] && grep -q "^${base} " /proc/modules 2>/dev/null; then
-        echo "[OK]   $base  ($(basename "$ko"))${params:+ $params}" >> "$LOG"
+        dlog "[OK]   $base  ($(basename "$ko"))${params:+ $params}"
         return 0
     fi
 
-    echo "[FAIL] $base: ${out:-无输出}" >> "$LOG"
+    dlog "[FAIL] $base: ${out:-无输出}"
     # 把内核日志里的具体缺符号抄下来，避免用户只能看到一个笼统报错
-    ko_load_error "$base" >> "$LOG"
+    ko_load_error "$base"
     return 1
 }
 
-echo "--- 加载 ---" >> "$LOG"
+dlog "--- 加载 ---"
 load_mod lkm4ctr ""
 load_mod devtmpfs_lkm "devtmpfs_probe=2"
 load_mod ip6table_nat ""
@@ -264,32 +299,78 @@ MODDIR="/data/adb/modules/droidspaces_lkm"
 # 卡死的情况真实发生过。清零交给 boot-completed.sh，那是 Android 真正启动
 # 完成的信号。
 
-echo "--- lsmod ---" >> "$LOG"
-lsmod | grep -E '^(lkm4ctr|devtmpfs_lkm|ip6table_nat|macvlan|vkms|droid_lkm_pids|droid_lkm_cpu)' >> "$LOG" 2>/dev/null
+dlog "--- lsmod ---"
+lsmod 2>/dev/null | grep -E '^(lkm4ctr|devtmpfs_lkm|ip6table_nat|macvlan|vkms|droid_lkm_pids|droid_lkm_cpu|uart_guard)' | while read -r _l; do dlog "  $_l"; done
 
-echo "--- 能力验证 ---" >> "$LOG"
+dlog "--- 能力验证 ---"
 unshare -pf true 2>/dev/null \
-    && echo "[OK] PID namespace" >> "$LOG" \
-    || echo "[FAIL] PID namespace" >> "$LOG"
+    && dlog "[OK] PID namespace" \
+    || dlog "[FAIL] PID namespace"
 unshare -i true 2>/dev/null \
-    && echo "[OK] IPC namespace" >> "$LOG" \
-    || echo "[FAIL] IPC namespace" >> "$LOG"
+    && dlog "[OK] IPC namespace" \
+    || dlog "[FAIL] IPC namespace"
 grep -q devtmpfs /proc/filesystems 2>/dev/null \
-    && echo "[OK] devtmpfs" >> "$LOG" \
-    || echo "[--] devtmpfs 未注册" >> "$LOG"
+    && dlog "[OK] devtmpfs" \
+    || dlog "[--] devtmpfs 未注册"
 grep -q "^droid_lkm_pids " /proc/modules 2>/dev/null \
-    && echo "[OK] pids 控制器仿真" >> "$LOG" \
-    || echo "[--] pids 控制器仿真未加载" >> "$LOG"
+    && dlog "[OK] pids 控制器仿真" \
+    || dlog "[--] pids 控制器仿真未加载"
 grep -q "^droid_lkm_cpu " /proc/modules 2>/dev/null \
-    && echo "[OK] cpu.max 仿真" >> "$LOG" \
-    || echo "[--] cpu.max 仿真未加载" >> "$LOG"
+    && dlog "[OK] cpu.max 仿真" \
+    || dlog "[--] cpu.max 仿真未加载"
 
 # vkms 提供的 render node: anland / wayland 合成器的前提
 if [ -e /dev/dri/renderD128 ]; then
-    echo "[OK] /dev/dri/renderD128 (vkms)" >> "$LOG"
+    dlog "[OK] /dev/dri/renderD128 (vkms)"
 else
-    echo "[--] /dev/dri/renderD128 缺失 (anland 桌面不可用)" >> "$LOG"
+    dlog "[--] /dev/dri/renderD128 缺失 (anland 桌面不可用)"
 fi
 
-echo "=== 完成 ===" >> "$LOG"
+# ---------------------------------------------------------------------------
+# 后台快照守卫
+#
+# 卡开机是"没有 panic 的卡死"：pstore 里什么都不会有，重启后 dmesg 也被冲掉。
+# 唯一能留下现场的办法是**在卡死之前**就把状态反复落盘。
+#
+# 这个后台循环跑 10 分钟（40 次 × 15 秒），每次把
+#   uptime / 负载 / 我们模块的引用计数 / dmesg 尾部
+# 写进 snapshot.txt 并 sync。真卡死时，最后一份 snapshot.txt 就是现场。
+#
+# sync 每次都要做：不 sync 的话数据可能还在 page cache 里，
+# 卡死重启就丢了。
+#
+# 上一次启动的快照在 post-fs-data.sh 里已经被复制成 prev-boot.txt，
+# 所以这里直接覆盖 snapshot.txt。
+# ---------------------------------------------------------------------------
+snapshot_once() {
+    {
+        printf '=== %s ===\n' "$(date '+%m-%d %H:%M:%S')"
+        printf -- '-- uptime: %s\n' "$(cut -d' ' -f1 /proc/uptime 2>/dev/null)"
+        printf -- '-- load  : %s\n' "$(cut -d' ' -f1-3 /proc/loadavg 2>/dev/null)"
+        printf -- '-- droidspaces 模块:\n'
+        grep -E '^(lkm4ctr|devtmpfs_lkm|ip6table_nat|macvlan|vkms|droid_lkm_pids|droid_lkm_cpu|uart_guard) ' \
+            /proc/modules 2>/dev/null \
+            | awk '{printf "   %-14s ref=%-4s size=%s\n", $1, $3, $2}'
+        printf -- '-- renderD128: %s\n' "$([ -e /dev/dri/renderD128 ] && echo 有 || echo 无)"
+        printf -- '-- dmesg 尾部:\n'
+        dmesg 2>/dev/null | tail -40
+    } > "$SNAP.tmp" 2>/dev/null
+    mv -f "$SNAP.tmp" "$SNAP" 2>/dev/null
+    sync
+}
+
+snapshot_watchdog() {
+    local i=0
+    snapshot_once
+    while [ "$i" -lt 40 ]; do
+        sleep 15
+        i=$((i + 1))
+        snapshot_once
+    done
+}
+
+# 立刻做一份"加载完成时"的快照（在后台跑，不挡退出）
+( snapshot_watchdog ) >/dev/null 2>&1 &
+
+dlog "=== 完成 ===（快照守卫已启动，10 分钟内每 15 秒落盘一次）"
 exit 0
