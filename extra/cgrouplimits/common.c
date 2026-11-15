@@ -15,8 +15,21 @@
 
 #include "common.h"
 
-/* KallRecon：运行时解析未导出符号 */
-extern unsigned long kallrecon_klp(const char *name);
+/*
+ * KallRecon 的解析入口。
+ *
+ * 注意类型：kallrecon_klp 是一个**函数指针变量**（kr/core.h 里
+ * `extern unsigned long (*kallrecon_klp)(const char *name);`），
+ * 不是函数。
+ *
+ * 这里一开始写成了 `extern unsigned long kallrecon_klp(const char *)`
+ * ——符号名相同所以链接得过，但运行时实际是跳到「存放指针的那个数据
+ * 变量的地址」去执行，等于执行随机指令，写坏内核内存，然后在完全无关
+ * 的路径上崩（实测崩在 _regulator_disable+0x68）。
+ *
+ * 而且它在 kr 初始化完成前是 NULL，必须判空。
+ */
+extern unsigned long (*kallrecon_klp)(const char *name);
 
 bool __nocfi ctl_read_ptr(unsigned long addr, unsigned long *out)
 {
@@ -24,7 +37,6 @@ bool __nocfi ctl_read_ptr(unsigned long addr, unsigned long *out)
 		return false;
 	return copy_from_kernel_nofault(out, (void *)addr, sizeof(*out)) == 0;
 }
-EXPORT_SYMBOL_GPL(ctl_read_ptr);
 
 bool ctl_is_kptr(unsigned long v)
 {
@@ -33,12 +45,13 @@ bool ctl_is_kptr(unsigned long v)
 	/* arm64 内核虚拟地址最高 16 位全 1 */
 	return (v & 0xffff000000000000UL) == 0xffff000000000000UL;
 }
-EXPORT_SYMBOL_GPL(ctl_is_kptr);
 
 int __nocfi ctl_anchors_resolve(struct ctl_anchors *a)
 {
 	if (!a)
 		return -EINVAL;
+	if (!kallrecon_klp)
+		return -ENODEV;
 
 	a->subsys = kallrecon_klp("cgroup_subsys");
 	a->init_css = kallrecon_klp("init_css_set");
@@ -49,7 +62,6 @@ int __nocfi ctl_anchors_resolve(struct ctl_anchors *a)
 		return -EOPNOTSUPP;
 	return 0;
 }
-EXPORT_SYMBOL_GPL(ctl_anchors_resolve);
 
 int __nocfi ctl_subsys_count(unsigned long subsys)
 {
@@ -72,7 +84,6 @@ int __nocfi ctl_subsys_count(unsigned long subsys)
 	}
 	return n > 0 ? n : -1;
 }
-EXPORT_SYMBOL_GPL(ctl_subsys_count);
 
 int __nocfi ctl_layout_probe(struct ctl_layout *out, const char *warn_tag)
 {
@@ -133,7 +144,3 @@ int __nocfi ctl_layout_probe(struct ctl_layout *out, const char *warn_tag)
 
 	return 0;
 }
-EXPORT_SYMBOL_GPL(ctl_layout_probe);
-
-MODULE_LICENSE("GPL");
-MODULE_DESCRIPTION("droid_lkm cgroup layout probe (shared by pids/cpu)");
