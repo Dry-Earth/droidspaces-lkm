@@ -300,7 +300,7 @@ anland 桌面部署记录：[ANLAND-DEPLOY.md](ANLAND-DEPLOY.md)。
 
 | 工作流 | 触发 | 是否发布 |
 |---|---|---|
-| [`ci.yml`](https://github.com/misaka5202/droidspaces-lkm/blob/master/.github/workflows/ci.yml) | push 到 master、PR、手动 | 否，只留 artifact |
+| [`ci.yml`](https://github.com/misaka5202/droidspaces-lkm/blob/master/.github/workflows/ci.yml) | push 到 master、PR、手动 | 否，只留 artifact。**默认只编一个 KMI**（android14-6.1），要全量传 `full_matrix: true` |
 | [`release.yml`](https://github.com/misaka5202/droidspaces-lkm/blob/master/.github/workflows/release.yml) | 打 tag `vX.Y.Z`、手动指定 tag | 是，**只发预览版** |
 
 两者都调用可复用的
