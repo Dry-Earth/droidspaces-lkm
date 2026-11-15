@@ -428,10 +428,10 @@ index 0000000..08d0d2f
 +.size hk_flush_icache, . - hk_flush_icache
 diff --git a/glue/hk/hk_inline.c b/glue/hk/hk_inline.c
 new file mode 100644
-index 0000000..896f976
+index 0000000..b8ad7af
 --- /dev/null
 +++ b/glue/hk/hk_inline.c
-@@ -0,0 +1,1617 @@
+@@ -0,0 +1,1663 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +/*
 + * Copyright (C) 2026 dere3046
@@ -1446,7 +1446,8 @@ index 0000000..896f976
 +}
 +
 +static __nocfi int hk_inline_apply(struct hk_inline *h, const char *sym,
-+				   unsigned long wrapper, unsigned long addr)
++				   unsigned long wrapper, unsigned long addr,
++			   bool pre)
 +{
 +	struct hk_relo_ctx ctx;
 +	u32 *tramp;
@@ -1581,41 +1582,44 @@ index 0000000..896f976
 +
 +	h->orig = mem + 24;
 +
-+	/*
-+	 * the detour is written in one call, so a multi instruction window goes
-+	 * through stop_machine: no core is running while the entry changes from
-+	 * the caller's bytes to bti jc plus an absolute jump
-+	 */
-+	if (near_ok) {
++	if (!pre) {
 +		/*
-+		 * [B-RANGE] trampoline 在 ±128MB 内：入口只需一条 b。
-+		 * 这是最省的改写 —— 完全不需要 bti 落地板、不需要字面量池，
-+		 * 窗口也只有 4 字节，连 bti+mov+mov+b 这种短包装都装得下。
++		 * the detour is written in one call, so a multi instruction window goes
++		 * through stop_machine: no core is running while the entry changes from
++		 * the caller's bytes to bti jc plus an absolute jump
 +		 */
-+		long delta = (long)(mem - addr);
-+		u32 insn = 0x14000000u | ((u32)(delta >> 2) & 0x03FFFFFFu);
++		if (near_ok) {
++			/*
++			 * [B-RANGE] trampoline 在 ±128MB 内：入口只需一条 b。
++			 * 这是最省的改写 —— 完全不需要 bti 落地板、不需要字面量池，
++			 * 窗口也只有 4 字节，连 bti+mov+mov+b 这种短包装都装得下。
++			 */
++			long delta = (long)(mem - addr);
++			u32 insn = 0x14000000u | ((u32)(delta >> 2) & 0x03FFFFFFu);
 +
-+		detour[0] = insn;
-+		ret = hk_engine_write((void *)addr, detour, 4);
-+		if (ret) {
-+			hk_engine_write((void *)addr, h->saved, h->window);
-+			goto err_guard;
++			detour[0] = insn;
++			ret = hk_engine_write((void *)addr, detour, 4);
++			if (ret) {
++				hk_engine_write((void *)addr, h->saved, h->window);
++				goto err_guard;
++			}
++		} else {
++			/*
++			 * trampoline 太远：bti jc ; ldr x17,#8 ; br/ret x17 ; .quad mem
++			 * 共 20 字节，因此窗口必须是 5 条指令。
++			 */
++			detour[0] = HK_INS_BTI_JC;
++			detour[1] = HK_INS_LDR_X17;
++			detour[2] = HK_INS_RET_X17;
++			detour[3] = mem & 0xFFFFFFFF;
++			detour[4] = mem >> 32;
++			ret = hk_engine_write((void *)addr, detour, HK_INLINE_PATCH_LEN);
++			if (ret) {
++				hk_engine_write((void *)addr, h->saved, h->window);
++				goto err_guard;
++			}
 +		}
-+	} else {
-+		/*
-+		 * trampoline 太远：bti jc ; ldr x17,#8 ; br/ret x17 ; .quad mem
-+		 * 共 20 字节，因此窗口必须是 5 条指令。
-+		 */
-+		detour[0] = HK_INS_BTI_JC;
-+		detour[1] = HK_INS_LDR_X17;
-+		detour[2] = HK_INS_RET_X17;
-+		detour[3] = mem & 0xFFFFFFFF;
-+		detour[4] = mem >> 32;
-+		ret = hk_engine_write((void *)addr, detour, HK_INLINE_PATCH_LEN);
-+		if (ret) {
-+			hk_engine_write((void *)addr, h->saved, h->window);
-+			goto err_guard;
-+		}
++
 +	}
 +
 +	kfree(tramp);
@@ -1669,7 +1673,7 @@ index 0000000..896f976
 +		return -ENODATA;
 +	}
 +	mutex_lock(&g_inline_lock);
-+	ret = hk_inline_apply(h, sym, wrapper, addr);
++	ret = hk_inline_apply(h, sym, wrapper, addr, false);
 +	mutex_unlock(&g_inline_lock);
 +	if (ret)
 +		hk_inline_release(h);
@@ -1683,7 +1687,7 @@ index 0000000..896f976
 + * 早就解析好了地址（还能在多个候选名之间回退），wrapper 是模块内静态函数，
 + * 名字不一定在 kallsyms 里。所以这里直接收两个地址，跳过解析。
 + */
-+__nocfi int hk_inline_hook_addr(struct hk_inline *h, const char *name,
++__nocfi int hk_inline_hook_addr_pre(struct hk_inline *h, const char *name,
 +				unsigned long addr, unsigned long wrapper)
 +{
 +	int ret;
@@ -1695,10 +1699,52 @@ index 0000000..896f976
 +	if (ret)
 +		return ret;
 +	mutex_lock(&g_inline_lock);
-+	ret = hk_inline_apply(h, name, wrapper, addr);
++	ret = hk_inline_apply(h, name, wrapper, addr, true);
 +	mutex_unlock(&g_inline_lock);
 +	if (ret)
 +		hk_inline_release(h);
++	return ret;
++}
++
++/*
++ * [RACE] 第二阶段：改写入口。
++ *
++ * 必须等调用方把 hook->original 指到 trampoline 之后再调，否则会出现
++ * "入口已经跳进替换函数，但 original 还是 NULL" 的窗口 —— 开机时几百个
++ * 线程在跑 prepare_creds，这个窗口必被撞上，实测直接 NULL 解引用 panic
++ * （pc=0x0，lr=vendor_kernel_hook_prepare_creds+0x1c）。
++ */
++__nocfi int hk_inline_commit(struct hk_inline *h)
++{
++	u32 detour[HK_INLINE_ENTRY_MAX];
++	unsigned long mem;
++	int ret;
++
++	if (!h || !h->addr || !h->mem)
++		return -EINVAL;
++
++	mem = (unsigned long)h->mem;
++	mutex_lock(&g_inline_lock);
++	if (h->window == 4) {
++		long delta = (long)(mem - h->addr);
++
++		detour[0] = 0x14000000u | ((u32)(delta >> 2) & 0x03FFFFFFu);
++		ret = hk_engine_write((void *)h->addr, detour, 4);
++	} else {
++		detour[0] = HK_INS_BTI_JC;
++		detour[1] = HK_INS_LDR_X17;
++		detour[2] = HK_INS_RET_X17;
++		detour[3] = mem & 0xFFFFFFFF;
++		detour[4] = mem >> 32;
++		ret = hk_engine_write((void *)h->addr, detour, HK_INLINE_PATCH_LEN);
++	}
++	if (ret)
++		hk_engine_write((void *)h->addr, h->saved, h->window);
++	mutex_unlock(&g_inline_lock);
++
++	if (!ret)
++		pr_info("[lkmhook] inline %s addr=0x%lx tramp=0x%lx window=%u\n",
++			h->name, h->addr, mem, h->window);
 +	return ret;
 +}
 +
@@ -2051,10 +2097,10 @@ index 0000000..896f976
 +
 diff --git a/glue/hk/hk_inline.h b/glue/hk/hk_inline.h
 new file mode 100644
-index 0000000..cdc5e12
+index 0000000..3cbe1d0
 --- /dev/null
 +++ b/glue/hk/hk_inline.h
-@@ -0,0 +1,145 @@
+@@ -0,0 +1,150 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +/*
 + * Copyright (C) 2026 dere3046
@@ -2116,8 +2162,13 @@ index 0000000..cdc5e12
 + */
 +int hk_inline_hook(struct hk_inline *h, const char *sym,
 +		   const char *wrapper_sym);
-+int hk_inline_hook_addr(struct hk_inline *h, const char *name,
-+			unsigned long addr, unsigned long wrapper);
++/*
++ * 分两阶段，调用方必须在两步之间把 hook->original 指到 h->orig：
++ * 入口一旦改写，内核任何线程都可能立刻跳进替换函数并去调 original。
++ */
++int hk_inline_hook_addr_pre(struct hk_inline *h, const char *name,
++			    unsigned long addr, unsigned long wrapper);
++int hk_inline_commit(struct hk_inline *h);
 +/* restore the entry, -EIO when the write fails and the hook stays live. the
 + * window is released with the restore, a later install may take it */
 +int hk_inline_disable(struct hk_inline *h);
@@ -6036,10 +6087,10 @@ index 6a4e1fb..b53a5a6 100644
  	struct kretprobe	retprobe;
 diff --git a/glue/shadow_inline.c b/glue/shadow_inline.c
 new file mode 100644
-index 0000000..3310988
+index 0000000..051d755
 --- /dev/null
 +++ b/glue/shadow_inline.c
-@@ -0,0 +1,140 @@
+@@ -0,0 +1,163 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +/*
 + * shadow_inline.c - inline text-patch backend for the shadow_hook engine.
@@ -6145,17 +6196,40 @@ index 0000000..3310988
 +	if (err)
 +		return err;
 +
-+	err = hk_inline_hook_addr(&hook->inline_hook,
-+				  hook->resolved_name ? hook->resolved_name : "hook",
-+				  hook->address,
-+				  (unsigned long)hook->function);
++	/*
++	 * [RACE] 两阶段安装，顺序不能反：
++	 *
++	 *   1. 先把 trampoline 准备好（此时入口还没动，内核照常运行）
++	 *   2. 把 hook->original 指到 trampoline
++	 *   3. 最后才改写入口
++	 *
++	 * 若按"改写入口 → 再设 original"，中间那段窗口里入口已经跳进替换函数，
++	 * 而 original 还是旧值（新 hook 上是 NULL）→ NULL 解引用。手动 insmod
++	 * 窗口小不容易撞，但开机阶段 prepare_creds 每秒被调用成千上万次，
++	 * 实测必炸（pc=0x0，lr=vendor_kernel_hook_prepare_creds+0x1c）。
++	 */
++	err = hk_inline_hook_addr_pre(&hook->inline_hook,
++				      hook->resolved_name ? hook->resolved_name : "hook",
++				      hook->address,
++				      (unsigned long)hook->function);
 +	if (err) {
 +		pr_warn("shadow_inline: hook %s failed: %d\n",
 +			hook->resolved_name ? hook->resolved_name : "?", err);
 +		return err;
 +	}
 +
++	/* 先让 original 有效，再改入口 */
 +	*(unsigned long *)hook->original = hook->inline_hook.orig;
++
++	err = hk_inline_commit(&hook->inline_hook);
++	if (err) {
++		*(unsigned long *)hook->original = hook->address;
++		hk_inline_free(&hook->inline_hook);
++		pr_warn("shadow_inline: commit %s failed: %d\n",
++			hook->resolved_name ? hook->resolved_name : "?", err);
++		return err;
++	}
++
 +	hook->installed = true;
 +	return 0;
 +}
