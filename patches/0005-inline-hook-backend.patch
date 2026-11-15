@@ -6003,6 +6003,37 @@ index d44dded..ee63003 100644
  	hook->installed = false;
  }
  EXPORT_SYMBOL_GPL(shadow_hook_remove);
+diff --git a/glue/shadow_hook.h b/glue/shadow_hook.h
+index 6a4e1fb..b53a5a6 100644
+--- a/glue/shadow_hook.h
++++ b/glue/shadow_hook.h
+@@ -76,6 +76,7 @@
+ #include <linux/kernel.h>
+ #include <linux/atomic.h>
+ #include <linux/kprobes.h>
++#include "hk/hk_inline.h"
+ #include <linux/ftrace.h>
+ #include <linux/list.h>
+ #include <linux/module.h>
+@@ -170,7 +171,17 @@ struct shadow_hook {
+ #if defined(CONFIG_FUNCTION_TRACER) && defined(CONFIG_DYNAMIC_FTRACE)
+ 	struct ftrace_ops	ops;
+ #else
+-	struct kprobe		kp;
++	/*
++	 * [INLINE] 混合后端：优先 inline 文本改写，失败再回落 kprobe。
++	 *
++	 * inline 没有每次调用的异常开销，但要求函数入口能容纳改写窗口；
++	 * 像 __arm64_sys_msgget 这种极短的 syscall 包装可能装不下，此时回落
++	 * 到 kprobe。热路径（fork/clone/copy_namespaces/wake_up_new_task 等）
++	 * 通常都能走 inline。
++	 */
++	struct hk_inline	inline_hook;
++	bool			inline_active;
++	struct kprobe		kp;		/* 仅 inline 失败时使用 */
+ #endif
+ 	bool			installed;
+ 	struct kretprobe	retprobe;
 diff --git a/glue/vendor_kernel_nsfs_lifecycle.c b/glue/vendor_kernel_nsfs_lifecycle.c
 index 966cd73..f029bcf 100644
 --- a/glue/vendor_kernel_nsfs_lifecycle.c
