@@ -6202,6 +6202,71 @@ index 966cd73..f029bcf 100644
  		shadow_hook_remove_all(vns_nsfs_lifecycle_hooks);
  		LKM4CTR_ERR("vendor_kernel",
  			    "required NSFS lifetime hook lacks its unload-safety retprobe");
+diff --git a/glue/vendor_kernel_syscalls.c b/glue/vendor_kernel_syscalls.c
+index 77256e8..9334b4c 100644
+--- a/glue/vendor_kernel_syscalls.c
++++ b/glue/vendor_kernel_syscalls.c
+@@ -684,33 +684,36 @@ struct shadow_hook *vendor_kernel_core_hooks[] = {
+ 	NULL,
+ };
+ 
++/*
++ * [INLINE] 一个 hook 是否"就绪"。
++ *
++ * 原来这里只看 retprobe_installed：kprobe/ftrace 后端靠那个 retprobe 在重定向
++ * 期间持有模块引用。inline 后端不装 retprobe（见 shadow_hijack.c 的
++ * NO-RETPROBE 说明），卸载安全由"入口已恢复 + RCU 宽限期"保证，所以两种
++ * 任一成立都算就绪。
++ */
++static bool vk_hook_ready(const struct shadow_hook *h)
++{
++	return h->installed && (h->retprobe_installed || h->inline_active);
++}
++
+ bool vendor_kernel_required_lifecycle_hooks_ready(void)
+ {
+ 	bool native_userns = vns_native_userns_core_available();
+-	bool clone_hooks = vendor_kernel_clone_hook.installed &&
+-	       vendor_kernel_clone_hook.retprobe_installed &&
+-	       vendor_kernel_clone3_hook.installed &&
+-	       vendor_kernel_clone3_hook.retprobe_installed &&
+-	       vendor_kernel_fork_hook.installed &&
+-	       vendor_kernel_fork_hook.retprobe_installed &&
+-	       vendor_kernel_vfork_hook.installed &&
+-	       vendor_kernel_vfork_hook.retprobe_installed &&
+-	       vendor_kernel_wake_up_new_task_hook.installed &&
+-	       vendor_kernel_wake_up_new_task_hook.retprobe_installed &&
+-	       vendor_kernel_copy_namespaces_hook.installed &&
+-	       vendor_kernel_copy_namespaces_hook.retprobe_installed;
+-
+-	if (!clone_hooks)
++
++	if (!vk_hook_ready(&vendor_kernel_clone_hook) ||
++	    !vk_hook_ready(&vendor_kernel_clone3_hook) ||
++	    !vk_hook_ready(&vendor_kernel_fork_hook) ||
++	    !vk_hook_ready(&vendor_kernel_vfork_hook) ||
++	    !vk_hook_ready(&vendor_kernel_wake_up_new_task_hook) ||
++	    !vk_hook_ready(&vendor_kernel_copy_namespaces_hook))
+ 		return false;
++
+ 	if (native_userns)
+-		return vendor_kernel_put_user_ns_hook.installed &&
+-		       vendor_kernel_put_user_ns_hook.retprobe_installed;
+-	return vendor_kernel_prepare_creds_hook.installed &&
+-	       vendor_kernel_prepare_creds_hook.retprobe_installed &&
+-	       vendor_kernel_prepare_kernel_cred_hook.installed &&
+-	       vendor_kernel_prepare_kernel_cred_hook.retprobe_installed &&
+-	       vendor_kernel_copy_creds_hook.installed &&
+-	       vendor_kernel_copy_creds_hook.retprobe_installed &&
+-	       vendor_kernel_put_cred_rcu_hook.installed &&
+-	       vendor_kernel_put_cred_rcu_hook.retprobe_installed;
++		return vk_hook_ready(&vendor_kernel_put_user_ns_hook);
++
++	return vk_hook_ready(&vendor_kernel_prepare_creds_hook) &&
++	       vk_hook_ready(&vendor_kernel_prepare_kernel_cred_hook) &&
++	       vk_hook_ready(&vendor_kernel_copy_creds_hook) &&
++	       vk_hook_ready(&vendor_kernel_put_cred_rcu_hook);
+ }
 diff --git a/vendor/Makefile b/vendor/Makefile
 index 89608a3..37a26b8 100644
 --- a/vendor/Makefile
