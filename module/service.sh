@@ -231,7 +231,20 @@ load_mod lkm4ctr ""
 load_mod devtmpfs_lkm "devtmpfs_probe=2"
 load_mod ip6table_nat ""
 load_mod macvlan ""
-load_mod vkms ""
+# vkms 依赖 drm.ko 导出的 drm_crtc_add_crc_entry。5.10 里这个符号是导出的，
+# 但它属于 drm.ko 的**模块依赖**：drm 还没加载时 insmod 只会报
+# "Unknown symbol"，而这里跑在 late_start，drm 未必已经就绪。
+# 所以失败后重试几次，而不是一次就放弃。
+if ! load_mod vkms ""; then
+    for _try in 1 2 3 4 5; do
+        sleep 2
+        if load_mod vkms ""; then
+            break
+        fi
+        # find_ko 每轮都会重新判断，但已加载的模块会被 [SKIP]，
+        # 这里只需处理"还没加载成功"的情况
+    done
+fi
 
 # cgroup 限流仿真（--cpus / --pids-limit）。
 # 装 kprobe 并在运行时解析符号，最坏表现是加载失败；
