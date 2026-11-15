@@ -14,6 +14,21 @@ cgroup 控制器。多数厂商内核为了通过 GKI ABI 检查把这些都编�
 做成模块就避开了这些——一份模块覆盖 7 个 KMI，按 `uname -r` 匹配，
 跟机型本身关系不大。
 
+## 项目状态
+
+**还没有正式版本。** 本仓库目前发布的每一个 tag 都是 GitHub **pre-release（预览版）**。
+请把它当作"拿来试一试、有问题反馈"的构建，而不是可以依赖的版本。
+等 inline 钩子后端在七个 KMI 上都跑完真机回归，才会打第一个正式版。
+
+| | |
+|---|---|
+| CI 做什么 | 编译全部 KMI，编译不过就让构建失败，产物只作为 Actions artifact 保留。**永不发布。** |
+| Release 做什么 | 只在打 tag（`vX.Y.Z`）时运行，构建后发布**预览版**，附模块包、分 KMI 的 zip 和源码快照。 |
+| 去哪反馈 | [新建 issue](https://github.com/misaka5202/droidspaces-lkm/issues/new/choose)，表单会直接要够定位问题的那几项数据。 |
+
+`update.json` 只在"这次发布要让 KernelSU 更新器推给用户"时才改，所以它现在指向
+尚未发布的 `v0.1.0`。
+
 ## 它修好什么
 
 未打补丁的厂商内核上，`droidspaces check` 是这样的：
@@ -279,17 +294,45 @@ Droidspaces 实际使用的探测方式。
 
 anland 桌面部署记录：[ANLAND-DEPLOY.md](ANLAND-DEPLOY.md)。
 
-## 构建
+## 构建与发布
 
-CI 在 DDK 容器里构建，其中带各 KMI 真实的 `vmlinux`、`Module.symvers` 和
-匹配的 clang：
+两个工作流，**刻意分开**：
 
-```bash
-make -C /opt/ddk/kdir/<kmi> M=<source-dir> modules
+| 工作流 | 触发 | 是否发布 |
+|---|---|---|
+| [`ci.yml`](https://github.com/misaka5202/droidspaces-lkm/blob/master/.github/workflows/ci.yml) | push 到 master、PR、手动 | 否，只留 artifact |
+| [`release.yml`](https://github.com/misaka5202/droidspaces-lkm/blob/master/.github/workflows/release.yml) | 打 tag `vX.Y.Z`、手动指定 tag | 是，**只发预览版** |
+
+两者都调用可复用的
+[`build.yml`](https://github.com/misaka5202/droidspaces-lkm/blob/master/.github/workflows/build.yml)，
+那个工作流只负责编译打包。把"发布"从 CI 里拿掉的意义是：CI 绿灯永远不会把
+坏产物推到用户面前，而每一次发布都对应某个人主动打的 tag。
+
+发一个预览版：
+
+```sh
+git tag v0.1.0
+git push origin v0.1.0
 ```
 
-vkms、macvlan 这类内核树自带驱动，源码取自**该 KMI 自己的树**而不是共用
-副本——它们的 API 会随版本变化。见 [scripts/build_modules.sh](../scripts/build_modules.sh)。
+只想试构建、不想打 tag：在 Actions 那一次运行里下载 `ko-*` artifact。
+
+### 模块目录结构
+
+安装包按 KernelSU 模块规范组织——没有 `META-INF`，也没有 `system/` 覆盖
+（这个模块不修改 `/system` 里的任何文件）：
+
+```
+module/
+├── module.prop      元数据；version 就是更新器比较的那个
+├── customize.sh     安装期：架构检查、KMI 提示、ui_print
+├── service.sh       late_start：按 KMI 加载 .ko
+├── uninstall.sh     清理；刻意不 rmmod（原因见下）
+└── action.sh        「操作」按钮：一屏给出状态与能力自检
+```
+
+脚本用 `MODDIR=${0%/*}` 取自身目录，不硬编码 `/data/adb/modules/<id>`，
+所以装在别处也能正常工作。
 
 ## 源码与许可证
 

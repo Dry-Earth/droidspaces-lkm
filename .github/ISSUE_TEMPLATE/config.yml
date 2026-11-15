@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 使用与安装问题
+    url: https://github.com/misaka5202/droidspaces-lkm#readme
+    about: 先看 README 的「安装」和「已知限制」，很多问题是环境不匹配
+  - name: 内核支持范围
+    url: https://github.com/misaka5202/droidspaces-lkm/blob/master/docs/KMI-COVERAGE.md
+    about: 哪些 KMI 有产物、各自验证到什么程度
