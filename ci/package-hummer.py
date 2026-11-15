@@ -45,11 +45,12 @@ def main() -> None:
     args = ap.parse_args()
 
     built = {}
+    suffix = f'-{args.kmi}.ko'
     for ko in sorted(args.kos.glob('*.ko')):
         name = ko.name
-        if not name.endswith(f'-{args.kmi}.ko'):
+        if not name.endswith(suffix):
             continue
-        built[name.rsplit('-', 1)[0]] = (name, check_arm64(ko))
+        built[name[:-len(suffix)]] = (name, check_arm64(ko))
     missing = [m for m in REQUIRED if m not in built]
     if missing:
         raise SystemExit(f'missing mandatory modules: {missing}')
