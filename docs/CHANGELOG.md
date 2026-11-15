@@ -13,6 +13,51 @@
 `10001`–`10003` 这种小数字；如果新版本还用 `100`，KernelSU 更新器会认为
 100 < 10003 而不推送更新。日期编码天然单调递增，不会再因为版本号重置而倒退。
 
+## v0.1.4 — 修掉 5.10 上"全部模块装不上"
+
+`versionCode` 20261119。**5.10 用户必须升级。**
+
+用户反馈 5.10 上每个模块都报：
+
+```
+Unknown symbol __stack_chk_guard (err -2)
+```
+
+原因是**栈保护金丝雀的寻址模式不匹配**。arm64 有两种：
+
+| 模式 | 金丝雀位置 | 需要全局符号吗 |
+|---|---|---|
+| `CONFIG_STACKPROTECTOR_PER_TASK=y` | task_struct + sp_el0 偏移 | **不需要** |
+| 否则 | 全局 `__stack_chk_guard` | 需要 |
+
+5.10 GKI 的 `arch/arm64/kernel/process.c` 写得很直白：
+
+```c
+#if defined(CONFIG_STACKPROTECTOR) && !defined(CONFIG_STACKPROTECTOR_PER_TASK)
+EXPORT_SYMBOL(__stack_chk_guard);
+#endif
+```
+
+真机是 PER_TASK 模式，**导出表里根本没有这个符号**。而 DDK 给 5.10 的那棵树如果
+判定不出 `-mstack-protector-guard=sysreg` 支持，会退回全局模式——编出来的 .ko 就
+带着这个符号，到真机上全部 insmod 失败。
+
+修法：构建脚本检测内核树的 guard 模式，不是 per-task 就给模块加
+`-fno-stack-protector`（金丝雀没了，但能装——这是唯一能保证可加载的选项）。
+
+另外两处 5.10 专有符号问题：
+
+- **`cgroup_rm_cftypes`**：5.10 里存在但**没有** `EXPORT_SYMBOL_GPL`（6.1 才加），
+  所以 `droid_lkm_pids` / `droid_lkm_cpu` 在 5.10 上也必然失败。改成运行时用
+  `kallrecon_klp()` 解析；解析不到就**不安装** cftype——否则卸载时摘不掉，
+  cgroup 子系统会留着指向已卸载模块的悬空指针（UAF）。
+- **`drm_crtc_add_crc_entry`**：5.10 里是导出的，但它属于 `drm.ko` 的模块依赖，
+  post-fs-data 阶段 drm 可能还没就绪。这一条尚未处理，见下。
+
+构建脚本还加了**产物符号自检**：编完逐个 `.ko` 查未定义符号里有没有
+`__stack_chk_guard` / `cgroup_rm_cftypes` / `drm_crtc_add_crc_entry` /
+`_trace_android_vh_*`，在 CI 就报出来，不再等用户装上才发现。
+
 ## v0.1.3 — 修掉 "unknown symbol" 的真正来源
 
 `versionCode` 20261118。

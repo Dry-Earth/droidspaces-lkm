@@ -36,6 +36,45 @@ done
 
 log "KMI=$KMI"
 log "KDIR=$KDIR"
+
+# ---------------------------------------------------------------------------
+# 栈保护 guard 模式：必须和目标内核一致，否则模块根本装不上
+#
+# arm64 有两种模式：
+#   CONFIG_STACKPROTECTOR_PER_TASK=y  金丝雀放在 task_struct 里，用
+#                                      sp_el0+offset 相对寻址，**不需要**任何
+#                                      全局符号。
+#   否则                              模块引用全局的 __stack_chk_guard。
+#
+# 而 5.10 GKI 的 arch/arm64/kernel/process.c 写得很清楚：
+#   #if defined(CONFIG_STACKPROTECTOR) && !defined(CONFIG_STACKPROTECTOR_PER_TASK)
+#   EXPORT_SYMBOL(__stack_chk_guard);
+#   #endif
+# 也就是说真机（PER_TASK=y）**导出的符号表里没有 __stack_chk_guard**。
+#
+# DDK 给 5.10 的那棵树如果判定不出 sysreg 支持（老 clang 缺
+# -mstack-protector-guard=sysreg），会退回全局模式，编出来的 .ko 就带着
+# 这个符号，到了真机 insmod 全报 "Unknown symbol __stack_chk_guard"。
+#
+# 树不是 PER_TASK 模式时，干脆关掉本模块的栈保护：金丝雀没了，但能装。
+# 树是 PER_TASK 模式时保持原样（kbuild 自己会加 sysreg 参数）。
+# ---------------------------------------------------------------------------
+GUARD_CFLAGS=""
+GUARD_MODE="per-task"
+CFG=""
+for c in "$KDIR/.config" "$KDIR/out/.config"; do
+    [ -f "$c" ] && { CFG="$c"; break; }
+done
+if [ -n "$CFG" ]; then
+    if ! grep -qx 'CONFIG_STACKPROTECTOR_PER_TASK=y' "$CFG"; then
+        GUARD_CFLAGS="-fno-stack-protector"
+        GUARD_MODE="global->disabled"
+    fi
+    log "栈保护: 树=$GUARD_MODE 额外参数=[${GUARD_CFLAGS:-无}]"
+else
+    warn "找不到 $KDIR/.config，栈保护模式无法判定；构建后会再做符号校验"
+fi
+
 if [ -n "$KSRC" ]; then
     log "源码树=$KSRC"
     log "  vkms:    $([ -d "$KSRC/drivers/gpu/drm/vkms" ] && echo 有 || echo 无)"
@@ -71,7 +110,7 @@ gen_makefile() {
 # 1) lkm4ctr —— 上游已做跨版本适配, 直接用
 # ---------------------------------------------------------------------------
 log "=== lkm4ctr @ $KMI ==="
-if make -C "$KDIR" M=/tmp/lkm4ctr/vendor LKM4CTR_LOG_DMESG=y modules -j"$NPROC"; then
+if make -C "$KDIR" M=/tmp/lkm4ctr/vendor LKM4CTR_LOG_DMESG=y KCFLAGS="$GUARD_CFLAGS" modules -j"$NPROC"; then
     cp /tmp/lkm4ctr/vendor/lkm4ctr.ko "$OUT/lkm4ctr-$KMI.ko" && log "  [OK]"
 else
     warn "lkm4ctr @ $KMI"
@@ -114,7 +153,7 @@ if [ -n "$KSRC" ] && [ -d "$KSRC/drivers/gpu/drm/vkms" ]; then
         warn "vkms @ $KMI (补丁未生效, 不编译)"
     else
         gen_makefile "$DST" vkms "-DCONFIG_DRM_VKMS=1"
-        if make -C "$KDIR" M="$DST" modules -j"$NPROC"; then
+        if make -C "$KDIR" M="$DST" KCFLAGS="$GUARD_CFLAGS" modules -j"$NPROC"; then
             cp "$DST/vkms.ko" "$OUT/vkms-$KMI.ko" && log "  [OK]"
         else
             warn "vkms @ $KMI"
@@ -136,7 +175,7 @@ if [ -n "$KSRC" ] && [ -f "$KSRC/drivers/net/macvlan.c" ]; then
     # 自己内部又 include 别的东西而失败 (表现为 "No such file or directory")
     cp "$KSRC/drivers/net/macvlan.c" "$DST/"
     gen_makefile "$DST" macvlan "-DCONFIG_MACVLAN=1"
-    if make -C "$KDIR" M="$DST" modules -j"$NPROC"; then
+    if make -C "$KDIR" M="$DST" KCFLAGS="$GUARD_CFLAGS" modules -j"$NPROC"; then
         cp "$DST/macvlan.ko" "$OUT/macvlan-$KMI.ko" && log "  [OK]"
     else
         warn "macvlan @ $KMI"
@@ -154,7 +193,7 @@ for m in devtmpfs net_ip6nat; do
     log "=== $m @ $KMI ==="
     find "$SRC" -name '*.o' -delete 2>/dev/null || true
     find "$SRC" -name '.*.cmd' -delete 2>/dev/null || true
-    if make -C "$KDIR" M="$SRC" modules -j"$NPROC"; then
+    if make -C "$KDIR" M="$SRC" KCFLAGS="$GUARD_CFLAGS" modules -j"$NPROC"; then
         case "$m" in
             devtmpfs)   cp "$SRC"/devtmpfs_lkm.ko "$OUT/devtmpfs_lkm-$KMI.ko" ;;
             net_ip6nat) cp "$SRC"/ip6table_nat.ko "$OUT/ip6table_nat-$KMI.ko" ;;
@@ -185,7 +224,7 @@ for m in pids cpu; do
     rm -f "$SRC"/modules.order "$SRC"/Module.symvers 2>/dev/null || true
     # Makefile 支持 MODULE=<name> 只编一个目标；两个模块共用一份
     # KallRecon，同时编会让一条失败连带另一条，CI 逐个出货更稳
-    if make -C "$KDIR" M="$SRC" MODULE="droid_lkm_$m" modules -j"$NPROC"; then
+    if make -C "$KDIR" M="$SRC" MODULE="droid_lkm_$m" KCFLAGS="$GUARD_CFLAGS" modules -j"$NPROC"; then
         if [ -f "$SRC/droid_lkm_$m.ko" ]; then
             cp "$SRC/droid_lkm_$m.ko" "$OUT/droid_lkm_$m-$KMI.ko"
             log "  [OK]"
@@ -201,6 +240,41 @@ for m in pids cpu; do
     find "$SRC" -name '*.mod' -delete 2>/dev/null || true
     rm -f "$SRC"/modules.order "$SRC"/Module.symvers 2>/dev/null || true
 done
+
+# ---------------------------------------------------------------------------
+# 产物符号自检
+#
+# 装了才知道缺符号是最贵的失败方式：用户装完只看到一句
+# "unknown symbol in module"，我们这边什么信号都没有。这里把已知在部分
+# 内核上不存在的符号直接查出来，在 CI 就报。
+#
+# 已知清单：
+#   __stack_chk_guard      5.10 GKI 是 PER_TASK 模式，全局符号不存在
+#   cgroup_rm_cftypes      5.10 里存在但没 EXPORT_SYMBOL_GPL（6.1 才加）
+#   drm_crtc_add_crc_entry 属 drm.ko 的模块依赖，加载时序不对就缺
+#   任何 _trace_android_vh_*  vendor hook，不是所有厂商内核都开
+# ---------------------------------------------------------------------------
+echo
+echo "=== $KMI 符号自检 ==="
+BAD_SYMS="__stack_chk_guard cgroup_rm_cftypes drm_crtc_add_crc_entry"
+bad=0
+for ko in "$OUT"/*-"$KMI".ko; do
+    [ -f "$ko" ] || continue
+    undef=$(nm -u "$ko" 2>/dev/null | awk '{print $2}')
+    for sym in $BAD_SYMS; do
+        if echo "$undef" | grep -qx "$sym"; then
+            echo "  [SYM] $(basename "$ko") 依赖 $sym —— 部分内核不导出"
+            bad=$((bad + 1))
+        fi
+    done
+    vh=$(echo "$undef" | grep -E '^_trace_android_vh_' | head -3)
+    [ -n "$vh" ] && { echo "  [SYM] $(basename "$ko") 依赖 vendor hook:"; echo "$vh" | sed 's/^/         /'; bad=$((bad + 1)); }
+done
+if [ "$bad" -eq 0 ]; then
+    echo "  [OK] 无已知不可移植符号"
+else
+    echo "  [WARN] 共 $bad 处，装机前请确认目标内核的导出表"
+fi
 
 echo
 echo "=== $KMI 产物 ==="

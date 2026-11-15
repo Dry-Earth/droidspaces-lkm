@@ -723,6 +723,14 @@ static bool ctl_live_fork;
 static bool ctl_live_exit;
 static bool ctl_live_rmdir;
 static bool ctl_live_files;
+/*
+ * [5.10] cgroup_rm_cftypes 在 5.10 里存在但**没有导出**（EXPORT_SYMBOL_GPL
+ * 是 6.1 才加的）。直接链接会让 insmod 报
+ *   Unknown symbol cgroup_rm_cftypes
+ * 整个模块装不上。改成运行时解析；解析不到时**不安装** CFTYPE，否则卸载
+ * 时摘不掉，cgroup 子系统会留着指向已卸载模块的悬空指针（UAF）。
+ */
+static int (*p_cgroup_rm_cftypes)(struct cftype *cfts);
 static bool ctl_live_display;
 
 static void ctl_probe_one(struct kprobe *h, const char *sym,
@@ -767,6 +775,12 @@ static int __init droid_lkm_pids_init(void)
 	}
 	memory_ss = (struct cgroup_subsys *)mem_ss_addr;
 
+	/*
+	 * 5.10 里 cgroup_rm_cftypes 存在但没导出（6.1 才加 EXPORT_SYMBOL_GPL）。
+	 * 解析不到就不安装 cftype，见声明处的注释。
+	 */
+	p_cgroup_rm_cftypes = (void *)kallrecon_klp("cgroup_rm_cftypes");
+
 	ctl_layout_init();
 
 	/* dead 条目的回收队列（cgroup_rmdir 探针只置标记） */
@@ -792,11 +806,15 @@ static int __init droid_lkm_pids_init(void)
 	}
 
 	/* B1：pids.max 文件 */
-	ret = cgroup_add_dfl_cftypes(memory_ss, pids_max_files);
-	if (ret)
-		pids_err("cgroup_add_dfl_cftypes failed: %d\n", ret);
-	else
-		ctl_live_files = true;
+	if (!p_cgroup_rm_cftypes) {
+		pids_warn("cgroup_rm_cftypes unresolved; skipping cftypes (installing them would leave a dangling cftype on unload)\n");
+	} else {
+		ret = cgroup_add_dfl_cftypes(memory_ss, pids_max_files);
+		if (ret)
+			pids_err("cgroup_add_dfl_cftypes failed: %d\n", ret);
+		else
+			ctl_live_files = true;
+	}
 
 	/* 显示层 */
 	memset(&ctl_ctrl_show_krp, 0, sizeof(ctl_ctrl_show_krp));
@@ -852,7 +870,7 @@ static void __exit droid_lkm_pids_exit(void)
 		unregister_kretprobe(&ctl_cgroupstats_krp);
 	}
 	if (ctl_live_files)
-		cgroup_rm_cftypes(pids_max_files);
+		p_cgroup_rm_cftypes(pids_max_files);
 	ctl_unprobe(&ctl_rmdir_probe, ctl_live_rmdir);
 	ctl_unprobe(&ctl_exit_probe, ctl_live_exit);
 	ctl_unprobe(&ctl_fork_probe, ctl_live_fork);
