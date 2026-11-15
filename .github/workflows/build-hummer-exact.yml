@@ -221,6 +221,14 @@ jobs:
             "$DDK_IMAGE" \
             bash /work/ci/build-kdir.sh
 
+      - name: Save ccache even if a later step fails
+        if: always()
+        continue-on-error: true
+        uses: actions/cache/save@v4
+        with:
+          path: .ccache
+          key: hummer-exact-ccache-${{ hashFiles('metadata.env', 'build-config/stock.config') }}-${{ github.run_id }}
+
       - name: Build modules against the exact KDIR
         run: |
           set -eux
