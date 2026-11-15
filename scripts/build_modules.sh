@@ -242,6 +242,39 @@ for m in pids cpu; do
 done
 
 # ---------------------------------------------------------------------------
+# uart_guard —— 阻止读坏掉的 tty_port 把内核打挂
+#
+# 串口 sysfs 属性（port/type/console/...）走 uart_get_info() 或 console_show()，
+# 两者都在**没有有效性检查**的情况下 lock port->mutex（上游至今如此）。
+# 某设备的 tty_port 生命周期不完整时，容器里的 udev 扫一遍 /sys/class/tty
+# 就能把宿主内核打 panic（实测 ttyS3 = 蓝牙串口）。
+# ---------------------------------------------------------------------------
+log "=== uart_guard @ $KMI ==="
+UG="$WS/extra/uart_guard"
+if [ -d "$UG" ]; then
+    find "$UG" -name '*.o' -delete 2>/dev/null || true
+    find "$UG" -name '.*.cmd' -delete 2>/dev/null || true
+    find "$UG" -name '*.ko' -delete 2>/dev/null || true
+    rm -f "$UG"/modules.order "$UG"/Module.symvers 2>/dev/null || true
+    if make -C "$KDIR" M="$UG" KCFLAGS="$GUARD_CFLAGS" modules -j"$NPROC"; then
+        if [ -f "$UG/uart_guard.ko" ]; then
+            cp "$UG/uart_guard.ko" "$OUT/uart_guard-$KMI.ko" && log "  [OK]"
+        else
+            warn "uart_guard @ $KMI (没有产物)"
+        fi
+    else
+        warn "uart_guard @ $KMI"
+    fi
+    find "$UG" -name '*.o' -delete 2>/dev/null || true
+    find "$UG" -name '.*.cmd' -delete 2>/dev/null || true
+    find "$UG" -name '*.ko' -delete 2>/dev/null || true
+    rm -f "$UG"/modules.order "$UG"/Module.symvers 2>/dev/null || true
+else
+    warn "uart_guard @ $KMI (缺少 extra/uart_guard)"
+fi
+
+
+# ---------------------------------------------------------------------------
 # 产物符号自检
 #
 # 装了才知道缺符号是最贵的失败方式：用户装完只看到一句

@@ -254,6 +254,11 @@ MODDIR="/data/adb/modules/droidspaces_lkm"
 [ -f "$MODDIR/disable_pids" ] || load_mod droid_lkm_pids ""
 [ -f "$MODDIR/disable_cpu" ] || load_mod droid_lkm_cpu ""
 
+# uart_guard：串口 sysfs 属性会去锁一个可能已损坏的 tty_port mutex，
+# 容器里的 udev 扫一遍 /sys/class/tty 就能把宿主打 panic。
+# 放最后，钩不上也不影响容器本身；想排查时看 dmesg 里的 uart_guard 行。
+[ -f "$MODDIR/disable_uart_guard" ] || load_mod uart_guard ""
+
 # 注意：这里**不清零**开机计数器。
 # service.sh 只代表"模块加载流程跑完"，不代表系统能正常起来 —— 加载成功后
 # 卡死的情况真实发生过。清零交给 boot-completed.sh，那是 Android 真正启动

@@ -13,6 +13,54 @@
 `10001`–`10003` 这种小数字；如果新版本还用 `100`，KernelSU 更新器会认为
 100 < 10003 而不推送更新。日期编码天然单调递增，不会再因为版本号重置而倒退。
 
+## v0.1.6 — uart_guard：容器读串口属性不再打挂宿主
+
+`versionCode` 20261121。
+
+用户开 `enable_hw_access` 跑容器后，启动时整机 panic 重启。panic log：
+
+```
+Unable to handle kernel NULL pointer dereference at 0x54
+pc : __mutex_lock+0xd8
+lr : __mutex_lock_slowpath
+     mutex_lock
+     uart_get_info        <- drivers/tty/serial/serial_core.c
+     type_show            <- 读 /sys/class/tty/ttyS3/type
+     dev_attr_show -> sysfs_kf_seq_show -> __arm64_sys_read
+Comm: (udev-worker)
+```
+
+**根因不在本模块**：串口的 sysfs 属性都会 `lock port->mutex`，而
+`uart_get_info()` 假设 `dev_get_drvdata(dev)` 一定是一个可用的 `struct
+tty_port`——上游至今没有这个检查。实测本机 `ttyS3`（蓝牙串口
+`11004000.serial`，被 `platform:btmtk_uart.0` 消费）的 `tty_port` mutex 里
+`owner` 只剩标志位、没有有效 task_struct 指针（`owner == 8`），于是
+`__mutex_lock` 把它当指针读 → `8 + 0x4c = 0x54` 崩溃。`ttyS0/S1/S2` 则完全正常。
+
+Android 自己没有 udev，没人读这些属性；容器里的 udev 枚举 `/sys/class/tty`
+逐个读属性，第一次踩上就 panic。
+
+**做法**：新增 `uart_guard` 模块，在两个入口挂 kprobe，校验 `tty_port` 状态，
+异常就直接返回 `-ENODEV`，不进函数体：
+
+| 钩子 | 覆盖 |
+|---|---|
+| `uart_get_info` | `port_show` / `type_show` / `uartclk_show` / `irq_show` 等 **13 个**属性 |
+| `console_show` | 唯一**不走** `uart_get_info`、自己直接锁 mutex 的那个 |
+
+校验三项：`port` 为 NULL、不在内核直接映射区、或 `mutex.owner` 里的任务指针
+不是合法内核地址。
+
+实测（6.1.157 / MT6989）：
+
+- 全量遍历所有 tty 的全部 uart 属性 **56 次读取**，`ttyS3` 的 12 个属性被
+  全部拦截返回 `-ENODEV`，**设备存活，无 panic**
+- 健康设备（`ttyS0`/`ttyS2`）不受影响，`console` 正常返回 `N`，零误拦
+
+这是**兜底**不是根治：根因在串口驱动与蓝牙驱动的 `tty_port` 生命周期上，
+本模块只保证"读到它不会把整机打挂"。想彻底避免可以不设 `enable_hw_access`，
+或只在容器内遮蔽 `/sys/class/tty/ttyS3`。
+
 ## v0.1.5 — vkms 的加载时序
 
 `versionCode` 20261120。
