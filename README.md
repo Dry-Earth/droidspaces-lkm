@@ -4,7 +4,7 @@
 
 [![Build](https://github.com/misaka5202/droidspaces-lkm/actions/workflows/build.yml/badge.svg)](https://github.com/misaka5202/droidspaces-lkm/actions/workflows/build.yml)
 
-[中文说明](docs/README.zh.md) · [Releases](../../releases/latest) · [KMI coverage](docs/KMI-COVERAGE.md)
+**English** | [简体中文](README.zh-CN.md) · [Releases](../../releases/latest) · [KMI coverage](docs/KMI-COVERAGE.en.md)
 
 ---
 
@@ -93,11 +93,13 @@ they are the reason this project exists at v1.0.0 rather than v0.x.
 | `vkms.ko` | Virtual DRM device, provides a render node | `DRM_VKMS` (with `DRIVER_RENDER` patch) | ✅ |
 | `droid_lkm_pids.ko` | Emulated pids controller | `CGROUP_PIDS` | ✅ |
 | `droid_lkm_cpu.ko` | Time-slice CPU quota | `CFS_BANDWIDTH` | ✅ |
+| `uart_guard.ko` | tty attribute read protection (kprobe) | none (guards a vendor `uart_get_info` lock bug) | ✅ |
 
-**All seven load at boot.** The two emulation modules go last and cannot block
-the five above them: a failure there leaves a device that still boots and runs
-containers, just without the corresponding limit. To install but not load one,
-drop a `disable_pids` / `disable_cpu` file in the module directory.
+**All eight load at boot.** The three supplementary modules (`droid_lkm_pids`,
+`droid_lkm_cpu`, `uart_guard`) go last and cannot block the five above them: a
+failure there leaves a device that still boots and runs containers, just without
+the corresponding limit or tty guard. To install but not load one, drop a
+`disable_pids` / `disable_cpu` / `disable_uart_guard` file in the module directory.
 
 ## Install
 
@@ -156,17 +158,66 @@ droidspaces check                          # "All required features found!"
 | `droidspaces-lkm-android15-6.6-arm64.zip` | Android 15 / 6.6 |
 | `droidspaces-lkm-android16-6.12-arm64.zip` | Android 16 / 6.12 |
 
-`droidspaces-lkm-arm64.zip` carries all seven and picks the right one at boot.
+`droidspaces-lkm-arm64.zip` is the combined package: it carries the build for all 7 KMIs and picks the right one at boot from the kernel release plus `ro.board.first_api_level`. Pick a per-KMI zip instead if you want a smaller download.
 
 **arm64 only.** Non-GKI kernels and non-ARM64 devices are not supported.
 
 Every module is built for every KMI from that KMI's own kernel source tree in
-the DDK image; see [docs/KMI-COVERAGE.md](docs/KMI-COVERAGE.md) for the exact
+the DDK image; see [docs/KMI-COVERAGE.md](docs/KMI-COVERAGE.en.md) for the exact
 matrix and the per-KMI build traps.
 
 > A vendor kernel with the same KMI tag can still differ in ABI. Check the KMI
-> tag in `uname -r` first, and read `/data/local/tmp/droidspaces-lkm.log` after
+> tag in `uname -r` first, and read `/data/adb/droidspaces_lkm.log` after
 > installing.
+
+## Running a Linux desktop (Anland 6.x)
+
+This project only makes containers *work*. To actually see Linux windows on the
+phone you need **Anland 6.x** — and `vkms` is the seam between the two. Vendor
+kernels normally ship without `CONFIG_DRM_VKMS`, so there is a `card0` but no
+`renderD128`, and Wayland compositors refuse to start.
+
+```
+droidspaces-lkm (this project)
+  └─ vkms.ko  →  /dev/dri/renderD128        <- without it the compositor cannot start
+        │
+        ▼
+Droidspaces-anland6-rootfs (image)
+  └─ anlandx session inside the container (wayland link + rootless Xwayland + mini-wm)
+        │
+        ▼
+Anland 6.x host trio
+  ├─ anland-awl module (waylandbridge daemon, the Wayland server)
+  ├─ com.anlandnext (display side, one Android Activity per window)
+  └─ com.anland.shell (launcher; it only starts apps)
+```
+
+Use the setup script from
+[Droidspaces-anland6-rootfs](https://github.com/misaka5202/Droidspaces-anland6-rootfs)
+to wire the whole host side in one go (module, APKs, bind mount, daemon config):
+
+```bash
+adb push scripts/setup-anland6-host.sh /data/local/tmp/
+adb shell su -c 'sh /data/local/tmp/setup-anland6-host.sh'
+```
+
+Then verify the chain:
+
+```bash
+adb shell su -c 'sh /data/local/tmp/verify-anland6-host.sh'
+```
+
+It checks host, container and display layers in turn. **Its "render node" check is
+exactly this project's `vkms.ko`** — if that line fails, come back and confirm
+that `vkms` loaded.
+
+Full host-side steps, failure table and troubleshooting:
+[Desktop and Anland](https://github.com/misaka5202/Droidspaces-anland6-rootfs/blob/main/docs/en/desktop-and-anland.md).
+
+> **Do not install the Anland 5.x set** (`virtual-drm-daemon.zip` /
+> `app-debug.apk` / the `/run/display.sock` bind mount). 5.x exchanges frames over
+> a private display protocol with patched compositors; 6.x makes Wayland itself
+> the protocol. Both routes at once break each other.
 
 ## cgroup limits
 
@@ -299,6 +350,7 @@ stating.
 - Module parameters are all `0444`; nothing is runtime-writable.
 
 See [docs/CHANGELOG.md](docs/CHANGELOG.md) for what each release fixed.
+The changelog is maintained in Chinese (this project is Chinese-first); every entry starts with a one-line summary of the change.
 
 ## Troubleshooting
 
@@ -347,7 +399,7 @@ mismatch from a real failure.
 
 Also check the boot guard: if three consecutive boots never reach
 `boot-completed.sh`, the module disables itself and writes the reason to
-`/data/local/tmp/droidspaces-lkm.log`.
+`/data/adb/droidspaces_lkm.log` and `/data/adb/droidspaces_lkm.d/`.
 
 ## Important notes
 
@@ -377,7 +429,7 @@ actually use the GPU depends on the driver stack:
   render node instead.
 
 Deployment notes for a Wayland desktop over anland:
-[docs/ANLAND-DEPLOY.md](docs/ANLAND-DEPLOY.md).
+[docs/ANLAND-DEPLOY.md](docs/ANLAND-DEPLOY.en.md).
 
 ## Build
 

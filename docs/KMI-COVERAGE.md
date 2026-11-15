@@ -1,6 +1,8 @@
 # 模块 × KMI 覆盖
 
-**5 个模块 × 7 个 KMI = 35/35，全部齐全。**
+[English](KMI-COVERAGE.en.md) | **简体中文**
+
+**8 个模块 × 7 个 KMI = 56/56，全部齐全。**
 
 | 模块 | 12-5.10 | 13-5.10 | 13-5.15 | 14-5.15 | 14-6.1 | 15-6.6 | 16-6.12 |
 |------|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
@@ -9,6 +11,9 @@
 | `macvlan` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | `ip6table_nat` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | `vkms` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| `droid_lkm_pids` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| `droid_lkm_cpu` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| `uart_guard` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 
 下载全 KMI 合并包 `droidspaces-lkm-arm64.zip`（开机按 `osrelease` 自动选），
 或按 KMI 精确下载 `droidspaces-lkm-<kmi>-arm64.zip`。
@@ -20,11 +25,13 @@
 
 | 模块 | 源码来源 |
 |------|---------|
-| `vkms` | `drivers/gpu/drm/vkms/` + `DRIVER_RENDER` 补丁 |
+| `vkms` | `drivers/gpu/drm/vkms/` + `DRIVER_RENDER` 补丁 + 裁掉 CRC/DEBUG_FS 依赖 |
 | `macvlan` | `drivers/net/macvlan.c` |
 | `lkm4ctr` | 上游仓库（已自带版本适配） |
 | `devtmpfs_lkm` | 本仓库实现 |
 | `ip6table_nat` | 本仓库实现（含 5.10/5.15/6.1+ 三套签名分支） |
+| `droid_lkm_pids` / `droid_lkm_cpu` | `extra/cgrouplimits/`（含共用布局探测 `common.c`） |
+| `uart_guard` | `extra/uart_guard/`（kprobe，不依赖内核版本差异） |
 
 ## vkms 的 DRIVER_RENDER 补丁
 

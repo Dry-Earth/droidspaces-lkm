@@ -3,6 +3,12 @@
 调研结论，基于对 anland / Droidspaces / Desktop-builder 源码和 CI 的阅读。
 **尚未在高通真机上实测完成**（设备在测试过程中断开）。
 
+> **这是历史记录，不是当前状态。** 文中的「5 个 LKM」「4 个加载正常」等描述
+> 对应当时那次测试（模块只有 5 个）。现在模块已增至 **8 个**：新增
+> `droid_lkm_pids` / `droid_lkm_cpu` / `uart_guard`，其中 `uart_guard` 防的
+> 正是文档里那些 tty 相关的厂商内核缺陷。当前模块清单见
+> [README.zh-CN.md](../README.zh-CN.md)。
+
 ## 结论速览
 
 | 项目 | 高通（kgsl/turnip） | 联发科（Mali，我们已实测） |

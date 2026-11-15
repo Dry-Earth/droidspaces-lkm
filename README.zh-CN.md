@@ -2,7 +2,7 @@
 
 **在原始 GKI 内核上补齐容器能力，无需重编内核、无需刷 boot。**
 
-[English](../README.md) · [Releases](../../releases/latest) · [KMI 覆盖矩阵](KMI-COVERAGE.md)
+[**English**](README.md) | **简体中文** · [Releases](../../releases/latest) · [KMI 覆盖矩阵](docs/KMI-COVERAGE.md)
 
 ---
 
@@ -87,10 +87,12 @@ cgroup 控制器。多数厂商内核为了通过 GKI ABI 检查把这些都编�
 | `vkms.ko` | 虚拟 DRM 设备，提供 render node | `DRM_VKMS`（含 `DRIVER_RENDER` 补丁） | ✅ |
 | `droid_lkm_pids.ko` | 仿真 pids 控制器 | `CGROUP_PIDS` | ✅ |
 | `droid_lkm_cpu.ko` | 时间片 CPU 配额 | `CFS_BANDWIDTH` | ✅ |
+| `uart_guard.ko` | tty 属性读取保护（kprobe） | 无（防厂商内核 `uart_get_info` 锁崩） | ✅ |
 
-**七个模块全部开机加载。** 两个仿真模块排最后，不会挡住上面五个：它们
-失败时设备照常开机、照常跑容器，只是少了对应的限额。想"装但不加载"某个，
-在模块目录放 `disable_pids` / `disable_cpu` 文件即可。
+**八个模块全部开机加载。** 三个补充模块（`droid_lkm_pids` / `droid_lkm_cpu` /
+`uart_guard`）排在最后，不会挡住前面五个：它们失败时设备照常开机、照常跑容器，
+只是少了对应的限额或 tty 保护。想"装但不加载"某个，在模块目录放
+`disable_pids` / `disable_cpu` / `disable_uart_guard` 文件即可。
 
 ## 安装
 
@@ -146,15 +148,61 @@ droidspaces check                          # 应显示 All required features fou
 | `droidspaces-lkm-android15-6.6-arm64.zip` | Android 15 / 6.6 |
 | `droidspaces-lkm-android16-6.12-arm64.zip` | Android 16 / 6.12 |
 
-`droidspaces-lkm-arm64.zip` 包含全部七种，开机按内核自动选。
+`droidspaces-lkm-arm64.zip` 是**合并包**，里面包含全部 7 个 KMI 的产物，开机按内核版本 + `ro.board.first_api_level` 自动选对应那一份。想省空间可以只下按 KMI 分包的版本。
 
 **仅 arm64。** 非 GKI 内核、非 ARM64 设备不受支持。
 
 每个模块都为每个 KMI 从 DDK 镜像里**该 KMI 自己的内核源码树**构建；
-完整矩阵与各 KMI 的构建陷阱见 [KMI-COVERAGE.md](KMI-COVERAGE.md)。
+完整矩阵与各 KMI 的构建陷阱见 [KMI-COVERAGE.md](docs/KMI-COVERAGE.md)。
 
 > 同一 KMI 标签的厂商内核 ABI 仍可能有差异。装之前先确认 `uname -r` 里的
-> KMI 标签，装完看 `/data/local/tmp/droidspaces-lkm.log`。
+> KMI 标签，装完看 `/data/adb/droidspaces_lkm.log`。
+
+## 配合它跑 Linux 桌面（Anland 6.x）
+
+这个模块只负责「让容器能跑」。想在手机上看到真正的 Linux 窗口，还需要
+**Anland 6.x** 那一套 —— 而 `vkms` 正是两边的接口：厂商内核通常没开
+`CONFIG_DRM_VKMS`，只有 `card0` 没有 `renderD128`，Wayland 合成器会直接拒绝启动。
+
+```
+droidspaces-lkm（本项目）
+  └─ vkms.ko  →  /dev/dri/renderD128        ← 没有它，合成器起不来
+        │
+        ▼
+Droidspaces-anland6-rootfs（镜像）
+  └─ 容器内的 anlandx 会话（wayland 链接 + rootless Xwayland + mini-wm）
+        │
+        ▼
+Anland 6.x 宿主三件套
+  ├─ anland-awl 模块（waylandbridge 守护进程，Wayland 服务端）
+  ├─ com.anlandnext（显示端，每个窗口一个 Android Activity）
+  └─ com.anland.shell（启动器，只负责把应用跑起来）
+```
+
+一步到位用
+[Droidspaces-anland6-rootfs](https://github.com/misaka5202/Droidspaces-anland6-rootfs)
+的安装脚本（宿主侧模块、APK、绑定挂载、守护进程配置一次配完）：
+
+```bash
+adb push scripts/setup-anland6-host.sh /data/local/tmp/
+adb shell su -c 'sh /data/local/tmp/setup-anland6-host.sh'
+```
+
+装完用它的诊断脚本确认整条链路：
+
+```bash
+adb shell su -c 'sh /data/local/tmp/verify-anland6-host.sh'
+```
+
+它会按「宿主 → 容器 → 显示」三层逐项打勾。**其中「render node」一项对应的就是
+本项目的 `vkms.ko`** —— 如果那一项失败，回到上面确认 `vkms` 是否加载。
+
+完整的宿主侧步骤、常见断点和排错表见
+[桌面与 Anland](https://github.com/misaka5202/Droidspaces-anland6-rootfs/blob/main/docs/zh/桌面与Anland.md)。
+
+> **不要装 Anland 5.x 那一套**（`virtual-drm-daemon.zip` / `app-debug.apk` /
+> `/run/display.sock` 绑定）。5.x 用私有显示协议 + 打过补丁的合成器，6.x 用
+> Wayland 本身做帧交换，两套路由同时存在会互相打断。
 
 ## cgroup 限制
 
@@ -186,7 +234,7 @@ cat $CG/cpu.max           # 50000
 cat $CG/pids.stats        # refused=N, layout=1
 ```
 
-实现细节、保证与限制：[extra/cgrouplimits/README.md](../extra/cgrouplimits/README.md)。
+实现细节、保证与限制：[extra/cgrouplimits/README.md](extra/cgrouplimits/README.md)。
 
 **请手动加载。** 它们会在运行时解析符号并安装 kprobe；不进开机自启，
 意味着任何异常交互都不可能让设备开不了机。
@@ -267,7 +315,7 @@ Droidspaces 实际使用的探测方式。
   BTI 守卫属性、卸载时还原。它创建设备节点时，驱动没给 mode 就用 `0600` + root。
 - 模块参数全部是 `0444`，运行期不可写。
 
-每个版本修了什么见 [CHANGELOG.md](CHANGELOG.md)。
+每个版本修了什么见 [CHANGELOG.md](docs/CHANGELOG.md)。
 
 ## 排障
 
@@ -308,7 +356,7 @@ Droidspaces 实际使用的探测方式。
 能力自检，足够区分"环境不匹配"和"真的坏了"。
 
 另外注意开机保护：连续三次开机都没走到 `boot-completed.sh`，模块会自动禁用自己，
-并把原因写进 `/data/local/tmp/droidspaces-lkm.log`。
+并把原因写进 `/data/adb/droidspaces_lkm.log` 和 `/data/adb/droidspaces_lkm.d/`。
 
 ## 重要提醒
 
@@ -333,7 +381,7 @@ Droidspaces 实际使用的探测方式。
 - ARM Mali：`/dev/mali0` 是私有 ioctl 接口，Linux Mesa 需要
   `CONFIG_DRM_PANFROST`（内核编译期选项）。此时由 `vkms` 提供 render node。
 
-anland 桌面部署记录：[ANLAND-DEPLOY.md](ANLAND-DEPLOY.md)。
+anland 桌面部署记录：[ANLAND-DEPLOY.md](docs/ANLAND-DEPLOY.md)。
 
 ## 构建与发布
 
