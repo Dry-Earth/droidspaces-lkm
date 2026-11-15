@@ -13,6 +13,73 @@
 `10001`–`10003` 这种小数字；如果新版本还用 `100`，KernelSU 更新器会认为
 100 < 10003 而不推送更新。日期编码天然单调递增，不会再因为版本号重置而倒退。
 
+## v0.1.21 — 升级 KallRecon 到上游最新
+
+`versionCode` 20261136。
+
+从 `Dere3046` 仓库生态里挖出来的：我们 vendored 的 KallRecon 对应上游
+`b258fb6`（10-06），而上游已经到 `cec011b`（10-22）。
+
+### 差距
+
+| 文件 | 我们 | 上游 |
+|---|---|---|
+| `discover.c` | 28100 B | **33513 B**（+16%） |
+| `discover.h` | 204 B | 654 B |
+| `core.c` | 2030 B | 2517 B |
+| `hint.c` | 1857 B | 1910 B |
+
+`access` / `fastboot` / `slide` / `symbol` / `variant` / `anchor.S` 完全一致。
+
+### 上游多出来的东西
+
+- **`kr_setup_token_table()`** —— token_table 自校验。取 `token_table['0']`
+  读一个字节，必须真的是字符 `'0'` 才认这张表：
+
+  ```c
+  if (safe_read(&c, (void *)(h->token_table + off0), 1) || c != '0') {
+      kr_fail_set(KALLRECON_HINT_INVALID);
+      return 0;
+  }
+  ```
+
+  猜错 token table 是 kallsyms 解析失败的主要原因之一，这个自校验直接排掉。
+- **`kr_check_ti_strong()`** —— 更强的 token_index 校验
+- **`kr_layout_from_offsets()`** / `kr_commit_offsets()` —— 偏移提交
+- **`hint.c`** 把 `kr_fail` 从普通变量改成 `atomic_t`，`kr_fail_set` 用
+  `atomic_cmpxchg`（原来是非原子的 check-and-set，多核会竞态）
+
+### 为什么值得升
+
+那位 5.10 用户的内核是 `marble@github-actions` 用 clang 22 重编的
+`5.10.269-gki-g658b84f13496-dirty` —— **自定义内核正是 kallsyms 布局最容易
+偏离标准 GKI 的情况**，而 KallRecon 能不能在它上面正确找到 kallsyms，是我们
+所有模块能不能工作的前提。
+
+### 兼容性
+
+上游的改动对调用方**纯新增**（新函数 + `KS_*` 宏），没有删除。
+
+`discover.c` 里新增的 `raana/` 并行扫描引擎是 `#ifdef KALLRECON_RAANA`
+条件编译的，我们不定义它 —— 自动走原有 legacy 扫描路径，不需要引入 raana。
+
+### 验证
+
+两个模块重新编译通过；`readelf -sW` 确认 `kr_setup_token_table` 和
+`kr_layout_from_offsets` 已链入产物；重定位自检 0 错。
+
+### 另外挖到的一条（已核实，不是问题）
+
+`inte.ko_oplus` 里有 OPPO 内核安全模块的 872 行逆向源码。它的行为：
+
+- **每小时 SHA256 校验 `sys_call_table`** —— 我们完全不碰 syscall 表
+  （`nm lkm4ctr.ko | grep sys_call_table` = 0），不会触发
+- **校验每个加载的 .ko 的 SHA256、比对白名单** —— 我们的模块不在白名单，
+  会被记一条 `unknown ko` 事件到 `/proc`，但**只记录，不 panic、不阻断**
+
+所以 OPPO 设备上我们的模块是安全的；那条「MTK 内核保护把系统打挂」的归因
+应该另有其因，不是 inte.ko。
+
 ## v0.1.20 — 修 6.6/6.12 的 lkm4ctr（它们从来没编出来过）
 
 `versionCode` 20261135。
