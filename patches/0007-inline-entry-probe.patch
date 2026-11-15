@@ -1,0 +1,132 @@
+diff --git a/glue/hk/hk_inline.c b/glue/hk/hk_inline.c
+index b8ad7af..92f8b00 100644
+--- a/glue/hk/hk_inline.c
++++ b/glue/hk/hk_inline.c
+@@ -1661,3 +1661,76 @@ __nocfi int hk_inline_probe(const char *sym, struct hk_inline_probe *out)
+ 	return 0;
+ }
+ 
++/*
++ * [PROBE-ADDR] 地址版探测。
++ *
++ * lkm4ctr 的 shadow_hook 自己解析符号、自己算目标地址（hook->address），
++ * 所以装的时候只有地址、没有符号名。原来 hk_inline_probe() 只能按名字查，
++ * 结果就是**装之前从来没有判过入口状态** —— 探测函数写好了却没人调用。
++ *
++ * 后果最典型的一条：5.10 GKI 用 -fpatchable-function-entry 在函数入口预留
++ * ftrace patch 点（mov x9, lr），直接覆盖它会破坏 ftrace 的记账，tracing 一旦
++ * arm 就崩。HooKern（Dere3046/_patchHarmony 用的那个引擎）对这种情况有专门的
++ * HK_INLINE_PATCHSITE 状态并且在装前拒绝；我们同一个状态机也有，就是没接上。
++ *
++ * 这里只做「按地址」的等价判定：不解析符号、不追分支链（调用方给的就是要
++ * 打的那个地址），其余判据与 hk_inline_probe() 完全一致。
++ */
++__nocfi int hk_inline_probe_addr(unsigned long addr, struct hk_inline_probe *out)
++{
++	struct hk_relo_ctx ctx;
++	u8 raw[HK_INLINE_PATCH_LEN];
++	u32 win[HK_INLINE_ENTRY_MAX];
++	u32 scratch[HK_PROBE_SCRATCH];
++	u32 i;
++	int ret;
++
++	if (!out)
++		return -EINVAL;
++	memset(out, 0, sizeof(*out));
++	out->patch_len = HK_INLINE_PATCH_LEN;
++	out->state = HK_INLINE_UNRESOLVED;
++	out->reason = "no address";
++
++	if (!addr)
++		return 0;
++	if (!hk_ker_addr_ok(addr)) {
++		out->state = HK_INLINE_UNSUPPORTED;
++		out->reason = "not a kernel address";
++		return 0;
++	}
++	out->addr = addr;
++	out->target = addr;
++
++	if (hk_read_code(addr, raw, sizeof(raw))) {
++		out->state = HK_INLINE_UNREADABLE;
++		out->reason = "entry not readable";
++		return 0;
++	}
++	for (i = 0; i < HK_INLINE_ENTRY_MAX; i++)
++		win[i] = hk_get_insn(raw + i * 4);
++
++	out->state = hk_stub_state(win, &out->reason);
++	if (out->state != HK_INLINE_PLAIN)
++		return 0;
++
++	memset(&ctx, 0, sizeof(ctx));
++	ctx.dst = scratch;
++	ctx.src = raw;
++	ctx.tramp_start = addr;
++	ctx.tramp_end = addr + HK_INLINE_PATCH_LEN;
++	for (i = 0; i < HK_INLINE_ENTRY_MAX; i++) {
++		ctx.inst_addr = addr + i * 4;
++		ret = hk_relo_inst(&ctx, win[i]);
++		if (ret) {
++			out->state = HK_INLINE_UNSUPPORTED;
++			out->reason = "entry operand points into the patched window";
++			return 0;
++		}
++	}
++
++	out->state = HK_INLINE_PLAIN;
++	out->reason = "no branch stub found";
++	return 0;
++}
++
+diff --git a/glue/hk/hk_inline.h b/glue/hk/hk_inline.h
+index 3cbe1d0..17e259a 100644
+--- a/glue/hk/hk_inline.h
++++ b/glue/hk/hk_inline.h
+@@ -147,4 +147,5 @@ struct hk_inline_probe {
+  * 0 when the report was filled, -EINVAL on a NULL argument.
+  */
+ int hk_inline_probe(const char *sym, struct hk_inline_probe *out);
++int hk_inline_probe_addr(unsigned long addr, struct hk_inline_probe *out);
+ #endif
+diff --git a/glue/shadow_inline.c b/glue/shadow_inline.c
+index 051d755..d494205 100644
+--- a/glue/shadow_inline.c
++++ b/glue/shadow_inline.c
+@@ -103,6 +103,36 @@ int shadow_inline_install(struct shadow_hook *hook)
+ 	if (err)
+ 		return err;
+ 
++	/*
++	 * [PROBE] 装之前必须判入口状态。
++	 *
++	 * 这一步原来完全缺失：hk_inline_probe() 写好了却没有任何调用点，
++	 * 于是 hk_inline_hook 直接覆盖入口。最常见的两种踩雷方式：
++	 *
++	 *   1. 入口是 ftrace patch 点。5.10/5.15 GKI 用
++	 *      -fpatchable-function-entry 在入口放 mov x9, lr，直接覆盖会破坏
++	 *      ftrace 的记账，tracing 一 arm 就崩。开机阶段 ftrace 正在初始化，
++	 *      所以"手动 insmod 没事、开机加载卡死"完全解释得通。
++	 *   2. 入口已经是别人的分支桩（别的 hook 模块、或内核自己的静态调用改写）。
++	 *
++	 * 只有 HK_INLINE_PLAIN 才继续；其余一律返回 -EOPNOTSUPP，让 shadow_hook
++	 * 按它现有的逻辑落到 kprobe —— 这正是 HooKern 的做法（probe 说不 plain
++	 * 就换机制，而不是硬改）。
++	 */
++	{
++		struct hk_inline_probe probe;
++
++		memset(&probe, 0, sizeof(probe));
++		if (!hk_inline_probe_addr(hook->address, &probe) &&
++		    probe.state != HK_INLINE_PLAIN) {
++			pr_warn("shadow_inline: hook %s refused, entry state %d (%s)\n",
++				hook->resolved_name ? hook->resolved_name : "?",
++				probe.state,
++				probe.reason ? probe.reason : "?");
++			return -EOPNOTSUPP;
++		}
++	}
++
+ 	/*
+ 	 * [RACE] 两阶段安装，顺序不能反：
+ 	 *
