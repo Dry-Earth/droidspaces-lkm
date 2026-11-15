@@ -13,6 +13,40 @@
 `10001`–`10003` 这种小数字；如果新版本还用 `100`，KernelSU 更新器会认为
 100 < 10003 而不推送更新。日期编码天然单调递增，不会再因为版本号重置而倒退。
 
+## v0.1.7 — vkms 真正的失败原因：不是加载时序，是 DEBUG_FS
+
+`versionCode` 20261122。
+
+v0.1.5 我判断 vkms 失败是"drm.ko 还没加载"的时序问题，加了重试。**这个判断是错的**，
+重试不可能解决。真因是：
+
+```make
+# drivers/gpu/drm/Makefile
+drm-$(CONFIG_DEBUG_FS) += drm_debugfs.o drm_debugfs_crc.o
+```
+
+`drm_debugfs_create_files()` 和 `drm_crtc_add_crc_entry()` **只在
+`CONFIG_DEBUG_FS=y` 的内核里存在**。GKI 的 `gki_defconfig` 没有显式打开
+DEBUG_FS（它也没有默认值），所以相当一部分真机是 `n`——那些内核里这两个符号
+压根不存在。而 GKI 的 `CONFIG_DRM=y` 是编进内核的，所以这和 drm 加载不加载无关。
+
+vkms 用到两处，都是**纯调试功能**：
+
+| 位置 | 用途 |
+|---|---|
+| `vkms_composer.c` | CRC 上报（给 igt 之类的调试工具） |
+| `vkms_drv.c` | debugfs 里展示 vkms 配置 |
+
+容器要的是 `/dev/dri/renderD128` 这个 render node，和这两件事无关。所以构建时
+把两处调用去掉（`scripts/patch_vkms_debugfs.py`），vkms 就能在 DEBUG_FS 开或关的
+内核上加载。
+
+实测（6.1）：打补丁后 vkms 的未定义符号里不再有 `drm_debugfs*` / `drm_crtc_add_crc_entry`，
+加载后在 `/dev/dri/` 下正常建出 `renderD128`，`/sys/class/drm/renderD128/device`
+指向 `vkms`——render node 功能完好。
+
+代价：debugfs 配置展示和 CRC 上报没有了。对容器用途无影响。
+
 ## v0.1.6 — uart_guard：容器读串口属性不再打挂宿主
 
 `versionCode` 20261121。
