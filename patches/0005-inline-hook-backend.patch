@@ -428,10 +428,10 @@ index 0000000..08d0d2f
 +.size hk_flush_icache, . - hk_flush_icache
 diff --git a/glue/hk/hk_inline.c b/glue/hk/hk_inline.c
 new file mode 100644
-index 0000000..0ec132e
+index 0000000..896f976
 --- /dev/null
 +++ b/glue/hk/hk_inline.c
-@@ -0,0 +1,1592 @@
+@@ -0,0 +1,1617 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +/*
 + * Copyright (C) 2026 dere3046
@@ -469,7 +469,7 @@ index 0000000..0ec132e
 + * 在运行时把栈/堆写穿。
 + */
 +#define HK_TRAMP_STAGE_WORDS 64
-+static_assert(6 + HK_INLINE_ENTRY_MAX * 8 + 6 <= HK_TRAMP_STAGE_WORDS,
++static_assert(7 + HK_INLINE_ENTRY_MAX * 8 + 6 <= HK_TRAMP_STAGE_WORDS,
 +	      "tramp staging buffer cannot hold the window plus the stub");
 +#define HK_INS_LDR_X17 0x58000051
 +#define HK_INS_LDR_X17_P12 0x58000071
@@ -1453,6 +1453,7 @@ index 0000000..0ec132e
 +	u32 detour[HK_INLINE_ENTRY_MAX];
 +	unsigned long mem;
 +	u32 saved[HK_INLINE_ENTRY_MAX];
++	u32 kcfi_hash;
 +	u32 i;
 +	bool near_ok;
 +	int ret;
@@ -1512,15 +1513,38 @@ index 0000000..0ec132e
 +	}
 +
 +
++	/* 原函数入口前 4 字节就是它的 KCFI 类型哈希，读不到就不能安全 inline */
++	ret = hk_fetch_insn(addr - 4, &kcfi_hash);
++	if (ret) {
++		pr_warn("[lkmhook] inline %s: cannot read the KCFI hash\n", sym);
++		ret = -EFAULT;
++		goto err_free;
++	}
++
 +	tramp[0] = HK_INS_BTI_JC;
 +	tramp[1] = HK_INS_LDR_X17;
 +	tramp[2] = HK_INS_RET_X17;
 +	tramp[3] = wrapper & 0xFFFFFFFF;
 +	tramp[4] = wrapper >> 32;
-+	tramp[5] = HK_INS_BTI_JC;
++	/*
++	 * [KCFI] orig 前面这 4 字节必须是"真实函数入口前 4 字节"的拷贝。
++	 *
++	 * KCFI 在间接调用前会读 *(u32 *)(target - 4) 作为类型哈希，和调用点
++	 * 期望的值比较，不等就 brk #0x228。kprobe 后端里 orig 就是真实函数，
++	 * 哈希天然存在；inline 后 orig 指向我们分配的 trampoline，那里原本
++	 * 没有任何哈希 → 第一次经 original 调用原函数就会 CFI 陷阱。
++	 *
++	 * 把原函数入口前那份哈希原样搬过来即可：调用点期望的正是它（kprobe
++	 * 路径已经证明两者一致），这样无需给几十个 hook 替换函数加 __nocfi，
++	 * 也不必削弱其它调用的 CFI 加固。
++	 */
++	tramp[5] = kcfi_hash;
++
++	/* word 6 是 orig 的 BTI 落地板，被搬走的指令从 word 7 开始 */
++	tramp[6] = HK_INS_BTI_JC;
 +
 +	memset(&ctx, 0, sizeof(ctx));
-+	ctx.dst = tramp + 6;
++	ctx.dst = tramp + 7;
 +	ctx.src = h->saved;
 +	ctx.tramp_start = addr;
 +	ctx.tramp_end = addr + h->window;
@@ -1550,11 +1574,12 @@ index 0000000..0ec132e
 +	if (ret)
 +		goto err_guard;
 +
-+	ret = hk_engine_write((void *)mem, tramp, ctx.count * 4 + 24);
++	/* 字头 7 个字（含 KCFI 哈希与 orig 落地板），再加搬过来的指令 */
++	ret = hk_engine_write((void *)mem, tramp, ctx.count * 4 + 28);
 +	if (ret)
 +		goto err_guard;
 +
-+	h->orig = mem + 20;
++	h->orig = mem + 24;
 +
 +	/*
 +	 * the detour is written in one call, so a multi instruction window goes
