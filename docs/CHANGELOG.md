@@ -13,6 +13,57 @@
 `10001`–`10003` 这种小数字；如果新版本还用 `100`，KernelSU 更新器会认为
 100 < 10003 而不推送更新。日期编码天然单调递增，不会再因为版本号重置而倒退。
 
+## v0.1.16 — KMI 判代际改用出厂 API level
+
+`versionCode` 20261131。
+
+来自 [Dere3046/_patchHarmony](https://github.com/Dere3046/_patchHarmony) 提交
+`f7c757e`（他们那边是 issue #6）。
+
+### 问题
+
+内核串里没有 `androidNN` 时（那位 5.10 用户的
+`5.10.269-gki-g658b84f13496-dirty` 就是），我们靠 `ro.build.version.release`
+在 `android12-5.10` / `android13-5.10` 之间猜。
+
+**但 `release` 会跟着 OTA 升级走，而 KMI 固定在设备出厂那一代。**
+
+典型故障：一台出厂 android13 的设备升到 Android 16 之后，`release=16`，
+映射出 `android16`，而候选集是 `{android12, android13}` —— 一个都不匹配，
+于是退回到"取第一个"，也就是 android12-5.10。**代际选错了。**
+
+（选错不会炸机，insmod 会因符号版本不符失败，但用户看到的是"模块装不上"。）
+
+### 修法
+
+改用 `ro.board.first_api_level`（出厂 API level，OTA 不会改它），
+拿不到再退 `ro.product.first_api_level`：
+
+| 值 | 代际 |
+|---|---|
+| 31 / 32 | android12 |
+| 33 | android13 |
+| 34 | android14 |
+| 35 | android15 |
+| 36 | android16 |
+| 37 | android17 |
+| `YYYYMM`（厂商格式） | android(YYYY - 2009) |
+
+都拿不到才退回 `release` / `sdk` —— 它们会漂，但比没有强。
+
+### 实测
+
+本机就是这个问题的活样本：
+
+```
+ro.board.first_api_level = 34   → android14  ✅ 与内核 6.1 一致
+ro.build.version.release = 17   → android17  ❌ ROM 伪造
+ro.build.version.sdk     = 37   → android17  ❌ 同上
+```
+
+六个真实场景的映射全部正确，包括那位 5.10 用户的
+`5.10.269-gki-g...` + `first_api_level=33` → **android13-5.10**。
+
 ## v0.1.15 — 清掉 7476 行死代码，pids/cpu 抽出共享层
 
 `versionCode` 20261130。纯内部整理，不改运行时行为。

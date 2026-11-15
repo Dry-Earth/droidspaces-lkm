@@ -122,21 +122,48 @@ if [ -z "$KMI" ]; then
 
         # 有多个候选时才看系统属性；取不到就保持第一个（较老的那一代）
         if [ "$(echo $android | wc -w)" -gt 1 ]; then
-            rel=$(getprop ro.build.version.release 2>/dev/null | grep -oE '^[0-9]+')
-            [ -z "$rel" ] && rel=$(getprop ro.build.version.sdk 2>/dev/null)
-            case "$rel" in
-                31|32|12) pick=android12 ;;
-                33|13)    pick=android13 ;;
-                34|14)    pick=android14 ;;
-                35|15)    pick=android15 ;;
-                36|16)    pick=android16 ;;
-                37|17)    pick=android17 ;;
-                *)        pick="" ;;
-            esac
-            # 只接受候选集里有的那一代
-            for c in $android; do
-                [ "$c" = "$pick" ] && { android="$pick"; break; }
-            done
+              # 判代际要用**出厂** API level，不能用 ro.build.version.release。
+              #
+              # release 会跟着 OTA 升级走，而 KMI 固定在设备出厂那一代。
+              # 典型故障：一台 android13-5.15 的设备升到 Android 16 之后，
+              # release=16，映射出来的 android16 在候选集 {android13,android14}
+              # 里根本不存在，于是一路匹配失败。
+              #（这条是 Dere3046/_patchHarmony 提交 f7c757e 指出的，我们原来
+              #  用的正是 release/sdk。）
+              #
+              # ro.board.first_api_level 是出厂 API level，OTA 不会改它。
+              api=$(getprop ro.board.first_api_level 2>/dev/null | grep -oE "^[0-9]+")
+              [ -z "$api" ] && api=$(getprop ro.product.first_api_level 2>/dev/null | grep -oE "^[0-9]+")
+              case "$api" in
+                  31|32) pick=android12 ;;
+                  33)    pick=android13 ;;
+                  34)    pick=android14 ;;
+                  35)    pick=android15 ;;
+                  36)    pick=android16 ;;
+                  37)    pick=android17 ;;
+                  # 厂商有时把 first_api_level 写成 YYYYMM，按 2009 偏移折算
+                  [0-9][0-9][0-9][0-9][0-9][0-9])
+                      pick="android$(( ${api:0:4} - 2009 ))" ;;
+                  *)     pick="" ;;
+              esac
+              # 拿不到出厂 level 时才退回 release/sdk —— 它们会漂，但比没有强
+              if [ -z "$pick" ]; then
+                  rel=$(getprop ro.build.version.release 2>/dev/null | grep -oE "^[0-9]+")
+                  [ -z "$rel" ] && rel=$(getprop ro.build.version.sdk 2>/dev/null)
+                  case "$rel" in
+                      31|32|12) pick=android12 ;;
+                      33|13)    pick=android13 ;;
+                      34|14)    pick=android14 ;;
+                      35|15)    pick=android15 ;;
+                      36|16)    pick=android16 ;;
+                      37|17)    pick=android17 ;;
+                      *)        pick="" ;;
+                  esac
+              fi
+              # 只接受候选集里有的那一代
+              for c in $android; do
+                  [ "$c" = "$pick" ] && { android="$pick"; break; }
+              done
         fi
         android=$(echo "$android" | cut -d" " -f1)
     fi
