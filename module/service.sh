@@ -275,12 +275,21 @@ load_mod() {
         return 0
     fi
 
-    local out rc cand _sib
-    local -a cands=("$ko")
+    # 黑名单：上一次开机死在加载这个模块上，就不再试。
+    # 宁可少一个功能，也不要让设备再卡一次开机。
+    if [ -f "$STATE_DIR/blacklist" ] && grep -qx "$base" "$STATE_DIR/blacklist" 2>/dev/null; then
+        dlog "[SKIP] $base 在上次开机的黑名单里（加载它会卡死），跳过"
+        return 1
+    fi
+
+    local out rc _sib _tryko
     # 5.10 / 5.15 各有两代共用同一个内核版本（android12-5.10 与 android13-5.10、
     # android13-5.15 与 android14-5.15）。内核串里没有 androidNN 时 KMI 只能猜，
     # 猜错时代的 vermagic 只到 5.10 这个粒度、分辨不出来，insmod 会因符号版本
-    # 不符失败。这里换另一代的 ko 再试一次，比让用户自己去猜 KMI 靠谱。
+    # 不符失败。这里换另一代的 ko 再试一次。
+    #
+    # 不能用 bash 的数组（cands=(...)）：Android 的 sh 是 mksh，不支持 `=()`，
+    # 会直接 syntax error，而 bash -n 查不出来。用两次顺序尝试代替循环。
     case "$KMI" in
         android12-5.10) _sib=android13-5.10 ;;
         android13-5.10) _sib=android12-5.10 ;;
@@ -288,33 +297,38 @@ load_mod() {
         android14-5.15) _sib=android13-5.15 ;;
         *)              _sib="" ;;
     esac
-    if [ -n "$_sib" ] && [ -f "$MODDIR/ko/$base-$_sib.ko" ]; then
-        cands+=("$MODDIR/ko/$base-$_sib.ko")
-    fi
 
-    # 黑名单：上一次开机死在加载这个模块上，就不再试
-    if [ -f "$STATE_DIR/blacklist" ] && grep -qx "$base" "$STATE_DIR/blacklist" 2>/dev/null; then
-        dlog "[SKIP] $base 在上次开机的黑名单里（加载它会卡死），跳过"
-        return 1
-    fi
-
-    for cand in "${cands[@]}"; do
-        # 面包屑：卡死时这行会留在磁盘上，下次开机就知道死在哪个模块
-        printf '%s\n' "$base" > "$STATE_DIR/loading" 2>/dev/null
+    _try_load() {
+        local k="$1" o
+        printf '%s
+' "${base}" > "$STATE_DIR/loading" 2>/dev/null
         sync
         if [ -n "$params" ]; then
-            out=$(insmod "$cand" $params 2>&1)
+            o=$(insmod "$k" $params 2>&1)
         else
-            out=$(insmod "$cand" 2>&1)
+            o=$(insmod "$k" 2>&1)
         fi
-        if grep -q "^${base} " /proc/modules 2>/dev/null; then
+        out="$o"
+        grep -q "^${base} " /proc/modules 2>/dev/null
+    }
+
+    if _try_load "$ko"; then
+        rm -f "$STATE_DIR/loading" 2>/dev/null
+        dlog "[OK]   $base  ($(basename "$ko"))${params:+ $params}"
+        return 0
+    fi
+
+    if [ -n "$_sib" ] && [ -f "$MODDIR/ko/$base-$_sib.ko" ]; then
+        _tryko="$MODDIR/ko/$base-$_sib.ko"
+        dlog "[TRY] $base: $(basename "$ko") 失败，换 $_sib 再试"
+        if _try_load "$_tryko"; then
             rm -f "$STATE_DIR/loading" 2>/dev/null
-            [ "$cand" != "$ko" ] && dlog "[KMI] $base: ${KMI} 不符，实际用的是 $(basename "$cand")"
-            dlog "[OK]   $base  ($(basename "$cand"))${params:+ $params}"
+            dlog "[KMI] $base: ${KMI} 不符，实际用的是 $(basename "$_tryko")"
+            dlog "[OK]   $base  ($(basename "$_tryko"))${params:+ $params}"
             return 0
         fi
-        [ "$cand" != "$ko" ] || dlog "[TRY] $base: $(basename "$cand") 失败: ${out:-无输出}"
-    done
+    fi
+    rm -f "$STATE_DIR/loading" 2>/dev/null
     # 把内核日志里的具体缺符号抄下来，避免用户只能看到一个笼统报错
     ko_load_error "$base"
     return 1
