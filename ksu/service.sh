@@ -54,30 +54,76 @@ echo "moddir:  $MODDIR" >> "$LOG"
 # 6.1.157-android14-11-o-g... -> android14-6.1
 KREL=$(uname -r)
 KMI=""
-for tag in android12-5.10 android13-5.10 android13-5.15 android14-5.15 \
-           android14-6.1 android15-6.6 android16-6.12 android17-6.18; do
+for tag in android12-5.10 android13-5.10 android13-5.15 android14-5.15            android14-6.1 android15-6.6 android16-6.12 android17-6.18; do
     case "$KREL" in
         *"${tag%-*}"*"-${tag#*-}"*|*"-$tag"*) KMI="$tag"; break ;;
     esac
 done
-# 更宽松的匹配: 直接从版本串里取 androidN 与 major.minor
+
+# 内核串里没有 androidN 的情况（通用 GKI，例如 5.10.269-gki-g658b84f13496）
+# 不能就此放弃：Android 大版本从系统属性取，内核请版本从 uname -r 取，拼出 KMI。
 if [ -z "$KMI" ]; then
     android=$(echo "$KREL" | grep -oE 'android[0-9]+' | head -1)
-    major=$(echo "$KREL" | grep -oE '^[0-9]+\.[0-9]+' | head -1)
+    major=$(echo "$KREL" | grep -oE '^[0-9]+[.][0-9]+' | head -1)
+
+    if [ -z "$android" ]; then
+        rel=$(getprop ro.build.version.release 2>/dev/null | grep -oE '^[0-9]+')
+        [ -n "$rel" ] && android="android$rel"
+    fi
+    if [ -z "$android" ]; then
+        sdk=$(getprop ro.build.version.sdk 2>/dev/null | grep -oE '^[0-9]+')
+        case "$sdk" in
+            31|32) android=android12 ;;
+            33)    android=android13 ;;
+            34)    android=android14 ;;
+            35)    android=android15 ;;
+            36)    android=android16 ;;
+            37)    android=android17 ;;
+        esac
+    fi
     [ -n "$android" ] && [ -n "$major" ] && KMI="$android-$major"
 fi
 echo "kmi:     ${KMI:-未识别}" >> "$LOG"
 
 # 选 ko: 优先精确 KMI, 否则退回目录里唯一的一组
+# 读 .ko 的 vermagic，和 uname -r 比"主版本.次版本"。只在无法确定 KMI
+# 时用，作为最后一道防线 —— 版本对不上的模块 insmod 必然失败。
+ko_vermagic_ok() {
+    local ko="$1"
+    local vm kmaj
+    # grep -ao 在所有 Android 上都有；strings 不一定。
+    vm=$(grep -ao 'vermagic=[^ ]*' "$ko" 2>/dev/null | head -1 | sed 's/^vermagic=//')
+    [ -z "$vm" ] && return 1
+    kmaj=$(echo "$(uname -r)" | grep -oE '^[0-9]+[.][0-9]+')
+    case "$vm" in
+        *" $kmaj "*|"$kmaj "*|*" $kmaj."*|"$kmaj."*) return 0 ;;
+    esac
+    return 1
+}
+
+
 find_ko() {
     local base="$1"
     local f="$MODDIR/ko/$base-$KMI.ko"
     if [ -n "$KMI" ] && [ -f "$f" ]; then echo "$f"; return 0; fi
-    # 回退: 任意 KMI 版本
-    local any
-    any=$(ls "$MODDIR/ko/$base"-*.ko 2>/dev/null | head -1)
-    [ -n "$any" ] && { echo "$any"; return 0; }
-    return 1
+    # 不再"随便挑一个 KMI 的 ko"。之前 KMI 没识别出来时，ls | head -1 会
+    # 挑到别的 KMI，insmod 必然 unknown symbol，用户看到"所有模块都装不上"，
+    # 真正原因却被掩盖了（见 issues/1）。
+    #
+    # 仅当这个模块在目录里只有一份、且 vermagic 与本机内核一致时才用它。
+    local all
+    all=$(ls "$MODDIR/ko/$base"-*.ko 2>/dev/null)
+    [ -z "$all" ] && return 1
+    if [ "$(echo "$all" | wc -l)" -ne 1 ]; then
+        echo "[MISS] $base: KMI=${KMI:-未识别}，目录里有多份候选，拒绝猜" >> "$LOG"
+        return 1
+    fi
+    if ! ko_vermagic_ok "$all"; then
+        echo "[MISS] $base: KMI=${KMI:-未识别}，$(basename "$all") 的 vermagic 与 $(uname -r) 不符" >> "$LOG"
+        return 1
+    fi
+    echo "$all"
+    return 0
 }
 
 load_mod() {
@@ -89,6 +135,15 @@ load_mod() {
     fi
     local name
     name=$(basename "$ko" .ko)
+
+    # 先验 vermagic：KMI 选错时 insmod 只会报 "unknown symbol in module"，
+    # 把"模块对不上内核"这条真因埋掉（issues/1 就是这么被误判的）。
+    if ! ko_vermagic_ok "$ko"; then
+        local vm
+        vm=$(grep -ao 'vermagic=[^ ]*' "$ko" 2>/dev/null | head -1 | sed 's/^vermagic=//')
+        echo "[FAIL] $base: $(basename "$ko") 的 vermagic (${vm:-未知}) 与内核 $(uname -r) 不匹配，跳过" >> "$LOG"
+        return 1
+    fi
 
     # 判断是否已加载: 用模块名而不是文件名, 因为文件名带 KMI 后缀
     if grep -q "^${base} " /proc/modules 2>/dev/null; then
