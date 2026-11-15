@@ -354,6 +354,13 @@ snapshot_once() {
         printf -- '-- renderD128: %s\n' "$([ -e /dev/dri/renderD128 ] && echo 有 || echo 无)"
         printf -- '-- dmesg 尾部:\n'
         dmesg 2>/dev/null | tail -40
+
+        #
+        # 自家日志单独再放一份：dmesg 尾部很容易被充电/蓝牙/CCCI 刷屏挤满，
+        # 真正要看的"service.sh 走到哪一步"反而被冲掉。快照自带这一段，
+        # 事后只看 hang-report.txt 一个文件就够。
+        printf -- '-- 模块日志尾部:\n'
+        tail -30 "$LOG" 2>/dev/null
     } > "$SNAP.tmp" 2>/dev/null
     mv -f "$SNAP.tmp" "$SNAP" 2>/dev/null
     sync
