@@ -60,26 +60,48 @@ for tag in android12-5.10 android13-5.10 android13-5.15 android14-5.15          
     esac
 done
 
-# 内核串里没有 androidN 的情况（通用 GKI，例如 5.10.269-gki-g658b84f13496）
-# 不能就此放弃：Android 大版本从系统属性取，内核请版本从 uname -r 取，拼出 KMI。
+# 识别失败时不要放弃，也不要把系统属性当第一依据。
+#
+# 内核主版本才是硬约束：6.1 只可能是 android14，6.6 只可能是 android15。
+# 有些 ROM 会伪造 ro.build.version.release（本机实测报 17、sdk 37，而内核是
+# 6.1），拿属性当主依据会推出 android17-6.1 这种根本不存在的组合。
+#
+# 所以先用内核版本定候选，只有 5.10（12 或 13）、5.15（13 或 14）这种真的
+# 有两代共用的才用属性消歧。
 if [ -z "$KMI" ]; then
-    android=$(echo "$KREL" | grep -oE 'android[0-9]+' | head -1)
     major=$(echo "$KREL" | grep -oE '^[0-9]+[.][0-9]+' | head -1)
+    android=$(echo "$KREL" | grep -oE 'android[0-9]+' | head -1)
 
     if [ -z "$android" ]; then
-        rel=$(getprop ro.build.version.release 2>/dev/null | grep -oE '^[0-9]+')
-        [ -n "$rel" ] && android="android$rel"
-    fi
-    if [ -z "$android" ]; then
-        sdk=$(getprop ro.build.version.sdk 2>/dev/null | grep -oE '^[0-9]+')
-        case "$sdk" in
-            31|32) android=android12 ;;
-            33)    android=android13 ;;
-            34)    android=android14 ;;
-            35)    android=android15 ;;
-            36)    android=android16 ;;
-            37)    android=android17 ;;
+        case "$major" in
+            5.10) android="android12 android13" ;;
+            5.15) android="android13 android14" ;;
+            6.1)  android="android14" ;;
+            6.6)  android="android15" ;;
+            6.12) android="android16" ;;
+            6.18) android="android17" ;;
+            *)    android="" ;;
         esac
+
+        # 有多个候选时才看系统属性；取不到就保持第一个（较老的那一代）
+        if [ "$(echo $android | wc -w)" -gt 1 ]; then
+            rel=$(getprop ro.build.version.release 2>/dev/null | grep -oE '^[0-9]+')
+            [ -z "$rel" ] && rel=$(getprop ro.build.version.sdk 2>/dev/null)
+            case "$rel" in
+                31|32|12) pick=android12 ;;
+                33|13)    pick=android13 ;;
+                34|14)    pick=android14 ;;
+                35|15)    pick=android15 ;;
+                36|16)    pick=android16 ;;
+                37|17)    pick=android17 ;;
+                *)        pick="" ;;
+            esac
+            # 只接受候选集里有的那一代
+            for c in $android; do
+                [ "$c" = "$pick" ] && { android="$pick"; break; }
+            done
+        fi
+        android=$(echo "$android" | cut -d" " -f1)
     fi
     [ -n "$android" ] && [ -n "$major" ] && KMI="$android-$major"
 fi
