@@ -43,9 +43,23 @@ else
     echo "  [FAIL] 容器内挂载 /proc"
 fi
 
-grep -q '^devtmpfs' /proc/filesystems 2>/dev/null \
-    && echo "  [OK]   devtmpfs" \
-    || echo "  [--]   devtmpfs 未注册"
+# /proc/filesystems 的格式是 "nodev<TAB>devtmpfs"：第一列是 nodev，
+# 文件系统名在第二列。用 ^devtmpfs 永远匹配不到 —— 这个错误让「操作」按钮
+# 一直报「devtmpfs 未注册」，而 droidspaces check 显示 [✓] devtmpfs support。
+if awk '{print $NF}' /proc/filesystems 2>/dev/null | grep -qx devtmpfs; then
+    # probe=2 只注册文件系统、不装 device_add 钩子，所以挂上去是空的。
+    # 对 Droidspaces 而言注册本身就够了，这里如实标注节点数。
+    n=0
+    mkdir -p /mnt/.dsp_devtest 2>/dev/null
+    if mount -t devtmpfs devtmpfs /mnt/.dsp_devtest 2>/dev/null; then
+        n=$(ls /mnt/.dsp_devtest 2>/dev/null | wc -l)
+        umount /mnt/.dsp_devtest 2>/dev/null
+    fi
+    rmdir /mnt/.dsp_devtest 2>/dev/null
+    echo "  [OK]   devtmpfs（已注册，挂载后 $n 个节点）"
+else
+    echo "  [--]   devtmpfs 未注册"
+fi
 
 [ -e /dev/dri/renderD128 ] \
     && echo "  [OK]   /dev/dri/renderD128 (vkms)" \
