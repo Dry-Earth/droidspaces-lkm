@@ -300,6 +300,55 @@ stating.
 
 See [docs/CHANGELOG.md](docs/CHANGELOG.md) for what each release fixed.
 
+## Troubleshooting
+
+### `insmod: unknown symbol in module, or unknown parameter`
+
+This message is the kernel's catch-all for two unrelated problems, and it hides
+which one you hit. The module log now separates them.
+
+**1. Wrong KMI.** The `.ko` was built for a different kernel version. `service.sh`
+checks `vermagic` before every insmod and refuses with a message naming both
+versions, instead of letting the kernel report an unknown symbol.
+
+```
+[FAIL] lkm4ctr: lkm4ctr-android14-6.1.ko 的 vermagic (6.1.166-dirty) 与内核 5.10.269-... 不匹配，跳过
+```
+
+If you see that, the installed package does not match the device. Reinstall the
+build for your kernel (see the table above), and make sure the manager is not
+holding an old copy.
+
+**2. A symbol the kernel does not export.** KMI matching cannot fix this: a
+vendor kernel of the same version can trim exports that the generic one has. The
+log now quotes the kernel's own line, so you get the symbol name rather than a
+generic failure:
+
+```
+[FAIL] lkm4ctr: insmod: failed to load ...: unknown symbol in module
+             [  12.345] lkm4ctr: Unknown symbol some_helper (err -2)
+```
+
+Report that symbol name in an issue — it says exactly what to look at.
+
+**3. `unknown parameter`** means an `param=value` was passed that the module does
+not declare. `service.sh` now filters parameters against the `.ko` before use and
+logs what it dropped:
+
+```
+[WARN] devtmpfs_lkm 不支持参数 foo，已忽略
+```
+
+### Nothing loads at all
+
+Run the Action button in the module page. It prints the kernel, the resolved KMI,
+the module list and a capability check, which is enough to tell an environment
+mismatch from a real failure.
+
+Also check the boot guard: if three consecutive boots never reach
+`boot-completed.sh`, the module disables itself and writes the reason to
+`/data/local/tmp/droidspaces-lkm.log`.
+
 ## Important notes
 
 ### A mismatched vermagic can still load

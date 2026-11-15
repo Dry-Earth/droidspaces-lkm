@@ -269,6 +269,47 @@ Droidspaces 实际使用的探测方式。
 
 每个版本修了什么见 [CHANGELOG.md](CHANGELOG.md)。
 
+## 排障
+
+### `insmod: unknown symbol in module, or unknown parameter`
+
+这是内核把所有"装不上"的情况合并成的一句话，它**不告诉你到底是哪一种**。
+模块日志现在会把它们分开。
+
+**1. KMI 选错了** —— `.ko` 是给别的内核版本编的。`service.sh` 每次 insmod 前先验
+`vermagic`，对不上就直接拒绝并打印两个版本号：
+
+```
+[FAIL] lkm4ctr: lkm4ctr-android14-6.1.ko 的 vermagic (6.1.166-dirty) 与内核 5.10.269-... 不匹配，跳过
+```
+
+看到这个说明装的包和设备对不上：重装对应内核的包，并确认管理器里没有旧副本。
+
+**2. 内核没导出某个符号** —— 这个 KMI 匹配救不了：同版本的厂商内核可能裁掉了
+通用内核有的导出符号。日志会直接把内核那句原文抄下来，给出符号名：
+
+```
+[FAIL] lkm4ctr: insmod: failed to load ...: unknown symbol in module
+             [  12.345] lkm4ctr: Unknown symbol some_helper (err -2)
+```
+
+带着那个符号名开 issue，就能直接定位。
+
+**3. `unknown parameter`** —— 表示传了模块没声明的参数。`service.sh` 现在会先用
+`.ko` 校验参数，不支持的记一条警告再忽略：
+
+```
+[WARN] devtmpfs_lkm 不支持参数 foo，已忽略
+```
+
+### 一个模块都没加载
+
+点 KernelSU 模块页的「操作」按钮。它会打印内核版本、识别出的 KMI、模块列表和
+能力自检，足够区分"环境不匹配"和"真的坏了"。
+
+另外注意开机保护：连续三次开机都没走到 `boot-completed.sh`，模块会自动禁用自己，
+并把原因写进 `/data/local/tmp/droidspaces-lkm.log`。
+
 ## 重要提醒
 
 ### vermagic 不匹配也可能加载成功
