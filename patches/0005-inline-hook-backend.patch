@@ -428,10 +428,10 @@ index 0000000..08d0d2f
 +.size hk_flush_icache, . - hk_flush_icache
 diff --git a/glue/hk/hk_inline.c b/glue/hk/hk_inline.c
 new file mode 100644
-index 0000000..ecd46f7
+index 0000000..0ec132e
 --- /dev/null
 +++ b/glue/hk/hk_inline.c
-@@ -0,0 +1,1585 @@
+@@ -0,0 +1,1592 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +/*
 + * Copyright (C) 2026 dere3046
@@ -1467,6 +1467,24 @@ index 0000000..ecd46f7
 +		return -EINVAL;
 +	}
 +
++	mem = (unsigned long)hk_exec_alloc(addr, HK_TRAMP_SIZE);
++	if (!mem) {
++		pr_warn("[lkmhook] inline exec alloc %s failed\n", sym);
++		ret = -ENOMEM;
++		goto err_free;
++	}
++	h->mem = (void *)mem;
++	h->mem_size = HK_TRAMP_SIZE;
++	h->addr = addr;
++	h->name = sym;
++
++	/*
++	 * [B-RANGE] trampoline 落在 b 的量程内就只改写 1 条指令（4 字节 b），
++	 * 否则退回 5 条指令窗口 + 20 字节绝对跳转桩。
++	 */
++	near_ok = hk_branch_reachable(addr, mem);
++	h->window = near_ok ? 4 : HK_INLINE_PATCH_LEN;
++
 +	/*
 +	 * the window is read once through the nofault helper and every later step
 +	 * uses the copy, the entry can be restored to its own bytes by a failed
@@ -1493,23 +1511,6 @@ index 0000000..ecd46f7
 +		goto err_free;
 +	}
 +
-+	mem = (unsigned long)hk_exec_alloc(addr, HK_TRAMP_SIZE);
-+	if (!mem) {
-+		pr_warn("[lkmhook] inline exec alloc %s failed\n", sym);
-+		ret = -ENOMEM;
-+		goto err_free;
-+	}
-+	h->mem = (void *)mem;
-+	h->mem_size = HK_TRAMP_SIZE;
-+	h->addr = addr;
-+	h->name = sym;
-+
-+	/*
-+	 * [B-RANGE] trampoline 落在 b 的量程内就只改写 1 条指令（4 字节 b），
-+	 * 否则退回 5 条指令窗口 + 20 字节绝对跳转桩。
-+	 */
-+	near_ok = hk_branch_reachable(addr, mem);
-+	h->window = near_ok ? 4 : HK_INLINE_PATCH_LEN;
 +
 +	tramp[0] = HK_INS_BTI_JC;
 +	tramp[1] = HK_INS_LDR_X17;
@@ -1602,8 +1603,14 @@ index 0000000..ecd46f7
 +	hk_exec_free(h->mem);
 +	h->mem = NULL;
 +	pr_warn("[lkmhook] inline %s failed %d\n", sym, ret);
-+err_free:
++	err_free:
++	/* 分配已经前移到取指令之前，这里要把它收掉，否则可执行页泄漏 */
++	if (h->mem) {
++		hk_exec_free(h->mem);
++		h->mem = NULL;
++	}
 +	kfree(tramp);
++	return ret;
 +	return ret;
 +}
 +
