@@ -13,6 +13,40 @@
 `10001`–`10003` 这种小数字；如果新版本还用 `100`，KernelSU 更新器会认为
 100 < 10003 而不推送更新。日期编码天然单调递增，不会再因为版本号重置而倒退。
 
+## v0.1.3 — 修掉 "unknown symbol" 的真正来源
+
+`versionCode` 20261118。
+
+大量用户反馈 `insmod` 报 `unknown symbol in module, or unknown parameter`。
+之前只处理了"KMI 选错"这一种，但真正的元凶是另一件事：
+
+`include/linux/percpu-rwsem.h` 里的内联函数**无条件**调用两个 Android vendor hook：
+
+```c
+_trace_android_vh_record_pcpu_rwsem_starttime()
+_trace_android_vh_record_pcpu_rwsem_time_early()
+```
+
+只要模块里有代码走 percpu-rwsem（本项目 vendored 的 overlayfs 用
+`inode_lock()` 就会走到），编译出的 .ko 就带这两个**未定义符号**。它们由
+`CONFIG_ANDROID_VENDOR_HOOKS` 生成，**不是所有厂商内核都开**——没开的内核上，
+模块根本加载不了。
+
+实测三份产物都带着它，不是某个 KMI 特有：
+
+| 产物 | starttime | time_early |
+|---|---|---|
+| android12-5.10 | 未定义 | — |
+| android14-6.1 | 未定义 | 未定义 |
+| android16-6.12 | 未定义 | — |
+
+顺带澄清一个误判：**这和 kprobe 无关**。模块对 `register_kprobe` 是运行时用
+kallsyms 解析的，不是链接依赖，未定义符号表里根本没有 kprobe 相关项。
+
+修法是在模块内提供 **weak 空实现**：内核导出同名符号时行为不变，没导出时引用
+解析到本地空函数，模块照常加载。这两个 hook 只用于 rwsem 争用计时统计，空实现
+不改变任何锁语义。
+
 ## v0.1.2 — 把 "unknown symbol" 拆开
 
 `versionCode` 20261117。
