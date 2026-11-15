@@ -5981,7 +5981,7 @@ index 0000000..b10dab9
 +#endif
 +#endif
 diff --git a/glue/shadow_hijack.c b/glue/shadow_hijack.c
-index d44dded..ee63003 100644
+index d44dded..e7953a1 100644
 --- a/glue/shadow_hijack.c
 +++ b/glue/shadow_hijack.c
 @@ -88,6 +88,9 @@
@@ -5994,7 +5994,34 @@ index d44dded..ee63003 100644
  #include "lkm4ctr_log.h"
  
  #define SHADOW_HIJACK_VERSION	"1.0"
-@@ -1016,12 +1019,44 @@ int shadow_hook_install(struct shadow_hook *hook)
+@@ -899,6 +902,26 @@ void __nocfi shadow_hook_remove(struct shadow_hook *hook)
+ EXPORT_SYMBOL_GPL(shadow_hook_remove);
+ 
+ #else /* !(CONFIG_FUNCTION_TRACER && CONFIG_DYNAMIC_FTRACE) */
++/*
++ * inline 文本改写开关，默认关闭。
++ *
++ * 为什么不默认开：inline 会直接改写函数入口的指令。这个模块钩了 55 个函数，
++ * 包括 __arm64_sys_openat、getuid 系列、prepare_creds、get_fs_type 这些
++ * 每次系统调用/每次权限检查都要走的路径。实测手动 insmod 一切正常，但开机
++ * 由 service.sh 加载时会出现整个系统卡死（无 panic、adb 失联、管理器 ANR），
++ * 且无法用手动加载复现。
++ *
++ * 没有定位到根因之前，默认必须是保守的那个后端：kprobe 只是往函数入口插一个
++ * 断点，由内核的 kprobes 机制负责保存/恢复现场，出错时影响面小得多。
++ *
++ * 想实验 inline：insmod 后 echo 1 > /sys/module/lkm4ctr/parameters/inline_hooks
++ * 再重新加载本模块（或用 diagfs 重装钩子）。别放进开机自启。
++ */
++static bool inline_hooks;
++module_param_named(inline_hooks, inline_hooks, bool, 0644);
++MODULE_PARM_DESC(inline_hooks, "use inline text patching instead of kprobes (experimental, default off)");
++
++
+ 
+ typedef int (*shadow_register_kprobe_t)(struct kprobe *);
+ typedef void (*shadow_unregister_kprobe_t)(struct kprobe *);
+@@ -1016,12 +1039,44 @@ int shadow_hook_install(struct shadow_hook *hook)
  	if (!hook->address)
  		return -ENOENT;
  
@@ -6005,7 +6032,7 @@ index d44dded..ee63003 100644
 +	 * 不会落回补丁点，因此不需要递归保护。
 +	 * 函数入口装不下改写窗口时引擎返回 -EOPNOTSUPP，此时回落到 kprobe。
 +	 */
-+	err = shadow_inline_install(hook);
++	err = inline_hooks ? shadow_inline_install(hook) : -EOPNOTSUPP;
 +	if (!err) {
 +		hook->inline_active = true;
 +		/*
@@ -6040,7 +6067,7 @@ index d44dded..ee63003 100644
  	memset(&hook->kp, 0, sizeof(hook->kp));
  	hook->kp.addr = (kprobe_opcode_t *)hook->address;
  	hook->kp.pre_handler = shadow_hook_pre_handler;
-@@ -1051,7 +1086,12 @@ void shadow_hook_remove(struct shadow_hook *hook)
+@@ -1051,7 +1106,12 @@ void shadow_hook_remove(struct shadow_hook *hook)
  	if (!hook->installed)
  		return;
  
