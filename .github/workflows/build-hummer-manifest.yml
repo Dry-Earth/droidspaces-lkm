@@ -163,6 +163,14 @@ jobs:
           test -x tools/clang/bin/clang
           test -x tools/build-tools/bin/make
 
+      - name: Save manifest tools cache
+        if: always()
+        continue-on-error: true
+        uses: actions/cache/save@v4
+        with:
+          path: tools
+          key: hummer-manifest-tools-${{ hashFiles('metadata.env') }}-${{ env.CLANG_REV }}-v1
+
       - name: Ensure pahole is available
         run: |
           set -eux

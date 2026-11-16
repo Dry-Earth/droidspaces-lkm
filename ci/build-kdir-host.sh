@@ -6,6 +6,7 @@ ROOT=${ROOT:-$PWD}
 TOOLS=${TOOLS:-$ROOT/tools}
 export PATH="$TOOLS/clang/bin:$TOOLS/build-tools/bin:$TOOLS/kernel-build-tools/bin:$PATH"
 export LD_LIBRARY_PATH="$TOOLS/build-tools/lib64:$TOOLS/kernel-build-tools/lib64:${LD_LIBRARY_PATH:-}"
+export BISON_PKGDATADIR="$TOOLS/build-tools/common/bison"
 export ARCH=arm64
 export LLVM=1
 export LLVM_IAS=1

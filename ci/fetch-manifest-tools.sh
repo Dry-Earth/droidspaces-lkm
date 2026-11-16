@@ -35,6 +35,12 @@ fetch_tree platform/prebuilts/clang/host/linux-x86 "$CLANG_PROJECT_SHA" \
 
 echo "==> prebuilts/build-tools $BUILDTOOLS_SHA"
 fetch_tree platform/prebuilts/build-tools "$BUILDTOOLS_SHA" linux-x86 "$TOOLS/build-tools"
+# bison in linux-x86/bin was built with pkgsdatadir=/nonexistent/common/bison;
+# its m4 macros and skeletons ship separately under common/bison.
+mkdir -p "$TOOLS/build-tools/common/bison"
+curl -fL --retry 5 --retry-all-errors --retry-delay 2 --connect-timeout 20 \
+	"$BASE/platform/prebuilts/build-tools/+archive/$BUILDTOOLS_SHA/common/bison.tar.gz" \
+	| tar -xz -C "$TOOLS/build-tools/common/bison"
 
 if [ -n "${KERNEL_BUILDTOOLS_SHA:-}" ]; then
 	echo "==> prebuilts/kernel-build-tools $KERNEL_BUILDTOOLS_SHA"
