@@ -121,24 +121,23 @@ v0.1.22 发布后，`nm -u` 实测每个 KMI 的 `lkm4ctr` 还有多少 VFS 类�
 
 | KMI | 静态导入 | 降幅 |
 |---|---|---|
-| android12-5.10 | 2 | −93% |
-| android13-5.10 | 2 | −93% |
-| android13-5.15 | 2 | −93% |
-| android14-5.15 | 2 | −93% |
-| android14-6.1 | 3 | −50% |
-| android15-6.6 | 5 | −86% |
-| android16-6.12 | 7 | −82% |
+| android12-5.10 | 1 | −97% |
+| android13-5.10 | 1 | −97% |
+| android13-5.15 | 1 | −97% |
+| android14-5.15 | 1 | −97% |
+| android14-6.1 | 2 | −67% |
+| android15-6.6 | 2 | −95% |
+| android16-6.12 | 2 | −95% |
 
-剩下的都是内核必然导出的基础设施（`percpu_counter_add_batch`、
-`__percpu_down_read` 之类），不是可裁的辅助函数。
+这组数字来自 `nm -u` 实测：android12-5.10 / android14-6.1 / android16-6.12
+三个 KMI 逐一核对过（CI #153 的产物）。5.15 和 6.6 两列是按同样的修改推算的
+（`capable_wrt_inode_uidgid` 的 MID 修复覆盖 5.15，`_many` 的 6.10+ 修复覆盖
+6.6，各自只减掉对应那一项），发版前的全量构建会复核。
 
-这组数字来自 `nm -u` 逐项核对，其中 **2/2/2/2/3/5/8 是实测值**（对应
-`android16-6.12` 收 `generic_encode_ino32_fh` 之前的那轮构建）。
-
-6.12 的 7 是把最后那个 `generic_encode_ino32_fh`（6.9+ 才存在，6.6 走
-`NULL` 降级所以不参与计数）算进去后的预期值 —— 改动已合入并通过构建，
-但那个 KMI 的产物没能取到，所以标为预期而非实测。发版后可以用
-`nm -u` 复核。
+剩下的 1~2 个是 `__percpu_down_read`（lib/percpu-rwsem.c 的锁原语）和
+`percpu_counter_add_batch`（lib/percpu_counter.c 里 percpu_counter_add 的
+底层）—— 两者被大量内联代码引用，裁掉会连带破坏内核自身，不存在被裁的可能。
+Meizu 6.1.25 的真实导出表也确认两者都导出。
 
 ### 三种机制，对应三类失效
 
@@ -251,6 +250,21 @@ python3 scripts/verify_against_bootimg.py --bootimg boot.img \
 `kallsyms_lookup_name`，脚本直接报错而不是给出「全部模块都缺」的错误结论 ——
 **错误的结论比没有结论更糟**。
 
+**按 KMI 逐个跳过不匹配的模块。** 工具第一次实际使用时踩到的：拿
+android12-5.10 和 android16-6.12 的 `.ko` 去比对 Meizu 6.1.25 的导出表，
+报出 **144 个「缺失」**，实际全是版本不匹配 ——
+
+```
+5.10 模块缺 __cfi_slowpath / arm64_const_caps_ready / cpu_hwcap_keys
+        （6.1 内核没有，5.10 有）
+6.12 模块缺 __kmalloc_noprof / __fortify_panic
+        （6.12 的新 API，6.1 当然没有）
+```
+
+只有同名 KMI 的模块才有比对意义。加了 `--kmi` 参数后按文件名逐个判断，
+不匹配的直接跳过并打印原因、不计入缺失数。这类工具最危险的不是漏报，
+是误报 —— 144 个假缺失会让人以为「全都坏了」，反而掩盖真正的那一个。
+
 ### 版本变体
 
 几个符号在 6.x 中间改过形态，不能一个名字走到底：
@@ -268,6 +282,25 @@ python3 scripts/verify_against_bootimg.py --bootimg boot.img \
 
 `generic_encode_ino32_fh` 有一点特殊：6.9 以下原代码把它降级成 `NULL`
 （那时默认编码器就是 NULL），6.9+ 改成运行时指针。两者版本互斥。
+
+**但条件条目宏 + 对象式 `#define` 还不够。** `_many` 那两个和 `d_parent_ino`
+加上去之后，6.12 的 `nm -u` 里它们还在 —— 因为没有直接调用点，调用发生在
+内核头文件的 `static inline` 函数体里：
+
+```c
+static inline void percpu_counter_destroy(struct percpu_counter *fbc)
+{
+	percpu_counter_destroy_many(fbc, 1);     /* 这个引用在这里就固化了 */
+}
+```
+
+那个体在 compat 头之前解析完，对象式宏管不到。三个都得改用同名函数
+（签名取自上游 v6.12 头文件 —— 本地 BTF 是 6.1.138，没有 6.10+/6.12 的符号）。
+
+改完之后三个 KMI 的 VFS 类静态导入降到 1~2 个，剩下的
+`__percpu_down_read` / `percpu_counter_add_batch` 是 percpu-rwsem 锁原语和
+`percpu_counter_add` 的底层实现，被大量内联代码引用，裁掉会连带破坏内核自身 ——
+不存在被裁的可能。
 
 ### 构建期防护
 
