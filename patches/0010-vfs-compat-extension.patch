@@ -80,7 +80,7 @@ index 0f951ba..e0c0aa0 100644
  	vns_sem_init_ns(&vns_default_ipc_ns);
  	vns_shm_init_ns(&vns_default_ipc_ns);
 diff --git a/glue/vendor_kernel_overlay.c b/glue/vendor_kernel_overlay.c
-index f9c3546..674e524 100644
+index f9c3546..46f9ab9 100644
 --- a/glue/vendor_kernel_overlay.c
 +++ b/glue/vendor_kernel_overlay.c
 @@ -58,7 +58,42 @@
@@ -156,7 +156,7 @@ index f9c3546..674e524 100644
  		return err;
  	}
  	LKM4CTR_INFO("vendor_kernel", "vendored overlayfs now handles every get_fs_type(\"overlay\") lookup");
-@@ -106,14 +152,23 @@ int vns_overlay_init(void)
+@@ -106,14 +152,21 @@ int vns_overlay_init(void)
  
  void vns_overlay_exit(void)
  {
@@ -174,10 +174,8 @@ index f9c3546..674e524 100644
 -	return scnprintf(buf, buflen, "overlay_mounts: %d\n",
 +	if (!vns_ovl_ready)
 +		return scnprintf(buf, buflen,
-+				 "overlay_override: off (running kernel's overlayfs in use)
-+");
-+	return scnprintf(buf, buflen, "overlay_override: on, overlay_mounts: %d
-+",
++				 "overlay_override: off (running kernel's overlayfs in use)\n");
++	return scnprintf(buf, buflen, "overlay_override: on, overlay_mounts: %d\n",
  			 atomic_read(&vns_ovl_mount_count));
  }
  
