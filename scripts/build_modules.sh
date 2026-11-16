@@ -376,30 +376,70 @@ fi
 # "unknown symbol in module"，我们这边什么信号都没有。这里把已知在部分
 # 内核上不存在的符号直接查出来，在 CI 就报。
 #
-# 已知清单：
-#   __stack_chk_guard      5.10 GKI 是 PER_TASK 模式，全局符号不存在
-#   cgroup_rm_cftypes      5.10 里存在但没 EXPORT_SYMBOL_GPL（6.1 才加）
-#   drm_crtc_add_crc_entry 属 drm.ko 的模块依赖，加载时序不对就缺
-#   任何 _trace_android_vh_*  vendor hook，不是所有厂商内核都开
+# 已知清单（按来源分组）：
 #
-# CONFIG_TRIM_UNUSED_KSYMS 一类（厂商内核只保留树内模块用到的导出）：
+# A. 内核配置差异（不是裁剪）
+#   __stack_chk_guard      5.10 GKI 是 PER_TASK 模式，全局符号不存在
+#                          -> 构建期用 -fno-stack-protector 规避
+#   cgroup_rm_cftypes      5.10 里存在但没 EXPORT_SYMBOL_GPL（6.1 才加）
+#                          -> cpu_mod/pids_mod 走 cpu_ksym() 运行时解析
+#   drm_crtc_add_crc_entry 属 drm.ko 的模块依赖，加载时序不对就缺
+#                          -> patch_vkms_debugfs.py 去掉调用
+#   drmm_crtc_init_with_planes
+#                          6.12 厂商内核（小米系）只裁了较新的 drmm_ 版
+#                          -> 换成签名完全相同的 drm_crtc_init_with_planes
+#                          （两者都 variadic，上游都 EXPORT_SYMBOL）
+#                          实测：K90PM / 一加15 / 6.12.23-android16-5
+#
+# B. CONFIG_TRIM_UNUSED_KSYMS 一类（厂商只保留树内模块用到的导出）
+#   以下全部已通过 VNS_OVL_VFS_COMPAT_LIST + shadow_hook_resolve 运行时解析，
+#   或同名转发函数（/glue/vendor_kernel_ovl_vfs_compat.c）处理：
+#
 #   file_remove_privs / seq_escape_mem / kill_pid
-#       来自 vendored overlayfs 与 diag 路径。上游 lkm4ctr 已有
-#       VNS_OVL_VFS_COMPAT_LIST + shadow_hook_resolve 的运行时解析机制，
-#       但这三个当时没纳入 —— 于是在裁剪过的内核上报 Unknown symbol。
-#       实测：Meizu 21 Pro / Flyme 12.7 / 6.1.25-android14-11（issue #2）。
+#       来自 vendored overlayfs 与 diag 路径。实测 Meizu 21 Pro /
+#       Flyme 12.7 / 6.1.25-android14-11（issue #2）。
 #   path_put / kern_path
-#       droid_lkm_cpu 的路径解析用，同样会被裁。
+#       droid_lkm_cpu 的路径解析用。
 #   ip_check_defrag / __netif_rx / ndo_dflt_fdb_dump
 #       macvlan 从内核树源码编出来时引用的 IPv4/netdev 符号。
 #       注意 __netif_rx 在 5.18 之后已从主线移除 —— 出现它说明
 #       编译用的内核树比目标内核老，这类符号永远不可能在目标上解析到。
+#   get_next_ino
+#       mqueue / diagfs 用。6.12 厂商内核裁掉（issue #3 / #4）。
+#       -> 三层清单都列 + 同名转发函数
+#   cgroup_add_dfl_cftypes
+#       droid_lkm_cpu / droid_lkm_pids 用。原来直接调用，6.12 上未导出
+#       （issue #3 / #4）-> 改走 cpu_ksym() / kallrecon_klp()
+#   __dev_forward_skb / dev_forward_skb / dev_mc_add_excl / dev_uc_add_excl
+#   eth_header_cache / eth_header_cache_update
+#       macvlan 用。6.12 上连 dev_forward_skb 都没导出，所以不能靠「换名字」
+#       -> 同名转发函数 + 运行时解析（MACVLAN_SYMRES shim）
+#   backing_file_user_path
+#       6.12 实机报缺（issue #3 / #4），但源码里唯一调用点在
+#       #if >= 6.18 分支内 —— 矛盾未查清，暂按「可能被裁」列入
+#
+# C. 任何 _trace_android_vh_*  vendor hook，不是所有厂商内核都开
+#
+# 这份清单的作用：任何一次改动如果让某个 .ko 重新带上这些符号，CI 立刻
+# 报出来，而不是等用户装完只看到一句 "unknown symbol in module"。
 # ---------------------------------------------------------------------------
 echo
 echo "$(printf "$B_SYMCHECK_HEAD" "$KMI")"
-BAD_SYMS="__stack_chk_guard cgroup_rm_cftypes drm_crtc_add_crc_entry \
-file_remove_privs seq_escape_mem kill_pid path_put kern_path \
-ip_check_defrag __netif_rx ndo_dflt_fdb_dump"
+BAD_SYMS="__stack_chk_guard cgroup_rm_cftypes cgroup_add_dfl_cftypes \
+drm_crtc_add_crc_entry drmm_crtc_init_with_planes \
+file_remove_privs seq_escape_mem kill_pid path_put kern_path get_next_ino \
+ip_check_defrag __netif_rx ndo_dflt_fdb_dump \
+__dev_forward_skb dev_forward_skb dev_mc_add_excl dev_uc_add_excl \
+eth_header_cache eth_header_cache_update \
+backing_file_user_path \
+d_instantiate d_obtain_alias d_splice_alias ihold clear_inode clear_nlink \
+drop_nlink inc_nlink set_nlink inode_init_once inode_init_owner \
+inode_set_flags init_special_inode unlock_new_inode iget5_locked ilookup5 \
+insert_inode_hash __insert_inode_hash finish_open notify_change \
+setattr_prepare sync_filesystem touch_atime truncate_inode_pages_final \
+vfs_fsync generic_permission generic_file_splice_read kmem_cache_alloc_lru \
+capable_wrt_inode_uidgid in_group_p current_umask \
+__percpu_counter_init percpu_counter_destroy"
 bad=0
 for ko in "$OUT"/*-"$KMI".ko; do
     [ -f "$ko" ] || continue
@@ -417,6 +457,44 @@ if [ "$bad" -eq 0 ]; then
     echo "  [OK] $B_SYM_OK"
 else
     echo "  [WARN] $(printf "$B_SYM_WARN" "$bad")"
+fi
+
+# ---------------------------------------------------------------------------
+# 回归检查：这些符号已经改成运行时解析/同名转发，**不允许再出现在 nm -u 里**。
+#
+# BAD_SYMS 上面那条是软告警（历史包袱里有几个还没修完，见清单 C 组）；
+# 这一条是硬的：一旦某个已修好的符号重新变成静态导入，说明有人改回去或者
+# 补丁顺序被打乱，必须当场失败，不能等用户装完报 "unknown symbol"。
+#
+# 维护：每修好一个符号，就把它加到 MUST_NOT_APPEAR。
+# ---------------------------------------------------------------------------
+MUST_NOT_APPEAR="get_next_ino cgroup_add_dfl_cftypes \
+dev_forward_skb eth_header_cache eth_header_cache_update \
+drmm_crtc_init_with_planes \
+file_remove_privs seq_escape_mem kill_pid \
+__dev_forward_skb dev_mc_add_excl dev_uc_add_excl \
+ip_check_defrag __netif_rx ndo_dflt_fdb_dump"
+
+regress=0
+for ko in "$OUT"/*-"$KMI".ko; do
+    [ -f "$ko" ] || continue
+    undef=$(nm -u "$ko" 2>/dev/null | awk '{print $2}')
+    for sym in $MUST_NOT_APPEAR; do
+        if echo "$undef" | grep -qx "$sym"; then
+            echo "  [REGRESS] $(basename "$ko") 重新静态导入了 $sym"
+            echo "            这个符号已改成运行时解析/同名转发，不该再出现在 nm -u 里"
+            regress=$((regress + 1))
+        fi
+    done
+done
+
+if [ "$regress" -gt 0 ]; then
+    # 符号回退是代码缺陷，不是「这台设备不支持」，所以直接让这一格红。
+    # （模块编译失败才是宽松处理 —— 见上面 FAILED 的注释。）
+    echo
+    echo "  [FATAL] $KMI: $regress 个已修好的符号重新变成静态导入"
+    echo "          改回去会重现 issue #2/#3/#4 的装机失败，拒绝出货"
+    exit 1
 fi
 
 echo
