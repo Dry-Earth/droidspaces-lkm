@@ -81,10 +81,10 @@ index 0f951ba..e0c0aa0 100644
  	vns_sem_init_ns(&vns_default_ipc_ns);
  	vns_shm_init_ns(&vns_default_ipc_ns);
 diff --git a/glue/vendor_kernel_ovl_vfs_compat.c b/glue/vendor_kernel_ovl_vfs_compat.c
-index e9e9549..06bd547 100644
+index e9e9549..907a922 100644
 --- a/glue/vendor_kernel_ovl_vfs_compat.c
 +++ b/glue/vendor_kernel_ovl_vfs_compat.c
-@@ -59,6 +59,269 @@ VNS_OVL_VFS_COMPAT_LIST(VNS_OVL_VFSC_DEFINE)
+@@ -59,6 +59,328 @@ VNS_OVL_VFS_COMPAT_LIST(VNS_OVL_VFSC_DEFINE)
  VNS_OVL_VFS_COMPAT_LIST_BF(VNS_OVL_VFSC_DEFINE)
  #undef VNS_OVL_VFSC_DEFINE
  
@@ -329,6 +329,65 @@ index e9e9549..06bd547 100644
 +#endif /* VNS_OVL_TIER_MID: percpu 同名函数只在 MID 提供（指针在 MID 清单里） */
 +
 +/*
++ * 同名转发函数（第二批）
++ *
++ * 这五个符号即使加了 #define 也仍然被静态导入，原因各不相同：
++ *
++ *   d_add / d_make_root / d_path
++ *       glue/lkm4ctr_diagfs.c 和 glue/lkm4ctr_hotreload.c 调用，那两个文件
++ *       用的是 vns_vfs_shared_syms.h（轻量头），不在 overlayfs 的 include
++ *       链上，够不到 compat 头的 #define，而轻量头原本也没收它们。
++ *
++ *   vfs_getattr_nosec
++ *       vendor/fs/overlayfs/overlayfs.h 里的 inline 函数调用。头文件在所有
++ *       .c 之前展开，那时 compat 头的 #define 还没生效。
++ *
++ *   vfs_fsync_range
++ *       vendor/fs/overlayfs/readdir.c 调用，而那个文件没被加兼容头
++ *       （只有 dir/util/export/copy_up/file 加了）。
++ *
++ * 统一改用同名函数：模块内所有引用都链到这里，不产生静态导入，也不受
++ * 宏展开顺序影响。
++ *
++ * 注意：这几条原本在 compat 头里有 #define，必须先删掉 —— 函数定义会被
++ * 对象式宏展开，变成语法错误。
++ */
++
++__nocfi voidd_add(struct dentry *dentry, struct inode *inode)
++{
++	if (vns_ovl_vfsc_d_add)
++		vns_ovl_vfsc_d_add(dentry, inode);
++}
++
++__nocfi struct dentry *d_make_root(struct inode *root_inode)
++{
++	if (!vns_ovl_vfsc_d_make_root)
++		return 0;
++	return vns_ovl_vfsc_d_make_root(root_inode);
++}
++
++__nocfi char *d_path(const struct path *path, char *buf, int buflen)
++{
++	if (!vns_ovl_vfsc_d_path)
++		return 0;
++	return vns_ovl_vfsc_d_path(path, buf, buflen);
++}
++
++__nocfi intvfs_fsync_range(struct file *file, loff_t start, loff_t end, int datasync)
++{
++	if (!vns_ovl_vfsc_vfs_fsync_range)
++		return 0;
++	return vns_ovl_vfsc_vfs_fsync_range(file, start, end, datasync);
++}
++
++__nocfi intvfs_getattr_nosec(const struct path *path, struct kstat *stat, u32 request_mask, unsigned int query_flags)
++{
++	if (!vns_ovl_vfsc_vfs_getattr_nosec)
++		return 0;
++	return vns_ovl_vfsc_vfs_getattr_nosec(path, stat, request_mask, query_flags);
++}
++
++/*
 + * generic_read_dir - same-name forwarding definition, not a #define alias.
 + *
 + * The #define form works for direct calls but not where the name is taken as a
@@ -355,7 +414,7 @@ index e9e9549..06bd547 100644
  {
  #define VNS_OVL_VFSC_RESOLVE(name) \
 diff --git a/glue/vendor_kernel_ovl_vfs_compat.h b/glue/vendor_kernel_ovl_vfs_compat.h
-index f326a9a..671aea4 100644
+index f326a9a..f5ca87c 100644
 --- a/glue/vendor_kernel_ovl_vfs_compat.h
 +++ b/glue/vendor_kernel_ovl_vfs_compat.h
 @@ -135,6 +135,18 @@ int vfs_path_lookup(struct dentry *dentry, struct vfsmount *mnt,
@@ -424,7 +483,7 @@ index f326a9a..671aea4 100644
  
  #if !VNS_OVL_NEED_BACKING_FILE_FALLBACK
  #define VNS_OVL_VFS_COMPAT_LIST_BF(X) \
-@@ -643,6 +689,40 @@ static inline void generic_fill_statx_attr(struct inode *inode, struct kstat *st
+@@ -643,9 +689,48 @@ static inline void generic_fill_statx_attr(struct inode *inode, struct kstat *st
  	X(security_file_ioctl) \
  	X(iterate_dir) \
  	X(vfs_setpos) \
@@ -464,8 +523,17 @@ index f326a9a..671aea4 100644
 +	VNS_OVL_VFSC_KMLRU_ENTRY(X) \
  	X(lookup_positive_unlocked) \
  	VNS_OVL_VFSC_VMASETFILE_ENTRY(X) \
- 	X(d_tmpfile)
-@@ -656,9 +736,16 @@ static inline void generic_fill_statx_attr(struct inode *inode, struct kstat *st
+-	X(d_tmpfile)
++	X(d_tmpfile) \
++	X(d_add) \
++	X(d_make_root) \
++	X(d_path) \
++	X(vfs_fsync_range) \
++	X(vfs_getattr_nosec)
+ 
+ #define VNS_OVL_VFS_COMPAT_LIST_BF(X) \
+ 	X(vfs_iter_read) \
+@@ -656,9 +741,16 @@ static inline void generic_fill_statx_attr(struct inode *inode, struct kstat *st
  #endif /* MID */
  
  #if VNS_OVL_TIER_OLD
@@ -482,7 +550,7 @@ index f326a9a..671aea4 100644
  	X(errseq_sample) \
  	X(mntput) \
  	X(__mnt_is_readonly) \
-@@ -743,8 +830,37 @@ static inline void generic_fill_statx_attr(struct inode *inode, struct kstat *st
+@@ -743,8 +835,38 @@ static inline void generic_fill_statx_attr(struct inode *inode, struct kstat *st
  	X(generic_fillattr) \
  	X(vfs_path_lookup) \
  	X(rw_verify_area) \
@@ -518,11 +586,12 @@ index f326a9a..671aea4 100644
 +	X(d_path) \
 +	X(generic_file_splice_read) \
 +	X(generic_read_dir) \
-+	X(in_group_p)
++	X(in_group_p) \
++	X(vfs_getattr_nosec)
  #define VNS_OVL_VFS_COMPAT_LIST_BF(X)
  #endif /* OLD */
  
-@@ -903,6 +1019,40 @@ static inline void vns_ovl_revert_creds_compat(const struct cred *revert_cred)
+@@ -903,6 +1025,35 @@ static inline void vns_ovl_revert_creds_compat(const struct cred *revert_cred)
  #define vfs_iocb_iter_read (*vns_ovl_vfsc_vfs_iocb_iter_read)
  #define vfs_iocb_iter_write (*vns_ovl_vfsc_vfs_iocb_iter_write)
  #define iter_file_splice_write (*vns_ovl_vfsc_iter_file_splice_write)
@@ -534,11 +603,8 @@ index f326a9a..671aea4 100644
 +#define clear_inode (*vns_ovl_vfsc_clear_inode)
 +#define clear_nlink (*vns_ovl_vfsc_clear_nlink)
 +#define current_umask (*vns_ovl_vfsc_current_umask)
-+#define d_add (*vns_ovl_vfsc_d_add)
 +#define d_instantiate (*vns_ovl_vfsc_d_instantiate)
-+#define d_make_root (*vns_ovl_vfsc_d_make_root)
 +#define d_obtain_alias (*vns_ovl_vfsc_d_obtain_alias)
-+#define d_path (*vns_ovl_vfsc_d_path)
 +#define d_splice_alias (*vns_ovl_vfsc_d_splice_alias)
 +#define drop_nlink (*vns_ovl_vfsc_drop_nlink)
 +#define generic_permission (*vns_ovl_vfsc_generic_permission)
@@ -558,12 +624,10 @@ index f326a9a..671aea4 100644
 +#define truncate_inode_pages_final (*vns_ovl_vfsc_truncate_inode_pages_final)
 +#define unlock_new_inode (*vns_ovl_vfsc_unlock_new_inode)
 +#define vfs_fsync (*vns_ovl_vfsc_vfs_fsync)
-+#define vfs_fsync_range (*vns_ovl_vfsc_vfs_fsync_range)
-+#define vfs_getattr_nosec (*vns_ovl_vfsc_vfs_getattr_nosec)
  #endif
  #endif /* NEW */
  
-@@ -992,6 +1142,36 @@ static inline void vns_ovl_revert_creds_compat(const struct cred *revert_cred)
+@@ -992,6 +1143,36 @@ static inline void vns_ovl_revert_creds_compat(const struct cred *revert_cred)
  #define security_file_ioctl (*vns_ovl_vfsc_security_file_ioctl)
  #define iterate_dir (*vns_ovl_vfsc_iterate_dir)
  #define vfs_setpos (*vns_ovl_vfsc_vfs_setpos)
@@ -600,7 +664,7 @@ index f326a9a..671aea4 100644
  #define d_tmpfile (*vns_ovl_vfsc_d_tmpfile)
  #define errseq_check (*vns_ovl_vfsc_errseq_check)
  #define lookup_positive_unlocked (*vns_ovl_vfsc_lookup_positive_unlocked)
-@@ -1004,6 +1184,9 @@ static inline void vns_ovl_revert_creds_compat(const struct cred *revert_cred)
+@@ -1004,6 +1185,9 @@ static inline void vns_ovl_revert_creds_compat(const struct cred *revert_cred)
  #endif /* MID */
  
  #if VNS_OVL_TIER_OLD
@@ -610,6 +674,14 @@ index f326a9a..671aea4 100644
  #define mount_nodev (*vns_ovl_vfsc_mount_nodev)
  #define prepare_creds (*vns_ovl_vfsc_prepare_creds)
  #define errseq_sample (*vns_ovl_vfsc_errseq_sample)
+@@ -1109,7 +1293,6 @@ static inline void vns_ovl_revert_creds_compat(const struct cred *revert_cred)
+ #define vfs_iocb_iter_write (*vns_ovl_vfsc_vfs_iocb_iter_write)
+ #define vfs_iter_write (*vns_ovl_vfsc_vfs_iter_write)
+ #define iter_file_splice_write (*vns_ovl_vfsc_iter_file_splice_write)
+-#define vfs_fsync_range (*vns_ovl_vfsc_vfs_fsync_range)
+ #define vfs_fallocate (*vns_ovl_vfsc_vfs_fallocate)
+ #define dentry_open (*vns_ovl_vfsc_dentry_open)
+ #define open_with_fake_path (*vns_ovl_vfsc_open_with_fake_path)
 @@ -1146,11 +1329,11 @@ static inline void vns_ovl_revert_creds_compat(const struct cred *revert_cred)
   * this forwards straight to the real symbol.
   */
@@ -624,7 +696,7 @@ index f326a9a..671aea4 100644
  #define security_file_ioctl (*vns_ovl_vfsc_security_file_ioctl)
  #define vfs_fadvise (*vns_ovl_vfsc_vfs_fadvise)
  #define vfs_ioctl (*vns_ovl_vfsc_vfs_ioctl)
-@@ -1160,6 +1343,34 @@ static inline void vns_ovl_revert_creds_compat(const struct cred *revert_cred)
+@@ -1160,6 +1343,31 @@ static inline void vns_ovl_revert_creds_compat(const struct cred *revert_cred)
  #define vfs_path_lookup (*vns_ovl_vfsc_vfs_path_lookup)
  #define rw_verify_area (*vns_ovl_vfsc_rw_verify_area)
  #define d_tmpfile (*vns_ovl_vfsc_d_tmpfile)
@@ -635,11 +707,8 @@ index f326a9a..671aea4 100644
 +#define clear_inode (*vns_ovl_vfsc_clear_inode)
 +#define clear_nlink (*vns_ovl_vfsc_clear_nlink)
 +#define current_umask (*vns_ovl_vfsc_current_umask)
-+#define d_add (*vns_ovl_vfsc_d_add)
 +#define d_instantiate (*vns_ovl_vfsc_d_instantiate)
-+#define d_make_root (*vns_ovl_vfsc_d_make_root)
 +#define d_obtain_alias (*vns_ovl_vfsc_d_obtain_alias)
-+#define d_path (*vns_ovl_vfsc_d_path)
 +#define d_splice_alias (*vns_ovl_vfsc_d_splice_alias)
 +#define drop_nlink (*vns_ovl_vfsc_drop_nlink)
 +#define generic_file_splice_read (*vns_ovl_vfsc_generic_file_splice_read)
@@ -661,10 +730,10 @@ index f326a9a..671aea4 100644
  /* ================================================================== */
 diff --git a/glue/vns_vfs_shared_syms.h b/glue/vns_vfs_shared_syms.h
 new file mode 100644
-index 0000000..870e56a
+index 0000000..6b476d6
 --- /dev/null
 +++ b/glue/vns_vfs_shared_syms.h
-@@ -0,0 +1,110 @@
+@@ -0,0 +1,113 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +/*
 + * vns_vfs_shared_syms.h - VFS helpers needed outside fs/overlayfs
@@ -751,6 +820,9 @@ index 0000000..870e56a
 +extern void (*vns_ovl_vfsc_inode_init_once)(struct inode *);
 +extern int (*vns_ovl_vfsc_current_umask)(void);
 +extern int (*vns_ovl_vfsc_in_group_p)(kgid_t);
++extern void (*vns_ovl_vfsc_d_add)(struct dentry *, struct inode *);
++extern struct dentry *(*vns_ovl_vfsc_d_make_root)(struct inode *);
++extern char *(*vns_ovl_vfsc_d_path)(const struct path *, char *, int);
 +
 +
 +/*
