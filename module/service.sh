@@ -274,11 +274,20 @@ ko_load_error() {
         return 0
     fi
     local miss="" m sym
-    while read -r m sym; do
-        [ "$m" = "$mod" ] || continue
-        [ -n "$sym" ] || continue
-        grep -qE "__ksymtab_${sym}\$" /proc/kallsyms 2>/dev/null || miss="$miss $sym"
-    done < "$f"
+    # /proc/kallsyms 只读一次再比对。
+    # 逐条 grep 整个文件的写法在 CONFIG_KALLSYMS_ALL=y 的设备上要扫二十多万行，
+    # 一个模块就是上百次全表扫描 —— 开机阶段这么干会明显拖慢。
+    local have
+    have=$(mktemp 2>/dev/null) || have=""
+    if [ -n "$have" ]; then
+        grep -a '__ksymtab_' /proc/kallsyms 2>/dev/null \
+            | sed 's/.*__ksymtab_//' | sort -u > "$have"
+        miss=$(awk -v m="$mod" '
+            FNR == NR { have[$1] = 1; next }
+            $1 == m && NF >= 2 && !($2 in have) { printf " %s", $2 }
+        ' "$have" "$f" 2>/dev/null)
+        rm -f "$have"
+    fi
     if [ -n "$miss" ]; then
         dlog "  [缺符号] $mod 需要但本内核未导出:$miss"
         dlog "           （这是厂商内核的导出表差异，不是模块包损坏）"

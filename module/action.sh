@@ -76,20 +76,36 @@ if [ -z "$_kmi" ]; then
 elif [ ! -f "$_sf" ]; then
     echo "  [--]   没有符号清单 ko/symcheck-${_kmi}.txt（旧版模块包？）"
 else
-    _miss=0
-    while read -r _mod _sym; do
-        [ -n "$_sym" ] || continue
-        if ! grep -qE "__ksymtab_${_sym}\$" /proc/kallsyms 2>/dev/null; then
-            echo "  [缺]   $_mod 需要 $_sym —— 本内核未导出"
-            _miss=$((_miss + 1))
-        fi
-    done < "$_sf"
+    # /proc/kallsyms 只读一次。
+    #
+    # 之前是每查一个符号就 grep 一遍整个文件：641 条依赖 × 二十多万行
+    # （CONFIG_KALLSYMS_ALL=y 的设备），在 KSU 的「操作」按钮里就是看起来
+    # 卡死 —— 用户等不到输出就退出了。
+    #
+    # 现在先抽出一份导出符号名单（__ksymtab_ 后面的名字），再用 awk 单趟比对。
+    # 两个文件的读取次数都是 1。
+    _have=$(mktemp)
+    grep -a '__ksymtab_' /proc/kallsyms 2>/dev/null \
+        | sed 's/.*__ksymtab_//' | sort -u > "$_have"
+
+    _miss=$(awk '
+        FNR == NR { have[$1] = 1; next }
+        NF >= 2 && !($2 in have) { n++ }
+        END { print n + 0 }
+    ' "$_have" "$_sf" 2>/dev/null)
+    _miss=${_miss:-0}
+
     if [ "$_miss" -eq 0 ]; then
         echo "  [OK]   本内核导出了清单里全部符号"
     else
+        awk '
+            FNR == NR { have[$1] = 1; next }
+            NF >= 2 && !($2 in have) { print "  [缺]   " $1 " 需要 " $2 " —— 本内核未导出" }
+        ' "$_have" "$_sf" 2>/dev/null
         echo "         共 $_miss 条缺失。这是厂商内核的导出表差异，"
         echo "         不是模块包损坏 —— 报 issue 时请把这整段贴上去。"
     fi
+    rm -f "$_have"
 fi
 echo
 
