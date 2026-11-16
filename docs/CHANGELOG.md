@@ -18,6 +18,50 @@
 这一轮把「符号问题」从「出问题再修」推到三个方向。三条都经过 CI 全量矩阵和
 真机验证（Redmi Pad 2410CRP4CG / Qualcomm SM7675 / 6.1.138）。
 
+## v0.1.24（仅 CI，未发布）
+
+### 修复
+
+**`get_fs_type("overlay")` 劫持改为默认关闭。**
+
+该 hook 把全局的 `get_fs_type("overlay")` 全部重定向到模块自带的 overlayfs。
+运行内核已有 `CONFIG_OVERLAY_FS` 时这不是必要功能，却会和其它在 VFS 层动手脚
+的模块争用同一块状态 —— 典型是 NoMount（`nomount.ko`，劫持 `s_d_op` / `d_op` /
+`d_revalidate`，见 `nm_hijack_dentry_ops`）。
+
+两者叠加会产生 `d_op` 与 `d_fsdata` 不配对的 dentry。实测崩溃：
+
+```
+Unable to handle kernel NULL pointer dereference at virtual address 0x10
+pc : ovl_dentry_revalidate_common+0x38/0xac
+Call trace:
+  ovl_dentry_revalidate_common
+  ovl_dentry_revalidate
+  path_openat
+  __arm64_sys_openat
+  vendor_kernel_hook_openat [lkm4ctr]
+```
+
+即一次普通 `openat` 访问 overlayfs 上的文件时，`dentry->d_fsdata` 为空。
+
+改为模块参数 `overlay_override`（bool，默认 `N`）。需要在没有 overlayfs 的内核上
+使用自带实现时：
+
+```sh
+insmod lkm4ctr.ko overlay_override=Y
+```
+
+未启用时 `vns_ovl_init()` 不执行（不创建 `ovl_inode` slab），`vns_ovl_exit()` 有
+`vns_ovl_ready` 保护。诊断输出会报告当前状态：
+
+```
+overlay_override: off (running kernel's overlayfs in use)
+```
+
+### 变更
+
+`vns_ovl_exit()` 的 `kmem_cache_destroy()` 增加 NULL 保护并清空指针。
+
 ## v0.1.23
 
 `versionCode` 由构建时写入（`YYYYMMDDnn` = 日期×100 + 小时×4 + 分钟/15，

@@ -4,6 +4,53 @@ This is the English changelog. Entries before v0.1.23 exist only in Chinese;
 see [CHANGELOG.md](CHANGELOG.md). Version numbering rationale is documented
 there as well.
 
+## v0.1.24 (CI only, not released)
+
+### Fixed
+
+**The `get_fs_type("overlay")` override is now disabled by default.**
+
+That hook redirected every global `get_fs_type("overlay")` lookup to the module's
+own overlayfs. When the running kernel already has `CONFIG_OVERLAY_FS` this is not
+needed, but it does contend for the same VFS state as other modules that operate at
+that layer — notably NoMount (`nomount.ko`, which hijacks `s_d_op` / `d_op` /
+`d_revalidate`; see `nm_hijack_dentry_ops`).
+
+The two together produce dentries whose `d_op` and `d_fsdata` disagree. Observed
+panic:
+
+```
+Unable to handle kernel NULL pointer dereference at virtual address 0x10
+pc : ovl_dentry_revalidate_common+0x38/0xac
+Call trace:
+  ovl_dentry_revalidate_common
+  ovl_dentry_revalidate
+  path_openat
+  __arm64_sys_openat
+  vendor_kernel_hook_openat [lkm4ctr]
+```
+
+i.e. a plain `openat` on an overlayfs file finds `dentry->d_fsdata` NULL.
+
+Controlled by the `overlay_override` module parameter (bool, default `N`). To use
+the vendored implementation on a kernel without overlayfs:
+
+```sh
+insmod lkm4ctr.ko overlay_override=Y
+```
+
+When disabled, `vns_ovl_init()` is skipped entirely (no `ovl_inode` slab is
+created) and `vns_ovl_exit()` is guarded by `vns_ovl_ready`. Diagnostics report the
+current state:
+
+```
+overlay_override: off (running kernel's overlayfs in use)
+```
+
+### Changed
+
+`vns_ovl_exit()` guards `kmem_cache_destroy()` against NULL and clears the pointer.
+
 ## v0.1.23
 
 `versionCode` is written at build time (`YYYYMMDDnn` = date*100 + hour*4 + minute/15,

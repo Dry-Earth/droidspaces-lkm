@@ -80,10 +80,10 @@ index 0f951ba..e0c0aa0 100644
  	vns_sem_init_ns(&vns_default_ipc_ns);
  	vns_shm_init_ns(&vns_default_ipc_ns);
 diff --git a/glue/vendor_kernel_overlay.c b/glue/vendor_kernel_overlay.c
-index f9c3546..12b0775 100644
+index f9c3546..674e524 100644
 --- a/glue/vendor_kernel_overlay.c
 +++ b/glue/vendor_kernel_overlay.c
-@@ -58,7 +58,20 @@
+@@ -58,7 +58,42 @@
   * not a fatal condition for the rest of vendor_kernel, so vns_overlay_init()
   * still returns 0 in that case.
   */
@@ -102,8 +102,84 @@ index f9c3546..12b0775 100644
 +#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 10, 0) && \
 +    LINUX_VERSION_CODE < KERNEL_VERSION(6, 19, 0) && \
 +    !defined(VNS_NO_OVERLAYFS)
++
++/*
++ * 默认关闭。
++ *
++ * 这个 hook 把**全局**的 get_fs_type("overlay") 都改成返回模块自己那份
++ * overlayfs。内核本来就有 CONFIG_OVERLAY_FS 时，这不是必要功能，代价却很大：
++ * 它和其它在 VFS 层动手脚的模块会抢同一块状态（典型例子是 NoMount，它劫持
++ * s_d_op / d_op / d_revalidate）。两者叠加后会出现 d_op 与 d_fsdata 不配对的
++ * dentry，表现为一次普通 openat 在内核 ovl_dentry_revalidate_common 里
++ * NULL 解引用（fault at 0x10）。
++ *
++ * 只有在运行内核确实没有 overlayfs 时才需要打开：
++ *
++ *     insmod lkm4ctr.ko overlay_override=Y
++ */
++static bool vns_ovl_override_enabled;
++module_param_named(overlay_override, vns_ovl_override_enabled, bool, 0644);
++MODULE_PARM_DESC(overlay_override,
++	"Take over get_fs_type(\"overlay\") with the vendored overlayfs (default: N). "
++	"Enable only when the running kernel has no overlayfs of its own.");
++
++static bool vns_ovl_ready;
  
  static struct file_system_type *(*real_get_fs_type)(const char *name);
+ 
+@@ -88,16 +123,27 @@ struct shadow_hook *vendor_kernel_overlay_hooks[] = {
+ 
+ int vns_overlay_init(void)
+ {
+-	int err = vns_ovl_init();
++	int err;
+ 
++	if (!vns_ovl_override_enabled) {
++		LKM4CTR_INFO("vendor_kernel",
++			     "vendored overlayfs override disabled (overlay_override=N); "
++			     "get_fs_type(\"overlay\") resolves to the running kernel's own overlayfs");
++		return 0;
++	}
++
++	err = vns_ovl_init();
+ 	if (err) {
+ 		LKM4CTR_ERR("vendor_kernel", "failed to init vendored overlayfs (%d)", err);
+ 		return err;
+ 	}
++	vns_ovl_ready = true;
++
+ 	err = shadow_hook_install_all(vendor_kernel_overlay_hooks, "vendor_kernel_overlay");
+ 	if (err < 0) {
+ 		LKM4CTR_ERR("vendor_kernel", "failed to install get_fs_type() overlay override hook (%d)", err);
+ 		vns_ovl_exit();
++		vns_ovl_ready = false;
+ 		return err;
+ 	}
+ 	LKM4CTR_INFO("vendor_kernel", "vendored overlayfs now handles every get_fs_type(\"overlay\") lookup");
+@@ -106,14 +152,23 @@ int vns_overlay_init(void)
+ 
+ void vns_overlay_exit(void)
+ {
++	if (!vns_ovl_ready)
++		return;
++
+ 	shadow_hook_remove_all(vendor_kernel_overlay_hooks);
+ 	vns_ovl_exit();
++	vns_ovl_ready = false;
+ 	LKM4CTR_INFO("vendor_kernel", "vendored overlayfs override removed");
+ }
+ 
+ size_t vns_overlay_diag_snprintf(char *buf, size_t buflen)
+ {
+-	return scnprintf(buf, buflen, "overlay_mounts: %d\n",
++	if (!vns_ovl_ready)
++		return scnprintf(buf, buflen,
++				 "overlay_override: off (running kernel's overlayfs in use)
++");
++	return scnprintf(buf, buflen, "overlay_override: on, overlay_mounts: %d
++",
+ 			 atomic_read(&vns_ovl_mount_count));
+ }
  
 diff --git a/glue/vendor_kernel_ovl_vfs_compat.c b/glue/vendor_kernel_ovl_vfs_compat.c
 index e9e9549..405fd1c 100644
@@ -1303,6 +1379,22 @@ index 6234d0d..3e1996b 100644
  #if VNS_OVL_NEED_BACKING_FILE_FALLBACK
  struct ovl_aio_req {
  	struct kiocb iocb;
+diff --git a/vendor/fs/overlayfs/super.c b/vendor/fs/overlayfs/super.c
+index 3e2be53..307f0e9 100644
+--- a/vendor/fs/overlayfs/super.c
++++ b/vendor/fs/overlayfs/super.c
+@@ -1726,7 +1726,10 @@ void vns_ovl_exit(void)
+ 	 * destroy cache.
+ 	 */
+ 	rcu_barrier();
+-	kmem_cache_destroy(ovl_inode_cachep);
++	if (ovl_inode_cachep) {
++		kmem_cache_destroy(ovl_inode_cachep);
++		ovl_inode_cachep = NULL;
++	}
+ }
+ 
+ /*
 diff --git a/vendor/fs/overlayfs/util.c b/vendor/fs/overlayfs/util.c
 index 7cc1a34..5a58309 100644
 --- a/vendor/fs/overlayfs/util.c
