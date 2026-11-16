@@ -466,7 +466,7 @@ index 7cc1a34..5a58309 100644
  int ovl_get_write_access(struct dentry *dentry)
  {
 diff --git a/vendor/ipc/mqueue.c b/vendor/ipc/mqueue.c
-index 0473ef5..9d76fcb 100644
+index 0473ef5..1b3129d 100644
 --- a/vendor/ipc/mqueue.c
 +++ b/vendor/ipc/mqueue.c
 @@ -75,6 +75,11 @@
@@ -480,6 +480,50 @@ index 0473ef5..9d76fcb 100644
 +
  #undef SYSCALL_METADATA
  #define SYSCALL_METADATA(sname, nb, ...)
+ 
+@@ -1903,17 +1908,21 @@ static int init_mqueue_fs(void)
+ 				sizeof(struct mqueue_inode_info), 0,
+ 				SLAB_HWCACHE_ALIGN|SLAB_ACCOUNT, init_once);
+ 	if (mqueue_inode_cachep == NULL) {
++		pr_err("lkm4ctr[diag] kmem_cache_create(mqueue_inode_cache) -> NULL\n");
+ 		mutex_lock(&mqueue_lifecycle_lock);
+ 		mqueue_lifecycle_stopping = true;
+ 		mutex_unlock(&mqueue_lifecycle_lock);
+ 		return -ENOMEM;
+ 	}
++	pr_info("lkm4ctr[diag] inode cache ok\n");
+ 
+ 	if (!setup_mq_sysctls(&init_ipc_ns)) {
++		pr_err("lkm4ctr[diag] setup_mq_sysctls -> false\n");
+ 		LKM4CTR_WARN("vendor_kernel", "mqueue sysctl registration failed");
+ 		error = -ENOMEM;
+ 		goto out_kmem;
+ 	}
++	pr_info("lkm4ctr[diag] mq sysctls ok\n");
+ 
+ 	error = register_filesystem(&mqueue_fs_type);
+ 	if (!error) {
+@@ -1934,14 +1943,20 @@ static int init_mqueue_fs(void)
+ 			"mqueue: filesystem type \"mqueue\" already registered (real kernel POSIX_MQUEUE?); "
+ 			"userspace mount(\"mqueue\", ...) will use that real filesystem instead");
+ 	} else {
++		pr_err("lkm4ctr[diag] register_filesystem -> %d\n", error);
+ 		goto out_sysctl;
+ 	}
++	pr_info("lkm4ctr[diag] register_filesystem ok (registered=%d)\n",
++		mqueue_fs_type_registered);
+ 
+ 	spin_lock_init(&mq_lock);
+ 
+ 	error = mq_init_ns(&init_ipc_ns);
+-	if (error)
++	if (error) {
++		pr_err("lkm4ctr[diag] mq_init_ns -> %d\n", error);
+ 		goto out_filesystem;
++	}
++	pr_info("lkm4ctr[diag] mq_init_ns ok\n");
+ 
+ 	return 0;
  
 diff --git a/vendor/ipc/msg.c b/vendor/ipc/msg.c
 index 0cded6b..faacbaf 100644
