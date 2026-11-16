@@ -81,10 +81,10 @@ index 0f951ba..e0c0aa0 100644
  	vns_sem_init_ns(&vns_default_ipc_ns);
  	vns_shm_init_ns(&vns_default_ipc_ns);
 diff --git a/glue/vendor_kernel_ovl_vfs_compat.c b/glue/vendor_kernel_ovl_vfs_compat.c
-index e9e9549..346cc48 100644
+index e9e9549..2e477f6 100644
 --- a/glue/vendor_kernel_ovl_vfs_compat.c
 +++ b/glue/vendor_kernel_ovl_vfs_compat.c
-@@ -59,6 +59,341 @@ VNS_OVL_VFS_COMPAT_LIST(VNS_OVL_VFSC_DEFINE)
+@@ -59,6 +59,328 @@ VNS_OVL_VFS_COMPAT_LIST(VNS_OVL_VFSC_DEFINE)
  VNS_OVL_VFS_COMPAT_LIST_BF(VNS_OVL_VFSC_DEFINE)
  #undef VNS_OVL_VFSC_DEFINE
  
@@ -388,19 +388,6 @@ index e9e9549..346cc48 100644
 +}
 +
 +/*
-+ * capable_wrt_inode_uidgid - 5.10 上仍在静态导入，改同名转发。
-+ *
-+ * 签名（5.10 / 6.x 一致）：
-+ *   bool capable_wrt_inode_uidgid(struct inode *inode, kuid_t uid, kgid_t gid)
-+ */
-+bool __nocfi capable_wrt_inode_uidgid(struct inode *inode, kuid_t uid, kgid_t gid)
-+{
-+	if (!vns_ovl_vfsc_capable_wrt_inode_uidgid)
-+		return false;
-+	return vns_ovl_vfsc_capable_wrt_inode_uidgid(inode, uid, gid);
-+}
-+
-+/*
 + * generic_read_dir - same-name forwarding definition, not a #define alias.
 + *
 + * The #define form works for direct calls but not where the name is taken as a
@@ -427,7 +414,7 @@ index e9e9549..346cc48 100644
  {
  #define VNS_OVL_VFSC_RESOLVE(name) \
 diff --git a/glue/vendor_kernel_ovl_vfs_compat.h b/glue/vendor_kernel_ovl_vfs_compat.h
-index f326a9a..466daaa 100644
+index f326a9a..3d4cfe1 100644
 --- a/glue/vendor_kernel_ovl_vfs_compat.h
 +++ b/glue/vendor_kernel_ovl_vfs_compat.h
 @@ -135,6 +135,32 @@ int vfs_path_lookup(struct dentry *dentry, struct vfsmount *mnt,
@@ -630,7 +617,16 @@ index f326a9a..466daaa 100644
  #define VNS_OVL_VFS_COMPAT_LIST_BF(X)
  #endif /* OLD */
  
-@@ -891,6 +1030,35 @@ static inline void vns_ovl_revert_creds_compat(const struct cred *revert_cred)
+@@ -848,6 +987,8 @@ VNS_OVL_VFS_COMPAT_LIST_BF(VNS_OVL_VFSC_DECLARE)
+  */
+ #define down_write_killable (*vns_ovl_vfsc_down_write_killable)
+ #define d_invalidate (*vns_ovl_vfsc_d_invalidate)
++#define finish_open (*vns_ovl_vfsc_finish_open)
++
+ #if LINUX_VERSION_CODE < KERNEL_VERSION(6, 18, 0)
+ #define revert_creds (*vns_ovl_vfsc_revert_creds)
+ #define override_creds (*vns_ovl_vfsc_override_creds)
+@@ -891,6 +1032,35 @@ static inline void vns_ovl_revert_creds_compat(const struct cred *revert_cred)
  #define vma_set_file (*vns_ovl_vfsc_vma_set_file)
  #endif
  
@@ -666,15 +662,7 @@ index f326a9a..466daaa 100644
  #if !VNS_OVL_NEED_BACKING_FILE_FALLBACK
  #define backing_file_read_iter (*vns_ovl_vfsc_backing_file_read_iter)
  #define backing_file_write_iter (*vns_ovl_vfsc_backing_file_write_iter)
-@@ -903,6 +1071,7 @@ static inline void vns_ovl_revert_creds_compat(const struct cred *revert_cred)
- #define vfs_iocb_iter_read (*vns_ovl_vfsc_vfs_iocb_iter_read)
- #define vfs_iocb_iter_write (*vns_ovl_vfsc_vfs_iocb_iter_write)
- #define iter_file_splice_write (*vns_ovl_vfsc_iter_file_splice_write)
-+#define finish_open (*vns_ovl_vfsc_finish_open)
- #endif
- #endif /* NEW */
- 
-@@ -992,6 +1161,35 @@ static inline void vns_ovl_revert_creds_compat(const struct cred *revert_cred)
+@@ -992,6 +1162,35 @@ static inline void vns_ovl_revert_creds_compat(const struct cred *revert_cred)
  #define security_file_ioctl (*vns_ovl_vfsc_security_file_ioctl)
  #define iterate_dir (*vns_ovl_vfsc_iterate_dir)
  #define vfs_setpos (*vns_ovl_vfsc_vfs_setpos)
@@ -710,7 +698,7 @@ index f326a9a..466daaa 100644
  #define d_tmpfile (*vns_ovl_vfsc_d_tmpfile)
  #define errseq_check (*vns_ovl_vfsc_errseq_check)
  #define lookup_positive_unlocked (*vns_ovl_vfsc_lookup_positive_unlocked)
-@@ -1004,6 +1202,9 @@ static inline void vns_ovl_revert_creds_compat(const struct cred *revert_cred)
+@@ -1004,6 +1203,9 @@ static inline void vns_ovl_revert_creds_compat(const struct cred *revert_cred)
  #endif /* MID */
  
  #if VNS_OVL_TIER_OLD
@@ -720,7 +708,7 @@ index f326a9a..466daaa 100644
  #define mount_nodev (*vns_ovl_vfsc_mount_nodev)
  #define prepare_creds (*vns_ovl_vfsc_prepare_creds)
  #define errseq_sample (*vns_ovl_vfsc_errseq_sample)
-@@ -1109,7 +1310,6 @@ static inline void vns_ovl_revert_creds_compat(const struct cred *revert_cred)
+@@ -1109,7 +1311,6 @@ static inline void vns_ovl_revert_creds_compat(const struct cred *revert_cred)
  #define vfs_iocb_iter_write (*vns_ovl_vfsc_vfs_iocb_iter_write)
  #define vfs_iter_write (*vns_ovl_vfsc_vfs_iter_write)
  #define iter_file_splice_write (*vns_ovl_vfsc_iter_file_splice_write)
@@ -728,7 +716,7 @@ index f326a9a..466daaa 100644
  #define vfs_fallocate (*vns_ovl_vfsc_vfs_fallocate)
  #define dentry_open (*vns_ovl_vfsc_dentry_open)
  #define open_with_fake_path (*vns_ovl_vfsc_open_with_fake_path)
-@@ -1146,11 +1346,11 @@ static inline void vns_ovl_revert_creds_compat(const struct cred *revert_cred)
+@@ -1146,11 +1347,11 @@ static inline void vns_ovl_revert_creds_compat(const struct cred *revert_cred)
   * this forwards straight to the real symbol.
   */
  #define setattr_prepare(idmap, dentry, attr) \
@@ -742,7 +730,7 @@ index f326a9a..466daaa 100644
  #define security_file_ioctl (*vns_ovl_vfsc_security_file_ioctl)
  #define vfs_fadvise (*vns_ovl_vfsc_vfs_fadvise)
  #define vfs_ioctl (*vns_ovl_vfsc_vfs_ioctl)
-@@ -1160,6 +1360,31 @@ static inline void vns_ovl_revert_creds_compat(const struct cred *revert_cred)
+@@ -1160,6 +1361,31 @@ static inline void vns_ovl_revert_creds_compat(const struct cred *revert_cred)
  #define vfs_path_lookup (*vns_ovl_vfsc_vfs_path_lookup)
  #define rw_verify_area (*vns_ovl_vfsc_rw_verify_area)
  #define d_tmpfile (*vns_ovl_vfsc_d_tmpfile)
