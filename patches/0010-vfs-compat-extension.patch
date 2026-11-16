@@ -54,7 +54,7 @@ index 0f951ba..3ef6633 100644
  	/*
  	 * Give the default namespace a real ns_common inode number too (same
 diff --git a/glue/vendor_kernel_ovl_vfs_compat.c b/glue/vendor_kernel_ovl_vfs_compat.c
-index e9e9549..bc8468e 100644
+index e9e9549..d29c5ca 100644
 --- a/glue/vendor_kernel_ovl_vfs_compat.c
 +++ b/glue/vendor_kernel_ovl_vfs_compat.c
 @@ -59,6 +59,190 @@ VNS_OVL_VFS_COMPAT_LIST(VNS_OVL_VFSC_DEFINE)
@@ -81,7 +81,7 @@ index e9e9549..bc8468e 100644
 +#if VNS_OVL_TIER_MID
 +
 +/*
-+ * Same-name forwarding definitions for the VFS helpers vendor/ipc/* and
++ * Same-name forwarding definitions for the VFS helpers in vendor/ipc/ and
 + * glue/lkm4ctr_diagfs.c call.
 + *
 + * These were #define aliases in vns_vfs_shared_syms.h. That is fine in
