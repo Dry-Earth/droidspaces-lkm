@@ -403,82 +403,82 @@ index 7cc1a34..5a58309 100644
  int ovl_get_write_access(struct dentry *dentry)
  {
 diff --git a/vendor/ipc/mqueue.c b/vendor/ipc/mqueue.c
-index 0473ef5..3cc012e 100644
+index 0473ef5..9d76fcb 100644
 --- a/vendor/ipc/mqueue.c
 +++ b/vendor/ipc/mqueue.c
-@@ -63,6 +63,11 @@
- #include <linux/sched/signal.h>
- #include <linux/sched/user.h>
+@@ -75,6 +75,11 @@
+ #include <net/sock.h>
+ #include "util.h"
  
 +/* [TRIM-COMPAT] helpers this file calls may be trimmed from the module
 + * symbol table on production GKI; the compat header turns them into
 + * runtime pointers so no static import is emitted. */
 +#include "../../glue/vns_vfs_shared_syms.h"
 +
- #include "../vendor_kernel.h"
- /* [BUILD-COMPAT] LKM4CTR ring-buffer logging (see glue/lkm4ctr_log.h);
-  * replaces upstream pr_warn/pr_info so all output goes through the module's
+ #undef SYSCALL_METADATA
+ #define SYSCALL_METADATA(sname, nb, ...)
+ 
 diff --git a/vendor/ipc/msg.c b/vendor/ipc/msg.c
-index 0cded6b..3145ed9 100644
+index 0cded6b..faacbaf 100644
 --- a/vendor/ipc/msg.c
 +++ b/vendor/ipc/msg.c
-@@ -52,6 +52,11 @@
+@@ -73,6 +73,11 @@
+ #define free_ipcs vns_free_ipcs
+ #include "util.h"
  
- #include <asm/current.h>
- #include <linux/uaccess.h>
-+
 +/* [TRIM-COMPAT] helpers this file calls may be trimmed from the module
 + * symbol table on production GKI; the compat header turns them into
 + * runtime pointers so no static import is emitted. */
 +#include "../../glue/vns_vfs_shared_syms.h"
- #include "../vendor_kernel.h"
- 
- #undef SYSCALL_METADATA
++
+ #if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 1, 0)
+ static inline void vns_msg_hdrs_add(struct ipc_namespace *ns, unsigned long delta)
+ {
 diff --git a/vendor/ipc/namespace.c b/vendor/ipc/namespace.c
-index d72a3aa..507bc70 100644
+index d72a3aa..af29b0d 100644
 --- a/vendor/ipc/namespace.c
 +++ b/vendor/ipc/namespace.c
-@@ -32,6 +32,11 @@
- #include <linux/hashtable.h>
- #include <linux/module.h>
+@@ -37,6 +37,11 @@
+ #include "../include/uapi/vendor_kernel.h"
+ #include "../../glue/lkm4ctr_log.h"
  
 +/* [TRIM-COMPAT] helpers this file calls may be trimmed from the module
 + * symbol table on production GKI; the compat header turns them into
 + * runtime pointers so no static import is emitted. */
 +#include "../../glue/vns_vfs_shared_syms.h"
 +
- #include "util.h"
- #include "../vendor_kernel.h"
- #include "../include/uapi/vendor_kernel.h"
+ #define VNS_IPC_NS_HASH_BITS 8
+ 
+ struct vns_ipc_ns_entry {
 diff --git a/vendor/ipc/util.c b/vendor/ipc/util.c
-index 46c3da0..62fca26 100644
+index 46c3da0..92c6064 100644
 --- a/vendor/ipc/util.c
 +++ b/vendor/ipc/util.c
-@@ -75,6 +75,11 @@
- #include <linux/rhashtable.h>
- #include <linux/log2.h>
+@@ -80,6 +80,11 @@
+ #include "util.h"
+ #include "../vendor_kernel.h"
  
 +/* [TRIM-COMPAT] helpers this file calls may be trimmed from the module
 + * symbol table on production GKI; the compat header turns them into
 + * runtime pointers so no static import is emitted. */
 +#include "../../glue/vns_vfs_shared_syms.h"
 +
- #include <asm/unistd.h>
- 
- #include "util.h"
+ struct ipc_proc_iface {
+ 	const char *path;
+ 	const char *header;
 diff --git a/vendor/kernel/nsproxy.c b/vendor/kernel/nsproxy.c
-index 31d9e2a..5c2fbd9 100644
+index 31d9e2a..a7f05bc 100644
 --- a/vendor/kernel/nsproxy.c
 +++ b/vendor/kernel/nsproxy.c
-@@ -65,6 +65,11 @@
- #include <linux/llist.h>
- #include <linux/version.h>
- #include <linux/workqueue.h>
-+
+@@ -70,6 +70,11 @@
+ #include "../../glue/shadow_hook.h"
+ #include "../../glue/lkm4ctr_log.h"
+ 
 +/* [TRIM-COMPAT] helpers this file calls may be trimmed from the module
 + * symbol table on production GKI; the compat header turns them into
 + * runtime pointers so no static import is emitted. */
 +#include "../../glue/vns_vfs_shared_syms.h"
- #include "../vendor_kernel.h"
- #include "../include/uapi/vendor_kernel.h"
- #include "../../glue/shadow_hook.h"
++
+ /* [BUILD-COMPAT] Forward declaration for vendored time_namespace init object. */
+ extern struct time_namespace vns_init_time_ns;
+ 
