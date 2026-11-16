@@ -78,8 +78,62 @@ KMI 标签、内核版本串、路径。只翻译标记后面的人读描述 —
 判定规则一致。`release_notes.sh` 的输出直接成为 Release 正文，GitHub 不按用户语言
 分发正文，所以中英两段并列输出。
 
+### 平台条件加载
+
+`vkms` 之前是无条件加载的；`mali_nsfix` 更糟 —— 它被构建、被打包，但 `service.sh`
+里**完全没引用**，从不加载，用户得自己 `insmod`。
+
+现在两个模块按平台条件加载，判据用可观测事实，不写死厂商名：
+
+| 模块 | 加载条件 | 跳过的理由 |
+|---|---|---|
+| `vkms.ko` | 还没有 `/dev/dri/renderD128` | 高通多数由 kgsl 原生提供 render node |
+| `mali_nsfix.ko` | 存在 `/dev/mali0` 或已加载 `mali_kbase` | 没有 Mali GPU，而它在 `find_get_pid` 这个热点上挂 kprobe |
+
+`mali_nsfix` 不是 MTK 专用：它补的是 `mali_kbase` 的假设，三星等 Mali 机型同样
+适用。`vkms` 也不是：它解决的是"缺 render node"，缺少 render node 的高通机型
+仍然需要。
+
+实测确认 MTK 确实需要 vkms：`mediatek-drm` 只创建 `card0`，
+**不提供 render node**；`renderD128` 是 vkms 提供的。
+
+`action.sh` 的能力验证新增一行 `Mali GPU context`，`service.sh` 的开机日志输出
+判定结果。`disable_mali` 可以关掉它。
+
+### 能力验证的假 FAIL
+
+`action.sh` 的「操作」按钮长期显示
+
+```text
+[FAIL] PID + mount + user namespace 组合
+[FAIL] 容器内挂载 /proc
+```
+
+而同一份输出下方 `service.sh` 写的日志是 `[OK] PID namespace` / `[OK] IPC
+namespace` —— 同一个能力两种结论。
+
+根因是测试写法多了 `-U`。逐级实测：
+
+| 命令 | 结果 |
+|---|---|
+| `unshare -Urmpf true` | OK |
+| `unshare -Urmpf mount ...` | **FAIL: Operation not permitted** |
+| `unshare -pf mount ...` | OK（209 个节点） |
+| 不 `unshare` 直接 `mount` | OK |
+
+加 `-U` 之后只是**新用户命名空间里的 root**，而挂载 proc 要求 proc 的 pid 命名
+空间归属于同一个 userns —— 内核的 userns 挂载限制，与模块提供的容器能力无关。
+容器用的是宿主的 user namespace。
+
+改成 `unshare -pmf`（与 `service.sh` 一致），并把 `mount -t proc` 的目标从 `/proc`
+改成临时目录 —— 往已存在的挂载点上挂在 userns 下同样 EPERM，真挂上去还会污染
+当前会话。
+
 ### 其他
 
+- **`customize.sh` 曾被写成 CRLF**：`sh` 解析 `case ... in` 时报
+  `Syntax error: word unexpected (expecting "in")`，**安装脚本会直接崩**，
+  刷进去什么都不会发生。已统一为 LF，`module/` 下 7 个 `.sh` 全部通过 `sh -n`。
 - **包名带版本号**：`droidspaces-lkm-arm64-<ver>.zip`。之前所有版本都叫
   `droidspaces-lkm-arm64.zip`，下多个版本后本地分不清哪个是哪个，Release 页面上
   不同发布的资产名也完全相同。

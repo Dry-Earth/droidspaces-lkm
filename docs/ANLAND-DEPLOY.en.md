@@ -106,8 +106,8 @@ and `--cpus` work; `uart_guard` guards a vendor-kernel defect in
 
 ## Prerequisite: the LKM
 
-Flash the package for your KMI — `droidspaces-lkm-<kmi>-arm64.zip`, e.g.
-`droidspaces-lkm-android14-6.1-arm64.zip` — then reboot.
+Flash the package for your KMI — `droidspaces-lkm-<kmi>-arm64-<version>.zip`, e.g.
+`droidspaces-lkm-android14-6.1-arm64-<version>.zip` — then reboot.
 
 **Do not guess the KMI.** 5.10 and 5.15 each have two generations sharing one
 kernel version string (`android12-5.10` / `android13-5.10`,

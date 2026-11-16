@@ -177,13 +177,13 @@ droidspaces check                          # "All required features found!"
 
 | File | Android / kernel |
 |---|---|
-| `droidspaces-lkm-android12-5.10-arm64.zip` | Android 12 / 5.10 |
-| `droidspaces-lkm-android13-5.10-arm64.zip` | Android 13 / 5.10 |
-| `droidspaces-lkm-android13-5.15-arm64.zip` | Android 13 / 5.15 |
-| `droidspaces-lkm-android14-5.15-arm64.zip` | Android 14 / 5.15 |
-| `droidspaces-lkm-android14-6.1-arm64.zip` | Android 14 / 6.1 |
-| `droidspaces-lkm-android15-6.6-arm64.zip` | Android 15 / 6.6 |
-| `droidspaces-lkm-android16-6.12-arm64.zip` | Android 16 / 6.12 |
+| `droidspaces-lkm-android12-5.10-arm64-<version>.zip` | Android 12 / 5.10 |
+| `droidspaces-lkm-android13-5.10-arm64-<version>.zip` | Android 13 / 5.10 |
+| `droidspaces-lkm-android13-5.15-arm64-<version>.zip` | Android 13 / 5.15 |
+| `droidspaces-lkm-android14-5.15-arm64-<version>.zip` | Android 14 / 5.15 |
+| `droidspaces-lkm-android14-6.1-arm64-<version>.zip` | Android 14 / 6.1 |
+| `droidspaces-lkm-android15-6.6-arm64-<version>.zip` | Android 15 / 6.6 |
+| `droidspaces-lkm-android16-6.12-arm64-<version>.zip` | Android 16 / 6.12 |
 
 `droidspaces-lkm-arm64-<version>.zip` is the combined package: it carries the build for all 7 KMIs and picks the right one at boot from the kernel release plus `ro.board.first_api_level`. Pick a per-KMI zip instead if you want a smaller download.
 

@@ -77,7 +77,7 @@ Android 侧
 └── /run/display.sock        anland socket（5.x 才有）
 ```
 
-### droidspaces-lkm 的 8 个模块
+### droidspaces-lkm 的 9 个模块
 
 | 模块 | 作用 | 补齐的 CONFIG |
 |---|---|---|
@@ -98,8 +98,8 @@ Android 侧
 
 ## 前置：LKM 模块
 
-刷入对应 KMI 的 `droidspaces-lkm-<kmi>-arm64.zip`（例如
-`droidspaces-lkm-android14-6.1-arm64.zip`），重启。
+刷入对应 KMI 的 `droidspaces-lkm-<kmi>-arm64-<version>.zip`（例如
+`droidspaces-lkm-android14-6.1-arm64-<version>.zip`），重启。
 
 **KMI 别自己猜。** 5.10 / 5.15 各有两代共用同一个内核版本号
 （`android12-5.10` 与 `android13-5.10`、`android13-5.15` 与 `android14-5.15`），

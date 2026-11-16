@@ -162,13 +162,13 @@ droidspaces check                          # 应显示 All required features fou
 
 | 文件 | Android / 内核 |
 |---|---|
-| `droidspaces-lkm-android12-5.10-arm64.zip` | Android 12 / 5.10 |
-| `droidspaces-lkm-android13-5.10-arm64.zip` | Android 13 / 5.10 |
-| `droidspaces-lkm-android13-5.15-arm64.zip` | Android 13 / 5.15 |
-| `droidspaces-lkm-android14-5.15-arm64.zip` | Android 14 / 5.15 |
-| `droidspaces-lkm-android14-6.1-arm64.zip` | Android 14 / 6.1 |
-| `droidspaces-lkm-android15-6.6-arm64.zip` | Android 15 / 6.6 |
-| `droidspaces-lkm-android16-6.12-arm64.zip` | Android 16 / 6.12 |
+| `droidspaces-lkm-android12-5.10-arm64-<version>.zip` | Android 12 / 5.10 |
+| `droidspaces-lkm-android13-5.10-arm64-<version>.zip` | Android 13 / 5.10 |
+| `droidspaces-lkm-android13-5.15-arm64-<version>.zip` | Android 13 / 5.15 |
+| `droidspaces-lkm-android14-5.15-arm64-<version>.zip` | Android 14 / 5.15 |
+| `droidspaces-lkm-android14-6.1-arm64-<version>.zip` | Android 14 / 6.1 |
+| `droidspaces-lkm-android15-6.6-arm64-<version>.zip` | Android 15 / 6.6 |
+| `droidspaces-lkm-android16-6.12-arm64-<version>.zip` | Android 16 / 6.12 |
 
 `droidspaces-lkm-arm64-<version>.zip` 是**合并包**，里面包含全部 7 个 KMI 的产物，开机按内核版本 + `ro.board.first_api_level` 自动选对应那一份。想省空间可以只下按 KMI 分包的版本。
 

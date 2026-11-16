@@ -2,7 +2,7 @@
 
 [English](KMI-COVERAGE.en.md) | **简体中文**
 
-**8 个模块 × 7 个 KMI = 56/56，全部齐全。**
+**9 个模块 × 7 个 KMI = 63/63，全部齐全。**
 
 | 模块 | 12-5.10 | 13-5.10 | 13-5.15 | 14-5.15 | 14-6.1 | 15-6.6 | 16-6.12 |
 |------|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
@@ -14,9 +14,10 @@
 | `droid_lkm_pids` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | `droid_lkm_cpu` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | `uart_guard` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| `mali_nsfix` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 
 下载全 KMI 合并包 `droidspaces-lkm-arm64-<version>.zip`（开机按 `osrelease` 自动选），
-或按 KMI 精确下载 `droidspaces-lkm-<kmi>-arm64.zip`。
+或按 KMI 精确下载 `droidspaces-lkm-<kmi>-arm64-<version>.zip`。
 
 ## 构建方式
 
@@ -32,6 +33,7 @@
 | `ip6table_nat` | 本仓库实现（含 5.10/5.15/6.1+ 三套签名分支） |
 | `droid_lkm_pids` / `droid_lkm_cpu` | `extra/cgrouplimits/`（含共用布局探测 `common.c`） |
 | `uart_guard` | `extra/uart_guard/`（kprobe，不依赖内核版本差异） |
+| `mali_nsfix` | `extra/mali_nsfix/`（kprobe，不依赖内核版本差异；仅 Mali 平台自动加载） |
 
 ## vkms 的 DRIVER_RENDER 补丁
 
