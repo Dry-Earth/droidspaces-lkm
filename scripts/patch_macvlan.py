@@ -19,6 +19,20 @@
            source 模式下不再重组 IP 分片。分片流量在容器场景里少见，而代价是
            整个模块在部分厂商内核上装不上 —— 取舍偏向保留模块可用。
 
+  第二组（针对只导出部分 net 符号的厂商内核，如 Qualcomm SM7675 6.1.138）：
+
+    L234   return __dev_forward_skb(dev, skb);
+           → dev_forward_skb(dev, skb)。导出的那个就是 __dev_forward_skb 再加
+             一层 rx 计数包装，参数和返回值完全一致，无语义差异。
+
+    L1014  err = dev_uc_add_excl(dev, addr);
+    L1016  err = dev_mc_add_excl(dev, addr);
+           → dev_uc_add() / dev_mc_add()。唯一差别是 _excl 在地址已存在时返回
+             -EEXIST，非 excl 版返回 0。这条路径是 rtnl_fdb_add()，即
+             "ip link set ... fdb ..."；重复添加同一个 FDB 条目本来就没坏处，
+             改成幂等反而更宽容。真机可观察到的差异：重复 fdb add 不再报
+             "File exists"。
+
 替换统一走字符串匹配，不依赖行号，因为 7 个 KMI 的内核树版本不同。
 """
 import sys
@@ -81,6 +95,21 @@ static inline struct sk_buff *macvlan_skip_defrag(struct net *net,
     eol = s.find("\n", last)
     s = s[:eol + 1] + helper + s[eol + 1:]
     done.append(f"ip_check_defrag → 恒等内联 {n} 处")
+
+# ---- 4. __dev_forward_skb -> dev_forward_skb（导出包装，语义等价）----
+if "__dev_forward_skb(" in s:
+    n = s.count("__dev_forward_skb(")
+    s = s.replace("__dev_forward_skb(", "dev_forward_skb(")
+    done.append(f"__dev_forward_skb -> dev_forward_skb {n} 处")
+
+# ---- 5. dev_uc_add_excl / dev_mc_add_excl -> dev_uc_add / dev_mc_add ----
+# 只影响 rtnl_fdb_add()：重复添加同一条 FDB 由 -EEXIST 变成幂等成功
+for old_name, new_name in (("dev_uc_add_excl(", "dev_uc_add("),
+                           ("dev_mc_add_excl(", "dev_mc_add(")):
+    if old_name in s:
+        n = s.count(old_name)
+        s = s.replace(old_name, new_name)
+        done.append(f"{old_name[:-1]} -> {new_name[:-1]} {n} 处")
 
 if s != orig:
     p.write_text(s, encoding="utf-8", errors="surrogateescape")
