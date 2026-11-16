@@ -81,7 +81,7 @@ index 0f951ba..e0c0aa0 100644
  	vns_sem_init_ns(&vns_default_ipc_ns);
  	vns_shm_init_ns(&vns_default_ipc_ns);
 diff --git a/glue/vendor_kernel_ovl_vfs_compat.c b/glue/vendor_kernel_ovl_vfs_compat.c
-index e9e9549..939409d 100644
+index e9e9549..f0804e8 100644
 --- a/glue/vendor_kernel_ovl_vfs_compat.c
 +++ b/glue/vendor_kernel_ovl_vfs_compat.c
 @@ -59,6 +59,241 @@ VNS_OVL_VFS_COMPAT_LIST(VNS_OVL_VFSC_DEFINE)
@@ -136,7 +136,7 @@ index e9e9549..939409d 100644
 +/* 存指针的槽位；由 vns_ovl_vfs_compat_resolve() 填。 */
 +static struct path *(*vns_bfup_slot)(struct file *);
 +
-+static __maybe_unused struct path *__nocfi backing_file_user_path(struct file *f)
++__maybe_unused struct path *__nocfi backing_file_user_path(struct file *f)
 +{
 +	if (!vns_bfup_slot)
 +		vns_bfup_slot = (void *)shadow_hook_resolve("backing_file_user_path");
