@@ -17,6 +17,42 @@ index d5f5f48..29c05d9 100644
  #define LKM4CTR_DIAGFS_MAGIC	0x4C4B4D34 /* "LKM4" */
  #define LKM4CTR_DIAGFS_TAG	"diagfs"
  
+diff --git a/glue/vendor_kernel_ipc_syscalls.c b/glue/vendor_kernel_ipc_syscalls.c
+index 0f951ba..06d6817 100644
+--- a/glue/vendor_kernel_ipc_syscalls.c
++++ b/glue/vendor_kernel_ipc_syscalls.c
+@@ -102,20 +102,29 @@ int vns_ipc_default_init(void)
+ 	vns_ipc_pin_ref(&vns_default_ipc_ns, 0x40000000);
+ 
+ 	err = vns_mqueue_fs_init();
+-	if (err)
++	if (err) {
++		LKM4CTR_ERR(VENDOR_KERNEL_TAG, "[diag] vns_mqueue_fs_init -> %d", err);
+ 		return err;
++	}
++	LKM4CTR_INFO(VENDOR_KERNEL_TAG, "[diag] mqueue fs ok");
+ 
+ 	if (!vns_setup_ipc_sysctls(&vns_default_ipc_ns)) {
++		LKM4CTR_ERR(VENDOR_KERNEL_TAG, "[diag] setup_ipc_sysctls returned false");
+ 		err = -ENOMEM;
+ 		goto fail_mqueue;
+ 	}
++	LKM4CTR_INFO(VENDOR_KERNEL_TAG, "[diag] ipc sysctls ok");
+ 
+ 	err = vns_msg_init_ns(&vns_default_ipc_ns);
+-	if (err)
++	if (err) {
++		LKM4CTR_ERR(VENDOR_KERNEL_TAG, "[diag] vns_msg_init_ns -> %d", err);
+ 		goto fail_ipc_sysctls;
++	}
++	LKM4CTR_INFO(VENDOR_KERNEL_TAG, "[diag] msg init ok");
+ 
+ 	vns_sem_init_ns(&vns_default_ipc_ns);
+ 	vns_shm_init_ns(&vns_default_ipc_ns);
++	LKM4CTR_INFO(VENDOR_KERNEL_TAG, "[diag] sem/shm init ok");
+ 
+ 	/*
+ 	 * Give the default namespace a real ns_common inode number too (same
 diff --git a/glue/vendor_kernel_ovl_vfs_compat.c b/glue/vendor_kernel_ovl_vfs_compat.c
 index e9e9549..72b8f72 100644
 --- a/glue/vendor_kernel_ovl_vfs_compat.c
