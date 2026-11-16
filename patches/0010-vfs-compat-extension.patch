@@ -1,5 +1,5 @@
 diff --git a/glue/lkm4ctr_diagfs.c b/glue/lkm4ctr_diagfs.c
-index d5f5f48..8691bfc 100644
+index d5f5f48..29c05d9 100644
 --- a/glue/lkm4ctr_diagfs.c
 +++ b/glue/lkm4ctr_diagfs.c
 @@ -224,6 +224,14 @@
@@ -12,11 +12,34 @@ index d5f5f48..8691bfc 100644
 + * site below goes through the resolved address instead of a static
 + * import. Included after the kernel headers so typeof() sees the real
 + * declarations. */
-+#include "vendor_kernel_ovl_vfs_compat.h"
++#include "vns_vfs_shared_syms.h"
 +
  #define LKM4CTR_DIAGFS_MAGIC	0x4C4B4D34 /* "LKM4" */
  #define LKM4CTR_DIAGFS_TAG	"diagfs"
  
+diff --git a/glue/vendor_kernel_ovl_vfs_compat.c b/glue/vendor_kernel_ovl_vfs_compat.c
+index e9e9549..f216ec2 100644
+--- a/glue/vendor_kernel_ovl_vfs_compat.c
++++ b/glue/vendor_kernel_ovl_vfs_compat.c
+@@ -59,6 +59,18 @@ VNS_OVL_VFS_COMPAT_LIST(VNS_OVL_VFSC_DEFINE)
+ VNS_OVL_VFS_COMPAT_LIST_BF(VNS_OVL_VFSC_DEFINE)
+ #undef VNS_OVL_VFSC_DEFINE
+ 
++/*
++ * Wrapper for the __percpu_counter_init() alias in vns_vfs_shared_syms.h.
++ * Declared there so call sites outside fs/overlayfs keep one spelling; defined
++ * here so the lockdep key argument is dropped once instead of at every use.
++ */
++int vns_percpu_counter_init(struct percpu_counter *fbc, s64 amount)
++{
++	if (!vns_ovl_vfsc___percpu_counter_init)
++		return -ENOENT;
++	return vns_ovl_vfsc___percpu_counter_init(fbc, amount, GFP_KERNEL, NULL);
++}
++
+ int vns_ovl_vfs_compat_resolve(void)
+ {
+ #define VNS_OVL_VFSC_RESOLVE(name) \
 diff --git a/glue/vendor_kernel_ovl_vfs_compat.h b/glue/vendor_kernel_ovl_vfs_compat.h
 index f326a9a..23bd379 100644
 --- a/glue/vendor_kernel_ovl_vfs_compat.h
@@ -58,6 +81,102 @@ index f326a9a..23bd379 100644
  	X(lookup_positive_unlocked) \
  	VNS_OVL_VFSC_VMASETFILE_ENTRY(X) \
  	X(d_tmpfile)
+diff --git a/glue/vns_vfs_shared_syms.h b/glue/vns_vfs_shared_syms.h
+new file mode 100644
+index 0000000..a1ba554
+--- /dev/null
++++ b/glue/vns_vfs_shared_syms.h
+@@ -0,0 +1,89 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/*
++ * vns_vfs_shared_syms.h - VFS helpers needed outside fs/overlayfs
++ *
++ * Why this exists rather than including vendor_kernel_ovl_vfs_compat.h
++ * --------------------------------------------------------------------
++ * That header assumes its includer already pulled in <linux/xattr.h>,
++ * <linux/exportfs.h>, <linux/posix_acl.h>, <linux/cred.h> and friends, because
++ * its pass-1 `extern typeof(name) *vns_ovl_vfsc_<name>;` needs every function
++ * to be declared. The fs/overlayfs sources do include that set; glue/ and
++ * vendor/ipc/ do not, and including the overlayfs header there fails with
++ * "use of undeclared identifier 'vfs_setxattr'" and similar.
++ *
++ * So this header declares only the pointers those files need, with the exact
++ * types vendor_kernel_ovl_vfs_compat.c defines them as, and aliases the bare
++ * names to them. The overlayfs layer still resolves them; nothing is resolved
++ * twice.
++ *
++ * Scope
++ * -----
++ * Guarded to the tier whose list carries these names (MID), because outside it
++ * `vns_ovl_vfsc_<name>` would not exist and the link would fail. On other tiers
++ * the calls stay ordinary static imports, which is what they were before.
++ *
++ * Naming
++ * ------
++ * Deliberately not `vns_vfs_*`: these are the overlayfs layer's storage, and
++ * keeping the `vns_ovl_vfsc_` name makes it obvious where they are defined and
++ * resolved.
++ */
++#ifndef _VNS_VFS_SHARED_SYMS_H
++#define _VNS_VFS_SHARED_SYMS_H
++
++#include <linux/version.h>
++#include <linux/types.h>
++#include <linux/fs.h>
++#include <linux/dcache.h>
++#include <linux/percpu_counter.h>
++#include <linux/capability.h>
++
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 12, 0) && \
++	LINUX_VERSION_CODE < KERNEL_VERSION(6, 3, 0)
++
++struct file;
++struct inode;
++struct dentry;
++struct dir_context;
++struct percpu_counter;
++struct lock_class_key;
++
++extern void (*vns_ovl_vfsc_clear_inode)(struct inode *);
++extern void (*vns_ovl_vfsc_drop_nlink)(struct inode *);
++extern void (*vns_ovl_vfsc_inc_nlink)(struct inode *);
++extern void (*vns_ovl_vfsc_set_nlink)(struct inode *, unsigned int);
++extern int (*vns_ovl_vfsc_generic_read_dir)(struct file *, struct dir_context *);
++extern void (*vns_ovl_vfsc_truncate_inode_pages_final)(struct inode *);
++extern void (*vns_ovl_vfsc_d_instantiate)(struct dentry *, struct inode *);
++extern struct inode *(*vns_ovl_vfsc_ihold)(struct inode *);
++extern void (*vns_ovl_vfsc_inode_init_once)(struct inode *);
++extern umode_t (*vns_ovl_vfsc_current_umask)(void);
++extern int (*vns_ovl_vfsc_in_group_p)(kgid_t);
++extern int (*vns_ovl_vfsc___percpu_counter_init)(struct percpu_counter *, s64,
++						 gfp_t, struct lock_class_key *);
++extern void (*vns_ovl_vfsc_percpu_counter_destroy)(struct percpu_counter *);
++
++#define clear_inode			(*vns_ovl_vfsc_clear_inode)
++#define drop_nlink			(*vns_ovl_vfsc_drop_nlink)
++#define inc_nlink			(*vns_ovl_vfsc_inc_nlink)
++#define set_nlink			(*vns_ovl_vfsc_set_nlink)
++#define generic_read_dir		(*vns_ovl_vfsc_generic_read_dir)
++#define truncate_inode_pages_final	(*vns_ovl_vfsc_truncate_inode_pages_final)
++#define d_instantiate			(*vns_ovl_vfsc_d_instantiate)
++#define ihold				(*vns_ovl_vfsc_ihold)
++#define inode_init_once			(*vns_ovl_vfsc_inode_init_once)
++#define current_umask			(*vns_ovl_vfsc_current_umask)
++#define in_group_p			(*vns_ovl_vfsc_in_group_p)
++/*
++ * __percpu_counter_init is called through this wrapper rather than a bare
++ * macro: it takes a lockdep key, and on configurations without lockdep the
++ * call site's expression must still typecheck. The wrapper keeps one spelling.
++ */
++int vns_percpu_counter_init(struct percpu_counter *fbc, s64 amount);
++#define __percpu_counter_init(f, a, g, k) \
++	vns_percpu_counter_init((f), (a))
++#define percpu_counter_destroy		(*vns_ovl_vfsc_percpu_counter_destroy)
++
++#endif /* MID tier */
++
++#endif /* _VNS_VFS_SHARED_SYMS_H */
+\ No newline at end of file
 diff --git a/vendor/fs/overlayfs/copy_up.c b/vendor/fs/overlayfs/copy_up.c
 index 64cb9ba..7d3f242 100644
 --- a/vendor/fs/overlayfs/copy_up.c
@@ -154,7 +273,7 @@ index 7cc1a34..5a58309 100644
  int ovl_get_write_access(struct dentry *dentry)
  {
 diff --git a/vendor/ipc/mqueue.c b/vendor/ipc/mqueue.c
-index 0473ef5..6d203d9 100644
+index 0473ef5..3cc012e 100644
 --- a/vendor/ipc/mqueue.c
 +++ b/vendor/ipc/mqueue.c
 @@ -63,6 +63,11 @@
@@ -164,13 +283,13 @@ index 0473ef5..6d203d9 100644
 +/* [TRIM-COMPAT] helpers this file calls may be trimmed from the module
 + * symbol table on production GKI; the compat header turns them into
 + * runtime pointers so no static import is emitted. */
-+#include "../../glue/vendor_kernel_ovl_vfs_compat.h"
++#include "../../glue/vns_vfs_shared_syms.h"
 +
  #include "../vendor_kernel.h"
  /* [BUILD-COMPAT] LKM4CTR ring-buffer logging (see glue/lkm4ctr_log.h);
   * replaces upstream pr_warn/pr_info so all output goes through the module's
 diff --git a/vendor/ipc/msg.c b/vendor/ipc/msg.c
-index 0cded6b..241376d 100644
+index 0cded6b..3145ed9 100644
 --- a/vendor/ipc/msg.c
 +++ b/vendor/ipc/msg.c
 @@ -52,6 +52,11 @@
@@ -181,12 +300,12 @@ index 0cded6b..241376d 100644
 +/* [TRIM-COMPAT] helpers this file calls may be trimmed from the module
 + * symbol table on production GKI; the compat header turns them into
 + * runtime pointers so no static import is emitted. */
-+#include "../../glue/vendor_kernel_ovl_vfs_compat.h"
++#include "../../glue/vns_vfs_shared_syms.h"
  #include "../vendor_kernel.h"
  
  #undef SYSCALL_METADATA
 diff --git a/vendor/ipc/namespace.c b/vendor/ipc/namespace.c
-index d72a3aa..d489233 100644
+index d72a3aa..507bc70 100644
 --- a/vendor/ipc/namespace.c
 +++ b/vendor/ipc/namespace.c
 @@ -32,6 +32,11 @@
@@ -196,13 +315,13 @@ index d72a3aa..d489233 100644
 +/* [TRIM-COMPAT] helpers this file calls may be trimmed from the module
 + * symbol table on production GKI; the compat header turns them into
 + * runtime pointers so no static import is emitted. */
-+#include "../../glue/vendor_kernel_ovl_vfs_compat.h"
++#include "../../glue/vns_vfs_shared_syms.h"
 +
  #include "util.h"
  #include "../vendor_kernel.h"
  #include "../include/uapi/vendor_kernel.h"
 diff --git a/vendor/ipc/util.c b/vendor/ipc/util.c
-index 46c3da0..f59b61e 100644
+index 46c3da0..62fca26 100644
 --- a/vendor/ipc/util.c
 +++ b/vendor/ipc/util.c
 @@ -75,6 +75,11 @@
@@ -212,13 +331,13 @@ index 46c3da0..f59b61e 100644
 +/* [TRIM-COMPAT] helpers this file calls may be trimmed from the module
 + * symbol table on production GKI; the compat header turns them into
 + * runtime pointers so no static import is emitted. */
-+#include "../../glue/vendor_kernel_ovl_vfs_compat.h"
++#include "../../glue/vns_vfs_shared_syms.h"
 +
  #include <asm/unistd.h>
  
  #include "util.h"
 diff --git a/vendor/kernel/nsproxy.c b/vendor/kernel/nsproxy.c
-index 31d9e2a..55c0773 100644
+index 31d9e2a..5c2fbd9 100644
 --- a/vendor/kernel/nsproxy.c
 +++ b/vendor/kernel/nsproxy.c
 @@ -65,6 +65,11 @@
@@ -229,7 +348,7 @@ index 31d9e2a..55c0773 100644
 +/* [TRIM-COMPAT] helpers this file calls may be trimmed from the module
 + * symbol table on production GKI; the compat header turns them into
 + * runtime pointers so no static import is emitted. */
-+#include "../../glue/vendor_kernel_ovl_vfs_compat.h"
++#include "../../glue/vns_vfs_shared_syms.h"
  #include "../vendor_kernel.h"
  #include "../include/uapi/vendor_kernel.h"
  #include "../../glue/shadow_hook.h"
