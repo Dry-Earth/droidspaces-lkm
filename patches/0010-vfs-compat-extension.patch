@@ -106,10 +106,10 @@ index f9c3546..12b0775 100644
  static struct file_system_type *(*real_get_fs_type)(const char *name);
  
 diff --git a/glue/vendor_kernel_ovl_vfs_compat.c b/glue/vendor_kernel_ovl_vfs_compat.c
-index e9e9549..a1c1605 100644
+index e9e9549..31e3d81 100644
 --- a/glue/vendor_kernel_ovl_vfs_compat.c
 +++ b/glue/vendor_kernel_ovl_vfs_compat.c
-@@ -59,22 +59,369 @@ VNS_OVL_VFS_COMPAT_LIST(VNS_OVL_VFSC_DEFINE)
+@@ -59,22 +59,368 @@ VNS_OVL_VFS_COMPAT_LIST(VNS_OVL_VFSC_DEFINE)
  VNS_OVL_VFS_COMPAT_LIST_BF(VNS_OVL_VFSC_DEFINE)
  #undef VNS_OVL_VFSC_DEFINE
  
@@ -442,7 +442,6 @@ index e9e9549..a1c1605 100644
 +
 +
 +static unsigned int vns_ovl_resolve_failed;
-+static __maybe_unused unsigned int vns_ovl_resolve_total;
 +
  int vns_ovl_vfs_compat_resolve(void)
  {
