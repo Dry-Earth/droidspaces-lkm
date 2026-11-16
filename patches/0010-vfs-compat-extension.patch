@@ -485,7 +485,7 @@ index e9e9549..31e3d81 100644
  }
  
 diff --git a/glue/vendor_kernel_ovl_vfs_compat.h b/glue/vendor_kernel_ovl_vfs_compat.h
-index f326a9a..2ba0346 100644
+index f326a9a..0b5a4a0 100644
 --- a/glue/vendor_kernel_ovl_vfs_compat.h
 +++ b/glue/vendor_kernel_ovl_vfs_compat.h
 @@ -130,11 +130,88 @@ int vfs_path_lookup(struct dentry *dentry, struct vfsmount *mnt,
@@ -897,7 +897,29 @@ index f326a9a..2ba0346 100644
  #define mount_nodev (*vns_ovl_vfsc_mount_nodev)
  #define prepare_creds (*vns_ovl_vfsc_prepare_creds)
  #define errseq_sample (*vns_ovl_vfsc_errseq_sample)
-@@ -1109,7 +1418,6 @@ static inline void vns_ovl_revert_creds_compat(const struct cred *revert_cred)
+@@ -1051,9 +1360,19 @@ static inline void vns_ovl_revert_creds_compat(const struct cred *revert_cred)
+  * android.googlesource.com include/linux/capability.h). See the
+  * setattr_prepare()/generic_permission() comment above for why a
+  * self-referencing macro is safe here.
++/*
++ * [BUILD-COMPAT] capable_wrt_inode_uidgid() on VNS_OVL_TIER_OLD (<5.12)
++ * doesn't take a `struct mnt_idmap *` yet -- the source calls it with 3
++ * args, so the macro drops the idmap.
++ *
++ * It goes through the runtime pointer, NOT straight to the kernel function.
++ * The previous self-referencing form relied on the blue-paint rule to stop
++ * the recursion and emit a direct call -- which is a *static import*.
++ * Measured on the android12-5.10 build after MID/NEW were fixed: the symbol
++ * was still in nm -u, i.e. this tier would still fail on a kernel that trims
++ * it (Meizu 6.1.25 proves vendors do trim this one).
+  */
+-#define capable_wrt_inode_uidgid(idmap, inode, cap) \
+-	capable_wrt_inode_uidgid((inode), (cap))
++	(*vns_ovl_vfsc_capable_wrt_inode_uidgid)((inode), (cap))
+ #define exportfs_decode_fh (*vns_ovl_vfsc_exportfs_decode_fh)
+ #define is_subdir (*vns_ovl_vfsc_is_subdir)
+ #define vfs_getxattr(idmap, dentry, name, value, size) \
+@@ -1109,7 +1428,6 @@ static inline void vns_ovl_revert_creds_compat(const struct cred *revert_cred)
  #define vfs_iocb_iter_write (*vns_ovl_vfsc_vfs_iocb_iter_write)
  #define vfs_iter_write (*vns_ovl_vfsc_vfs_iter_write)
  #define iter_file_splice_write (*vns_ovl_vfsc_iter_file_splice_write)
@@ -905,7 +927,7 @@ index f326a9a..2ba0346 100644
  #define vfs_fallocate (*vns_ovl_vfsc_vfs_fallocate)
  #define dentry_open (*vns_ovl_vfsc_dentry_open)
  #define open_with_fake_path (*vns_ovl_vfsc_open_with_fake_path)
-@@ -1146,11 +1454,11 @@ static inline void vns_ovl_revert_creds_compat(const struct cred *revert_cred)
+@@ -1146,11 +1464,11 @@ static inline void vns_ovl_revert_creds_compat(const struct cred *revert_cred)
   * this forwards straight to the real symbol.
   */
  #define setattr_prepare(idmap, dentry, attr) \
@@ -919,7 +941,7 @@ index f326a9a..2ba0346 100644
  #define security_file_ioctl (*vns_ovl_vfsc_security_file_ioctl)
  #define vfs_fadvise (*vns_ovl_vfsc_vfs_fadvise)
  #define vfs_ioctl (*vns_ovl_vfsc_vfs_ioctl)
-@@ -1160,6 +1468,31 @@ static inline void vns_ovl_revert_creds_compat(const struct cred *revert_cred)
+@@ -1160,6 +1478,31 @@ static inline void vns_ovl_revert_creds_compat(const struct cred *revert_cred)
  #define vfs_path_lookup (*vns_ovl_vfsc_vfs_path_lookup)
  #define rw_verify_area (*vns_ovl_vfsc_rw_verify_area)
  #define d_tmpfile (*vns_ovl_vfsc_d_tmpfile)
