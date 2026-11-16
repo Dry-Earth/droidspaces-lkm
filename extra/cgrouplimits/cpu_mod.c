@@ -301,6 +301,9 @@ static int (*p_send_sig_info)(int sig, struct kernel_siginfo *info,
  * 时摘不掉，cgroup 子系统会留着指向已卸载模块的悬空指针（UAF）。
  */
 static int (*p_cgroup_rm_cftypes)(struct cftype *cfts);
+/* [TRIM] 6.12 等厂商内核未导出；未解析时不安装 cftype */
+static int (*p_cgroup_add_dfl_cftypes)(struct cgroup_subsys *ss,
+					struct cftype *cfts);
 
 static void (*p_rstat_flush_hold)(struct cgroup *cgrp);
 static unsigned long long (*p_task_sched_runtime)(struct task_struct *p);
@@ -400,6 +403,8 @@ static void cpu_resolve_syms(void)
 	/* 5.10 未导出，解析不到就不安装 cftype（见声明处注释） */
 	p_cgroup_rm_cftypes =
 		cpu_ksym("cgroup_rm_cftypes");
+	p_cgroup_add_dfl_cftypes =
+		cpu_ksym("cgroup_add_dfl_cftypes");
 	/* [TRIM] 裁剪内核上可能不存在，解析不到就跳过 sysctl 存在性检查 */
 	p_kern_path = cpu_ksym("kern_path");
 	p_path_put  = cpu_ksym("path_put");
@@ -881,10 +886,11 @@ static int __init droid_lkm_cpu_init(void)
 	cpu_resolve_syms();
 	cpu_layout_init();
 
-	if (!p_cgroup_rm_cftypes) {
-		cpu_warn("cgroup_rm_cftypes unresolved; skipping cftypes (installing them would leave a dangling cftype on unload)\n");
+	if (!p_cgroup_rm_cftypes || !p_cgroup_add_dfl_cftypes) {
+		cpu_warn("cgroup_rm_cftypes/cgroup_add_dfl_cftypes unresolved; skipping cftypes\n"
+			 "  (installing them without a working rm would leave a dangling cftype on unload)\n");
 	} else {
-		ret = cgroup_add_dfl_cftypes(memory_ss, cpu_max_files);
+		ret = p_cgroup_add_dfl_cftypes(memory_ss, cpu_max_files);
 		if (ret)
 			cpu_err("cgroup_add_dfl_cftypes failed: %d\n", ret);
 		else

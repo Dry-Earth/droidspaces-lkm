@@ -691,6 +691,9 @@ static bool ctl_live_files;
  * 时摘不掉，cgroup 子系统会留着指向已卸载模块的悬空指针（UAF）。
  */
 static int (*p_cgroup_rm_cftypes)(struct cftype *cfts);
+/* [TRIM] 6.12 等厂商内核未导出；未解析时不安装 cftype */
+static int (*p_cgroup_add_dfl_cftypes)(struct cgroup_subsys *ss,
+					struct cftype *cfts);
 static bool ctl_live_display;
 
 static void ctl_probe_one(struct kprobe *h, const char *sym,
@@ -740,6 +743,7 @@ static int __init droid_lkm_pids_init(void)
 	 * 解析不到就不安装 cftype，见声明处的注释。
 	 */
 	p_cgroup_rm_cftypes = (void *)kallrecon_klp("cgroup_rm_cftypes");
+	p_cgroup_add_dfl_cftypes = (void *)kallrecon_klp("cgroup_add_dfl_cftypes");
 
 	ctl_layout_init();
 
@@ -766,10 +770,11 @@ static int __init droid_lkm_pids_init(void)
 	}
 
 	/* B1：pids.max 文件 */
-	if (!p_cgroup_rm_cftypes) {
-		pids_warn("cgroup_rm_cftypes unresolved; skipping cftypes (installing them would leave a dangling cftype on unload)\n");
+	if (!p_cgroup_rm_cftypes || !p_cgroup_add_dfl_cftypes) {
+		pids_warn("cgroup_rm_cftypes/cgroup_add_dfl_cftypes unresolved; skipping cftypes\n"
+			  "  (installing them without a working rm would leave a dangling cftype on unload)\n");
 	} else {
-		ret = cgroup_add_dfl_cftypes(memory_ss, pids_max_files);
+		ret = p_cgroup_add_dfl_cftypes(memory_ss, pids_max_files);
 		if (ret)
 			pids_err("cgroup_add_dfl_cftypes failed: %d\n", ret);
 		else
