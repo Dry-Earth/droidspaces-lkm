@@ -26,10 +26,10 @@ index a33176b..457baec 100644
  		LKM4CTR_ERR(LKM4CTR_TAG,
 diff --git a/glue/vendor_kernel_trim_symbols.c b/glue/vendor_kernel_trim_symbols.c
 new file mode 100644
-index 0000000..dfda884
+index 0000000..e95b50b
 --- /dev/null
 +++ b/glue/vendor_kernel_trim_symbols.c
-@@ -0,0 +1,173 @@
+@@ -0,0 +1,148 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +/*
 + * vendor_kernel_trim_symbols.c - 三个可能被厂商内核删掉导出标记的符号。
@@ -172,36 +172,11 @@ index 0000000..dfda884
 +}
 +#else
 +/*
-+ * 6.1 之前 seq_escape 是真函数（非内联），本地提供同名定义即可，
-+ * 同样不需要解析。
++ * 6.1 之前不需要在这里定义 seq_escape：上游 vendor_kernel_ovl_vfs_compat.c
++ * 已经为 <6.1 提供了同名本地实现。两边都定义会在最终 LTO 链接时报
++ *   ld.lld: error: duplicate symbol: seq_escape
++ * 所以这里只负责 6.1+ 的 seq_escape_mem。
 + */
-+void __nocfi seq_escape(struct seq_file *m, const char *s, const char *esc)
-+{
-+	char c;
-+
-+	while ((c = *s++) != '\0') {
-+		if (!strchr(esc, c)) {
-+			seq_putc(m, c);
-+			continue;
-+		}
-+		switch (c) {
-+		case '\n':
-+			seq_puts(m, "\\n");
-+			break;
-+		case '\t':
-+			seq_puts(m, "\\t");
-+			break;
-+		case '\\':
-+			seq_puts(m, "\\\\");
-+			break;
-+		default:
-+			seq_putc(m, '\\');
-+			seq_putc(m, '0' + ((unsigned char)c >> 6));
-+			seq_putc(m, '0' + (((unsigned char)c >> 3) & 7));
-+			seq_putc(m, '0' + ((unsigned char)c & 7));
-+		}
-+	}
-+}
 +#endif
 diff --git a/vendor/Makefile b/vendor/Makefile
 index 89608a3..e8e465e 100644
