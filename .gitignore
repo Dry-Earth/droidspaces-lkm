@@ -21,3 +21,7 @@ Module.symvers
 .*.cmd
 modules.order
 Module.symvers
+
+# Python 字节码（scripts/*.py 被 import 时生成）
+__pycache__/
+*.py[cod]
