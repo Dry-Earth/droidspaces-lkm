@@ -1,84 +1,86 @@
-name: 问题反馈 / Bug report
-description: 模块装不上、能力不可用、开机异常等
+name: Bug report
+description: Module fails to install, capabilities unavailable, boot problems
 title: "[Bug] "
 labels: ["bug"]
 body:
   - type: markdown
     attributes:
       value: |
-        谢谢反馈。这类问题九成取决于**内核版本、KMI 和模块版本三者对不对得上**，
-        所以下面每一项都请照实填。
+        Most reports of this kind depend on whether **kernel version, KMI and module
+        version agree with each other**, so every field below matters.
 
-        在开始之前，请先做两件事：
+        Before filing, do two things:
 
-        1. 装最新版本，确认问题还在（旧版本的问题可能已经修了）
-        2. 点一下 KernelSU 模块页的**「操作」按钮**，把输出复制下来——
-           那一段就包含设备信息、加载状态和能力自检结果
+        1. Install the latest release and confirm the problem persists (older
+           releases may already contain the fix).
+        2. Press the **Action** button on the KernelSU module page and copy its
+           output — that block already contains device information, load state
+           and the capability self-check.
 
   - type: input
     id: device
     attributes:
-      label: 设备型号与系统
-      description: 设置 → 关于手机 里的型号，以及 Android 版本 / ROM 名称
-      placeholder: 例如：OPPO Find X7 (PHZ110)，Android 14，ColorOS 15
+      label: Device and OS
+      description: Model from Settings → About phone, plus Android version / ROM name
+      placeholder: "e.g. OPPO Find X7 (PHZ110), Android 14, ColorOS 15"
     validations:
       required: true
 
   - type: input
     id: kernel
     attributes:
-      label: 内核版本
-      description: 终端执行 `uname -r` 的完整输出，不要只写 "6.1"
-      placeholder: 例如：6.1.157-android14-11-o-g2d576b643492
+      label: Kernel version
+      description: Full `uname -r` output; do not write only "6.1"
+      placeholder: "e.g. 6.1.157-android14-11-o-g2d576b643492"
     validations:
       required: true
 
   - type: input
     id: module_version
     attributes:
-      label: 模块版本
-      description: KernelSU 模块列表里显示的版本号，或 `module.prop` 里的 version
-      placeholder: 例如：v0.1.0
+      label: Module version
+      description: The version shown in the KernelSU module list, or `version` in `module.prop`
+      placeholder: "e.g. v0.1.22"
     validations:
       required: true
 
   - type: dropdown
     id: ksu_type
     attributes:
-      label: KernelSU 类型
+      label: KernelSU variant
       options:
-        - GKI 模式（内核已内置 KernelSU）
-        - LKM 模式（自己 insmod kernelsu.ko）
-        - 其他 / 不确定
+        - GKI mode (KernelSU built into the kernel)
+        - LKM mode (loading kernelsu.ko manually)
+        - Other / not sure
     validations:
       required: true
 
   - type: dropdown
     id: symptom
     attributes:
-      label: 现象
+      label: Symptom
       multiple: true
       options:
-        - 模块不支持 / 装不上
-        - 装上了但模块没加载
-        - 加载了但容器能力不可用（PID/IPC namespace）
-        - 容器内无法挂载 /proc 或其他文件系统
-        - 没有 /dev/dri/renderD128（Wayland 桌面起不来）
-        - 开机卡住 / 重启 / 进安全模式
-        - 其他
+        - Module not supported / install fails
+        - Installs but the module does not load
+        - Loads but container capabilities are unavailable (PID/IPC namespace)
+        - Cannot mount /proc or other filesystems inside the container
+        - No /dev/dri/renderD128 (Wayland desktop fails to start)
+        - Boot hangs / reboots / drops to safe mode
+        - Other
     validations:
       required: true
 
   - type: textarea
     id: action_output
     attributes:
-      label: 「操作」按钮输出
-      description: KernelSU 模块页点「操作」后的完整输出，能覆盖一半以上的信息量
+      label: Action button output
+      description: Full output of the Action button on the KernelSU module page; it covers more than half of what is needed
       render: shell
       placeholder: |
         === Droidspaces LKM ===
-        内核    : ...
-        模块版本: ...
+        Kernel  : ...
+        Version : ...
         ...
     validations:
       required: true
@@ -86,10 +88,10 @@ body:
   - type: textarea
     id: log
     attributes:
-      label: 模块日志
+      label: Module log
       description: |
-        `cat /data/local/tmp/droidspaces-lkm.log` 的内容。
-        如果文件不存在（说明 service.sh 根本没跑到），请说明这一点。
+        Contents of `cat /data/adb/droidspaces_lkm.log`.
+        If the file does not exist (meaning `service.sh` never ran), say so explicitly.
       render: shell
     validations:
       required: false
@@ -97,11 +99,12 @@ body:
   - type: textarea
     id: dmesg
     attributes:
-      label: 内核日志（相关部分）
+      label: Kernel log (relevant excerpt)
       description: |
         `dmesg | grep -iE 'lkm4ctr|devtmpfs|vkms|macvlan' | tail -50`
-        开机卡住或重启的，请额外提供 `cat /proc/last_kmsg` 或
-        `/sys/fs/pstore/console-ramoops-0` 里的崩溃段落（含 pc / lr）。
+        For boot hangs or reboots, also provide the crash section from
+        `cat /proc/last_kmsg` or `/sys/fs/pstore/console-ramoops-0`
+        (include pc / lr).
       render: shell
     validations:
       required: false
@@ -109,30 +112,30 @@ body:
   - type: textarea
     id: steps
     attributes:
-      label: 复现步骤
+      label: Steps to reproduce
       placeholder: |
-        1. 刷入模块 vX
-        2. 重启
-        3. 执行 ...
-        4. 看到 ...
+        1. Flash module vX
+        2. Reboot
+        3. Run ...
+        4. Observe ...
     validations:
       required: true
 
   - type: textarea
     id: expected
     attributes:
-      label: 预期行为 vs 实际行为
+      label: Expected vs actual behaviour
     validations:
       required: true
 
   - type: checkboxes
     id: checks
     attributes:
-      label: 提交前确认
+      label: Before submitting
       options:
-        - label: 已用最新版本复测，问题仍然存在
+        - label: Retested on the latest release and the problem persists
           required: true
-        - label: 已确认 `uname -r` 与所选 KMI 匹配（模块包的 KMI 是给对应内核编的）
+        - label: Confirmed `uname -r` matches the selected KMI (each package is built for one kernel)
           required: true
-        - label: 贴出的日志里没有打码掉关键信息（内核版本、地址、报错都要保留）
+        - label: The logs below are not redacted (kernel version, addresses and error text must be preserved)
           required: true
