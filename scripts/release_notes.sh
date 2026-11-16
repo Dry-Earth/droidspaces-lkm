@@ -1,75 +1,120 @@
 #!/bin/sh
-# 生成 Release 说明：只列支持的 kernel，功能说明在仓库首页 README。
-# 用法: release_notes.sh <dist 目录>
+# 生成 Release 正文。
 #
-# 输出会直接成为 GitHub Release 的正文。GitHub 不按用户语言分发正文，
-# 所以英文和中文两段并列输出 —— 英文在前（默认），中文在后。
+# 格式参考 KernelSU 的 release（v3.3.1）：
+#
+#     vX.Y.Z                          <- 标题只有版本号
+#
+#     ## What's Changed
+#     * 条目
+#     * 条目
+#
+#     ## Supported kernels
+#     | 表格 |
+#
+#     **Full Changelog**: https://.../compare/vPREV...vCUR
+#
+# 与原格式的差别：标题不再带项目名和 (preview)；小节标题用 "What's Changed"；
+# 列表符号统一用 "*"；结尾补 compare 链接。中文段落放在英文之后（GitHub 不按
+# 语言分发正文，所以两段并列，英文在前）。
+#
+# 用法: release_notes.sh <dist 目录> [仓库 root]
 set -eu
 
 DIST="${1:-dist}"
+ROOT="${2:-.}"
+
+REPO_SLUG="${REPO_SLUG:-misaka5202/droidspaces-lkm}"
+PKG_PREFIX="${PKG_PREFIX:-droidspaces-lkm}"
+MODULE_TITLE="${MODULE_TITLE:-Droidspaces LKM}"
 
 # ---------------------------------------------------------------------------
-# 版本号：从 zip 文件名里取（dist 里同时有多种命名，取第一个带 -vX.Y.Z 的）
+# 版本号：从 zip 文件名里取
 #
-# 为什么不从 git tag 取：这个脚本也被 ci.yml 调用（没有 tag），而 zip 名字
-# 一定带着版本号，是这里唯一可靠的来源。
+# 不从 git tag 取 —— 这个脚本 ci.yml 也会调用（没有 tag），而 zip 名字一定
+# 带版本号，是这里唯一可靠的来源。
 # ---------------------------------------------------------------------------
 VER=""
-for z in "$DIST"/droidspaces-lkm-arm64-*.zip; do
+for z in "$DIST"/"$PKG_PREFIX"-arm64-*.zip; do
     [ -f "$z" ] || continue
     VER=$(basename "$z" | grep -oE 'v[0-9]+\.[0-9]+\.[0-9]+' | head -1)
     [ -n "$VER" ] && break
 done
 
 # ---------------------------------------------------------------------------
-# 从 CHANGELOG 里切出指定版本的条目（去掉 "## vX.Y.Z" 标题行本身）
-#   extract_entry <文件> <版本>
+# 上一个版本：从 CHANGELOG 里当前版本之后的下一个 "## vX.Y.Z" 取
 # ---------------------------------------------------------------------------
-extract_entry() {
+PREV=""
+# 从 CHANGELOG.md（中文，含完整历史）取，不用 CHANGELOG.en.md ——
+# 英文版只从 v0.1.23 开始写，没有更早的标题可供回溯。
+if [ -n "$VER" ] && [ -f "$ROOT/docs/CHANGELOG.md" ]; then
+    PREV=$(awk -v v="$VER" '
+        found && /^## v[0-9]/ {
+            line = $0
+            sub(/^## +/, "", line)        # 去掉 "## "
+            sub(/^v/, "", line)           # 去掉开头的 v
+            sub(/[^0-9.].*$/, "", line)   # 截到第一个非数字/点的字符
+            sub(/[.]+$/, "", line)        # 去掉尾部多余的句点
+            if (line != "") { print "v" line; exit }
+        }
+        $0 ~ "^## " v "([[:space:]]|$)" { found = 1 }
+    ' "$ROOT/docs/CHANGELOG.md")
+fi
+
+# ---------------------------------------------------------------------------
+# 从 CHANGELOG 里切出指定版本条目（跳过 "## vX.Y.Z" 标题行）
+# 输出时把小节标题和列表符号转成 KernelSU 风格：
+#   "### 修复" / "### Fixed"  ->  "### Fixed"
+#   "- 条目"                  ->  "* 条目"
+# ---------------------------------------------------------------------------
+list_items() {
     _f=$1; _v=$2
     [ -f "$_f" ] || return 0
     awk -v v="$_v" '
-        # 找到 "## vX.Y.Z"（后面可跟空格或行尾），跳过这一行
         !started && $0 ~ "^## " v "([[:space:]]|$)" { started = 1; next }
         started && /^## / { exit }
-        started
+        !started { next }
+        /^---[[:space:]]*$/ { next }
+        /^- / { sub(/^- /, "* "); print; next }
+        { print }
     ' "$_f" | cat -s
 }
 
+# 中文条目里的小节标题翻成英文，避免正文出现两套标题体系
+zh_to_en_headers() {
+    sed -e 's/^### 修复$/### Fixed/' \
+        -e 's/^### 新增$/### Added/' \
+        -e 's/^### 变更$/### Changed/' \
+        -e 's/^### 版本变体$/### Version variants/' \
+        -e 's/^### 验证$/### Verification/' \
+        -e 's/^### 已知问题$/### Known issues/'
+}
+
 # ---------------------------------------------------------------------------
-# 变更说明置于正文最前 —— GitHub Release 正文里这是用户最先看到的部分。
-# 之前只输出内核支持表，用户点进来不知道这一版改了什么。
+# 正文
 # ---------------------------------------------------------------------------
-if [ -n "$VER" ] && [ -f docs/CHANGELOG.en.md ]; then
-    echo "# Droidspaces LKM $VER (preview)"
+if [ -n "$VER" ]; then
+    echo "$VER"
     echo ''
-    echo '## What'"'"'s new'
+    echo "## What's Changed"
     echo ''
-    extract_entry docs/CHANGELOG.en.md "$VER"
+    list_items "$ROOT/docs/CHANGELOG.en.md" "$VER"
     echo ''
-    echo '---'
-    echo ''
-    echo '## 本次更新'
-    echo ''
-    extract_entry docs/CHANGELOG.md "$VER"
-    echo ''
-    echo '---'
-    echo ''
-    echo '# Supported kernels'
 else
-    echo '### Supported kernels'
+    echo "$MODULE_TITLE"
+    echo ''
 fi
+
+echo '## Supported kernels'
 echo ''
 echo '| File | Android / kernel |'
 echo '|---|---|'
 
-for z in "$DIST"/droidspaces-lkm-*-arm64*.zip; do
+for z in "$DIST"/"$PKG_PREFIX"-*-arm64*.zip; do
     [ -f "$z" ] || continue
     n=$(basename "$z")
-    # 不要用 sed 剥前后缀去推 KMI —— 文件名末尾带版本号
-    # （droidspaces-lkm-android14-6.1-arm64-v0.1.22-test.13.zip），
-    # 剥 "-arm64.zip$" 匹配不上，会得到一串垃圾。
-    # KMI 的形态是固定的 androidNN-X.Y，直接正则抓。
+    # 不要用 sed 剥前后缀去推 KMI —— 文件名末尾带版本号。KMI 的形态固定是
+    # androidNN-X.Y，直接正则抓。
     kmi=$(echo "$n" | grep -oE 'android[0-9]+-[0-9]+\.[0-9]+' | head -1)
     [ -n "$kmi" ] || continue
     and=$(echo "$kmi" | sed -e 's/^android//' -e 's/-.*$//')
@@ -81,25 +126,47 @@ echo ''
 echo '| File | Note |'
 echo '|---|---|'
 
-for z in "$DIST"/droidspaces-lkm-arm64*.zip; do
+for z in "$DIST"/"$PKG_PREFIX"-arm64*.zip; do
     [ -f "$z" ] || continue
     echo "| \`$(basename "$z")\` | All kernels in one package, picks the right one at boot |"
 done
 
 echo '| `source-*.tar.gz` | Source snapshot (GPL-2.0) |'
 
+cat <<'NOTE'
+
+The `.ko` files are not signed. On kernels built with
+`CONFIG_MODULE_SIG_FORCE=y` they cannot be inserted at all, and `insmod`
+reports `module verification failed`. Check with:
+
+```sh
+zcat /proc/config.gz | grep CONFIG_MODULE_SIG_FORCE
+```
+
+If a module fails to load, press the **Action** button on the KernelSU module
+page and include its output in the issue.
+NOTE
+
 # ---------------------------------------------------------------------------
 # 中文
 # ---------------------------------------------------------------------------
+if [ -n "$VER" ]; then
+    echo ''
+    echo '---'
+    echo ''
+    echo "## 变更内容"
+    echo ''
+    list_items "$ROOT/docs/CHANGELOG.md" "$VER" | zh_to_en_headers
+    echo ''
+fi
+
 echo ''
-echo '---'
-echo ''
-echo '### 支持的内核'
+echo '## 支持的内核'
 echo ''
 echo '| 文件 | Android / 内核 |'
 echo '|---|---|'
 
-for z in "$DIST"/droidspaces-lkm-*-arm64*.zip; do
+for z in "$DIST"/"$PKG_PREFIX"-*-arm64*.zip; do
     [ -f "$z" ] || continue
     n=$(basename "$z")
     kmi=$(echo "$n" | grep -oE 'android[0-9]+-[0-9]+\.[0-9]+' | head -1)
@@ -113,29 +180,12 @@ echo ''
 echo '| 文件 | 说明 |'
 echo '|---|---|'
 
-for z in "$DIST"/droidspaces-lkm-arm64*.zip; do
+for z in "$DIST"/"$PKG_PREFIX"-arm64*.zip; do
     [ -f "$z" ] || continue
     echo "| \`$(basename "$z")\` | 全 KMI 合并包，开机自动选择对应的一份 |"
 done
 
 echo '| `source-*.tar.gz` | 源码快照（GPL-2.0） |'
-
-cat <<'NOTE'
-
----
-
-The `.ko` files are not signed. On kernels built with
-`CONFIG_MODULE_SIG_FORCE=y` they cannot be inserted at all, and `insmod`
-reports `module verification failed`. Check with:
-
-```sh
-zcat /proc/config.gz | grep CONFIG_MODULE_SIG_FORCE
-```
-
-If a module fails to load, press the **Action** button on the KernelSU module
-page and include its output in the issue. It lists every module's load state and
-reports which kernel symbols this kernel does not export.
-NOTE
 
 cat <<'NOTE'
 
@@ -146,6 +196,17 @@ cat <<'NOTE'
 zcat /proc/config.gz | grep CONFIG_MODULE_SIG_FORCE
 ```
 
-模块装不上时，请点 KernelSU 模块页的**「操作」**按钮，把输出贴进 issue。它会列出
-每个模块的加载状态，并报出本内核没有导出哪些符号。
+模块装不上时，请点 KernelSU 模块页的**「操作」**按钮，把输出贴进 issue。
 NOTE
+
+# ---------------------------------------------------------------------------
+# 结尾：Full Changelog（KernelSU 格式）
+# ---------------------------------------------------------------------------
+if [ -n "$VER" ]; then
+    echo ''
+    if [ -n "$PREV" ]; then
+        echo "**Full Changelog**: https://github.com/$REPO_SLUG/compare/$PREV...$VER"
+    else
+        echo "**Full Changelog**: https://github.com/$REPO_SLUG/commits/$VER"
+    fi
+fi
