@@ -18,10 +18,10 @@ index d5f5f48..29c05d9 100644
  #define LKM4CTR_DIAGFS_TAG	"diagfs"
  
 diff --git a/glue/vendor_kernel_ovl_vfs_compat.c b/glue/vendor_kernel_ovl_vfs_compat.c
-index e9e9549..d8cf1a5 100644
+index e9e9549..0905fc1 100644
 --- a/glue/vendor_kernel_ovl_vfs_compat.c
 +++ b/glue/vendor_kernel_ovl_vfs_compat.c
-@@ -59,6 +59,19 @@ VNS_OVL_VFS_COMPAT_LIST(VNS_OVL_VFSC_DEFINE)
+@@ -59,6 +59,41 @@ VNS_OVL_VFS_COMPAT_LIST(VNS_OVL_VFSC_DEFINE)
  VNS_OVL_VFS_COMPAT_LIST_BF(VNS_OVL_VFSC_DEFINE)
  #undef VNS_OVL_VFSC_DEFINE
  
@@ -30,6 +30,28 @@ index e9e9549..d8cf1a5 100644
 + * Declared there so call sites outside fs/overlayfs keep one spelling; defined
 + * here so the lockdep key argument is dropped once instead of at every use.
 + */
++/*
++ * kmem_cache_alloc_lru - same-name forwarding definition.
++ *
++ * alloc_inode_sb() in <linux/fs.h> is a static inline that calls this by name,
++ * and that header is pulled in long before this module's compat header, so a
++ * #define here would never reach the already-parsed inline body. A definition
++ * with the kernel function's own name does: every reference inside this module
++ * links to it, so no static import is emitted, and it forwards to the address
++ * resolved at load time.
++ *
++ * Same reason seq_escape_mem is handled this way rather than by a macro.
++ * __nocfi: the body makes an indirect call, and CONFIG_CFI_CLANG kernels check
++ * those at the call site.
++ */
++void *__nocfi kmem_cache_alloc_lru(struct kmem_cache *s, struct list_lru *lru,
++				   gfp_t gfp)
++{
++	if (!vns_ovl_vfsc_kmem_cache_alloc_lru)
++		return NULL;
++	return vns_ovl_vfsc_kmem_cache_alloc_lru(s, lru, gfp);
++}
++
 +int vns_percpu_counter_init(struct percpu_counter *fbc, s64 amount,
 +			    gfp_t gfp, struct lock_class_key *key)
 +{
@@ -42,10 +64,10 @@ index e9e9549..d8cf1a5 100644
  {
  #define VNS_OVL_VFSC_RESOLVE(name) \
 diff --git a/glue/vendor_kernel_ovl_vfs_compat.h b/glue/vendor_kernel_ovl_vfs_compat.h
-index f326a9a..456eaaf 100644
+index f326a9a..24e34d4 100644
 --- a/glue/vendor_kernel_ovl_vfs_compat.h
 +++ b/glue/vendor_kernel_ovl_vfs_compat.h
-@@ -643,6 +643,36 @@ static inline void generic_fill_statx_attr(struct inode *inode, struct kstat *st
+@@ -643,6 +643,38 @@ static inline void generic_fill_statx_attr(struct inode *inode, struct kstat *st
  	X(security_file_ioctl) \
  	X(iterate_dir) \
  	X(vfs_setpos) \
@@ -79,10 +101,12 @@ index f326a9a..456eaaf 100644
 +	X(current_umask) \
 +	X(__percpu_counter_init) \
 +	X(percpu_counter_destroy) \
++	X(generic_read_dir) \
++	X(kmem_cache_alloc_lru) \
  	X(lookup_positive_unlocked) \
  	VNS_OVL_VFSC_VMASETFILE_ENTRY(X) \
  	X(d_tmpfile)
-@@ -872,6 +902,36 @@ static inline void vns_ovl_revert_creds_compat(const struct cred *revert_cred)
+@@ -872,6 +904,37 @@ static inline void vns_ovl_revert_creds_compat(const struct cred *revert_cred)
  #define security_file_ioctl (*vns_ovl_vfsc_security_file_ioctl)
  #define iterate_dir (*vns_ovl_vfsc_iterate_dir)
  #define vfs_setpos (*vns_ovl_vfsc_vfs_setpos)
@@ -116,10 +140,11 @@ index f326a9a..456eaaf 100644
 +#define current_umask (*vns_ovl_vfsc_current_umask)
 +#define __percpu_counter_init (*vns_ovl_vfsc___percpu_counter_init)
 +#define percpu_counter_destroy (*vns_ovl_vfsc_percpu_counter_destroy)
++#define generic_read_dir (*vns_ovl_vfsc_generic_read_dir)
  #if !VNS_OVL_TIER_HAVE_D_MARK_TMPFILE
  #define d_tmpfile (*vns_ovl_vfsc_d_tmpfile)
  #endif
-@@ -992,6 +1052,36 @@ static inline void vns_ovl_revert_creds_compat(const struct cred *revert_cred)
+@@ -992,6 +1055,36 @@ static inline void vns_ovl_revert_creds_compat(const struct cred *revert_cred)
  #define security_file_ioctl (*vns_ovl_vfsc_security_file_ioctl)
  #define iterate_dir (*vns_ovl_vfsc_iterate_dir)
  #define vfs_setpos (*vns_ovl_vfsc_vfs_setpos)
