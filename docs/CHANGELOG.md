@@ -13,364 +13,114 @@
 `10001`–`10003` 这种小数字；如果新版本还用 `100`，KernelSU 更新器会认为
 100 < 10003 而不推送更新。日期编码天然单调递增，不会再因为版本号重置而倒退。
 
-## 未发布 — 三个方向的收口
+
 
 这一轮把「符号问题」从「出问题再修」推到三个方向。三条都经过 CI 全量矩阵和
 真机验证（Redmi Pad 2410CRP4CG / Qualcomm SM7675 / 6.1.138）。
 
-### A. BTF 自动生成符号转发层
+## v0.1.23
 
-新增 `scripts/gen_vfs_compat.py`。给它符号名，从内核 BTF 取准确原型，机械生成
-转发层源码（类型前置声明 + 函数指针 + 同名转发函数 + 解析表）。
+`versionCode` 由构建时写入（`YYYYMMDDHHMM`，见 `.github/workflows/build.yml`）。
 
-    python3 scripts/gen_vfs_compat.py --btf /sys/kernel/btf/vmlinux \\
-        --symbols crypto_register_scomp LZ4_compress_HC --out glue/gen.c
+### 修复
 
-实测 BTF 来自 SM7675（5.6 MB，130651 个 type / 56432 个函数）：zram 的 14 个
-符号 14/14 可生成，lkm4ctr 的 33 个 VFS 符号 33/33 可生成，生成结果全部编译通过。
+**符号兼容层扩展到全部七个 KMI。** v0.1.22 仅覆盖 MID 层（5.15 / 6.1），
+OLD（5.10）与 NEW（6.6 / 6.12）的兼容清单缺少相应条目。
 
-**价值不只是省事**：生成器自动避开了手工时犯的全部签名错误 ——
+`lkm4ctr` 的 VFS 类静态导入（`nm -u` 实测）：
 
-| 符号 | BTF 的真实签名 | 手工时写错的 |
-|---|---|---|
-| `ihold` | `void (struct inode *)` | 写成返回 `struct inode *` |
-| `current_umask` | `int (void)` | 写成 `umode_t` |
-| `truncate_inode_pages_final` | `void (struct address_space *)` | 写成 `struct inode *` |
-| `generic_read_dir` | `ssize_t (..., char *, ...)` | 写成 2 参数 |
-| `notify_change` | 4 参数（含 `delegated_inode`） | 漏了第四个 |
+| KMI | 层 | v0.1.22 | v0.1.23 | 降幅 |
+|---|---|---|---|---|
+| android12-5.10 | OLD | 29 | 1 | −97% |
+| android13-5.10 | OLD | 29 | 1 | −97% |
+| android13-5.15 | MID | 29 | 1 | −97% |
+| android14-5.15 | MID | 29 | 1 | −97% |
+| android14-6.1 | MID | 6 | 2 | −67% |
+| android15-6.6 | NEW | 37 | 2 | −95% |
+| android16-6.12 | NEW | 40 | 2 | −95% |
 
-局限：按值使用 typedef 时（`zstd_parameters`）生成文件只做声明，调用方必须自己
-包含提供定义的头。生成器会把这类符号列出来。
+统计范围为 VFS 辅助函数类（`d_` / `i_` / `inode` / `clear_` / `vfs_` / `iget` /
+`percpu_` 等前缀），不含全部未定义符号。残余项为 `__percpu_down_read` 与
+`percpu_counter_add_batch`，属内核内置原语，无裁剪先例。
 
-### B. 拆出精简版 lkm4ctr_lite
+新增覆盖的符号（均经 `nm -u` 确认不再静态导入）：`d_instantiate`、`d_obtain_alias`、
+`d_splice_alias`、`d_add`、`d_make_root`、`d_path`、`ihold`、`clear_inode`、
+`clear_nlink`、`drop_nlink`、`inc_nlink`、`set_nlink`、`inode_init_once`、
+`unlock_new_inode`、`iget5_locked`、`ilookup5`、`init_special_inode`、
+`inode_set_flags`、`inode_init_owner`、`setattr_prepare`、`touch_atime`、
+`sync_filesystem`、`vfs_fsync`、`vfs_fsync_range`、`truncate_inode_pages_final`、
+`current_umask`、`in_group_p`、`capable_wrt_inode_uidgid`、`notify_change`、
+`finish_open`、`generic_read_dir`、`backing_file_user_path`、`get_next_ino`、
+`__insert_inode_hash`。
 
-`lkm4ctr` 是聚合 50 个 object 的单模块，vendored overlayfs 的 11 个源文件贡献了
-33 个 VFS 符号里的 19 个。厂商裁掉这些导出后整个模块装不上，连 PID/IPC/UTS
-namespace 一起废掉 —— 而那些才是 Droidspaces 的硬性前提。
+**`capable_wrt_inode_uidgid`（issue #2 根因）。** 由 `vendor/fs/overlayfs/inode.c`
+调用。经 Meizu 21 Pro（6.1.25）boot.img 提取的 `__ksymtab_strings`（6594 项）确认：
+该内核导出 `lkm4ctr` 需要的 207 个符号中的 206 个，唯一缺失项即为本符号。
+已为 OLD / MID / NEW 三层分别配置重定向。
 
-现在编两个变体（`VNS_LITE` 选）：
+**macvlan。** `dev_mc_add`、`dev_mc_del`、`netdev_is_rx_handler_busy`、
+`dev_forward_skb`、`eth_header_cache`、`eth_header_cache_update` 改为同名转发
+函数 + 运行时解析。v0.1.22 将 `dev_mc_add_excl` 改写为 `dev_mc_add`，但后者在
+部分内核同样未导出，未解决问题。
 
-| 变体 | 大小 | 内容 |
-|---|---|---|
-| `lkm4ctr.ko` | 12175 KB | 带 vendored overlayfs |
-| `lkm4ctr_lite.ko` | 9515 KB | 不带，overlay 用内核自带的 |
+**vkms。** `drmm_crtc_init_with_planes` 替换为 `drm_crtc_init_with_planes`。
+两者签名一致（均为 variadic），上游均 `EXPORT_SYMBOL`。CRTC 由
+`drm_mode_config_cleanup()` 统一释放。
 
-`service.sh` 先试完整版，失败且 lite 存在时回退。
+**droid_lkm_cpu / droid_lkm_pids。** `cgroup_add_dfl_cftypes` 改为运行时解析
+（`cpu_ksym()` / `kallrecon_klp()`），与同模块内已有的 `cgroup_rm_cftypes`
+处理方式一致。
 
-**必须是两个独立的 KBUILD_MODNAME**（`lkm4ctr` / `lkm4ctr_lite`），不能只改文件
-名 —— 模块名来自 KBUILD_MODNAME，同名会让第二次 insmod 报 EEXIST。
+### 新增
 
-真机验证回退路径（临时移走 full 版）：
+**`scripts/gen_vfs_compat.py`。** 从内核 BTF 提取函数原型，生成指针声明、
+同名转发函数与解析表。用于新增符号，避免手工书写签名错误。
 
-    lkm4ctr_lite          647168  339
-    PID + mount namespace   ✅ pid=1 ppid=0
-    容器内挂载 /proc        ✅ 131 个节点
-    user namespace          ✅
-    IPC namespace           ✅
+**`scripts/verify_against_bootimg.py`。** 从 `boot.img` 提取 `__ksymtab_strings`，
+与 `.ko` 的未定义符号表比对，输出每个模块的缺失项。
 
-**顺带修了一个会重演 -12 的问题**：`vns_ovl_vfs_compat_resolve()` 原本遇到第一个
-解析失败就 `return -ENOENT`。lite 版里 overlayfs 专属符号必然失败，提前返回会让
-排在后面的核心符号（mqueue 依赖的）也留在 NULL —— 改成尽力解析，全部尝试完再
-按失败数报告。
+**`lkm4ctr_lite`。** 不含 vendored overlayfs 的变体（`VNS_LITE=1`）。`service.sh`
+优先加载完整版，失败时回退。适用于裁掉 overlayfs 独占符号的内核。
 
-### C. zram-lkm 的内核导出检查
+**崩溃现场采集。** `post-fs-data.sh` 检测 `/sys/fs/pstore/`，非空时复制到
+`/data/adb/droidspaces_lkm.d/pstore-<timestamp>.txt`。
 
-见 zram-lkm 仓库的 `2ba41c3`。构建期导出每个 `.ko` 的未定义符号清单，`action.sh`
-拿它比对 `/proc/kallsyms` 的 `__ksymtab_`，直接报出本内核缺哪些。
+### 变更
 
----
+**构建期符号检查。** `scripts/build_modules.sh` 的 `BAD_SYMS` 清单由 12 项扩至
+53 项；新增 `MUST_NOT_APPEAR` 15 项硬性检查，命中即 `exit 1`。
 
-## v0.1.23 — 符号兼容层覆盖到全部七个 KMI
-
-`versionCode` 由构建时自动写入（`YYYYMMDDHHMM` 时间戳，见
-`.github/workflows/build.yml`），保证 KernelSU 更新器认为它比上一版新。
-
-> **和上面「未发布」条目的关系**：那一节的方向 A（BTF 自动生成转发层）是
-> 这一轮更根本的解法 —— 从内核 BTF 取真实原型，机械生成，不可能写错签名。
-> 下面这一节记录的是**在此之前手工铺完的那一轮**：它已经覆盖到全部七个 KMI，
-> 也暴露了手工写签名的具体错误（见方向 A 的对照表），正是那些错误促成了
-> 生成器。两者不是替代关系 —— 生成器产出的转发层和这里的手工版并存，
-> 前者用于新增符号，后者是已经验证过的存量。
-
-v0.1.22 把符号兼容做到了「issue #2 报的八个符号不再出现」，但那只覆盖了两个
-KMI（5.15 / 6.1）。这一版把同一套机制铺到**全部七个**，并把缺口从「出问题再修」
-改成「构建期就能拦住」。
-
-### 起点
-
-v0.1.22 发布后，`nm -u` 实测每个 KMI 的 `lkm4ctr` 还有多少 VFS 类静态导入：
-
-| KMI | 层 | 静态导入 |
-|---|---|---|
-| android12-5.10 | OLD | 29 |
-| android13-5.10 | OLD | 29 |
-| android13-5.15 | MID | 29 |
-| android14-5.15 | MID | 29 |
-| android14-6.1 | MID | 6 |
-| android15-6.6 | NEW | 37 |
-| android16-6.12 | NEW | 40 |
-
-只有 MID 那一层是好的 —— 因为 v0.1.22 只修了 MID。OLD（5.10）和 NEW（6.6/6.12）
-的兼容清单里根本没有这些符号。
-
-口径说明：这里统计的是「VFS 辅助函数类」的静态导入（以 `d_` / `i_` / `inode` /
-`clear_` / `vfs_` / `iget` / `percpu_` 等前缀识别），不是全部未定义符号。更早的
-审计里有一份「33 个特定符号」的清单，两者数量不同，不能直接比较。
-
-### 收尾
-
-| KMI | 静态导入 | 降幅 |
-|---|---|---|
-| android12-5.10 | 1 | −97% |
-| android13-5.10 | 1 | −97% |
-| android13-5.15 | 1 | −97% |
-| android14-5.15 | 1 | −97% |
-| android14-6.1 | 2 | −67% |
-| android15-6.6 | 2 | −95% |
-| android16-6.12 | 2 | −95% |
-
-这组数字**全部来自 `nm -u` 实测**，七个 KMI 逐一核对过（CI #155 和 #157）。
-
-这里踩过一个版本边界的坑，值得记下来：`_many` 变体的引入版本我一开始写的
-是 6.10，实际是 **6.6**（查上游 `include/linux/percpu_counter.h`：v5.15~v6.5
-没有，v6.6 起有）。陷阱在于 `kmem_cache_alloc_lru` 的 `_noprof` 变体确实是
-6.10 —— 我把两个混了。结果 android15-6.6 的 `_many` 两个符号一直漏在
-静态导入里（条件条目宏展开为空、同名函数不编译），实测才发现它比推算多 2 个。
-
-教训：同属一个内核子系统的符号，版本边界也必须逐个查头文件，不能沿用
-相邻符号的版本号。
-
-剩下的 1~2 个是 `__percpu_down_read`（lib/percpu-rwsem.c 的锁原语）和
-`percpu_counter_add_batch`（lib/percpu_counter.c 里 percpu_counter_add 的
-底层）—— 两者被大量内联代码引用，裁掉会连带破坏内核自身，不存在被裁的可能。
-Meizu 6.1.25 的真实导出表也确认两者都导出。
-
-### 三种机制，对应三类失效
-
-调同一个符号，可能因为三种完全不同的原因让 `#define` 失效：
-
-**一、符号在 inline 体里被调用**
-
-`include/linux/fs.h` 的 `alloc_inode_sb()`、`<linux/percpu_counter.h>` 的
-`percpu_counter_init()` 都是 inline，函数体在头文件解析时就展开了，早于我们
-compat 头的 `#define`。对象式宏管不到。
-
-→ 用**同名函数**：模块内所有引用都链到我们自己的定义，不受宏展开顺序影响。
-
-**二、符号被取地址**
-
-`vendor/fs/overlayfs/readdir.c` 的 `.read = generic_read_dir` 是放进
-`struct file_operations` 的初始化器 —— `(*ptr)` 不是编译期常量，整个 `.ko`
-编译失败（`initializer element is not a compile-time constant`）。
-
-→ 同样用同名函数。这是 `generic_read_dir`、`kmem_cache_alloc_lru` 走同名函数
-而其余走 `#define` 的原因。
-
-**三、调用点不在兼容头的 include 链上**
-
-`glue/lkm4ctr_diagfs.c` 和 `glue/lkm4ctr_hotreload.c` 用的是轻量头
-`vns_vfs_shared_syms.h`，够不到 overlayfs 的兼容头；`vendor/fs/overlayfs/
-overlayfs.h` 里的 inline 又早于所有 `.c`。
-
-→ 轻量头补 extern，兼容层补同名函数。
-
-### 用真实内核验证（issue #2 的真根因）
-
-上面那组数字是**构建期统计**，说明不了「这台具体的内核到底能不能装上」。
-issue #2 的报告者后来提供了 `boot.img`（Meizu 21 Pro / 6.1.25），于是可以做
-真正的端到端判定：从 boot.img 里提取这台内核的导出表，再和 `.ko` 的未定义
-符号逐个比对。
-
-提取路径：
-
-```
-boot.img → kernel（offset 0x4000，未压缩 ARM64）
-        → __ksymtab_strings（0x1500000 附近，6594 个导出符号）
-```
-
-得到结果之后，`lkm4ctr` 在这台内核上的 207 个未定义符号里，**206 个都导出，
-只缺一个：`capable_wrt_inode_uidgid`**。
-
-这就是用户说「Looks like not working」的原因。而这个符号之前一直被我当成
-**假阳性**放过 —— 因为源码注释写着「5.10 上它总是导出的」。那句话对 5.10
-成立，但 Meizu 的 6.1.25 不导出。
-
-它的真实签名（从 BTF 取，同代 SM7675 / 6.1.138）：
-
-```c
-bool capable_wrt_inode_uidgid(struct user_namespace *mnt_userns,
-                              const struct inode *inode, int cap)
-```
-
-3 参数，第一个随版本变（5.12~6.2 是 `struct user_namespace *`，
-6.3+ 是 `struct mnt_idmap *`）。源码按 3 参数调用，所以 MID/NEW 用对象式宏
-指向运行时指针即可，`typeof()` 会取到当前内核的真实类型；OLD（5.10 只要
-2 参数）保留原来的丢 idmap 函数式宏。
-
-**同一个错误还出现了第二次**：`macvlan` 把 `dev_mc_add_excl` 改写成
-`dev_mc_add`（导出的那个），而 Meizu 上**两个都不导出**。同时缺的还有
-`dev_mc_del` 和 `netdev_is_rx_handler_busy`。三个都补进 `MACVLAN_SYMRES`
-同名转发层。
-
-Meizu 实际导出的 net 辅助（用来判断能换什么）：
-
-```
-dev_uc_add / dev_uc_del / dev_uc_sync*               导出
-dev_mc_sync / dev_mc_unsync / dev_mc_sync_multiple    导出
-dev_mc_add / dev_mc_del / dev_mc_add_excl             不导出
-eth_header / eth_header_cache* / netif_rx             导出
-dev_forward_skb / __dev_forward_skb                   不导出
-```
-
-注意 `dev_mc_sync` 系列虽然导出，但语义是「批量同步一组地址」，不能直接
-替换 `dev_mc_add`（单个添加），所以只能走运行时解析。
-
-修复后同样方法验证，全部 10 个模块 **0 缺失**：
-
-```
-devtmpfs_lkm   67 未定义 / 0 缺      macvlan        80 / 0
-droid_lkm_cpu  48 / 0               mali_nsfix     12 / 0
-droid_lkm_pids 45 / 0               uart_guard      7 / 0
-ip6table_nat   24 / 0               vkms          108 / 0
-lkm4ctr       206 / 0
-lkm4ctr-lite  186 / 0
-```
-
-这套分析固化成了 `scripts/verify_against_bootimg.py`，以后任何用户提供
-`boot.img` 都能一条命令验完：
-
-```bash
-python3 scripts/verify_against_bootimg.py --bootimg boot.img \
-    --kos out/ko-android14-6.1
-```
-
-脚本里的两个设计值得说明：
-
-**只认 `__ksymtab_strings`，不认 kallsyms。** 后者含**全部**符号（包括未导出
-的），拿它比对会误判「这个符号存在」。而 `kallsyms_names` 比
-`__ksymtab_strings` 更密，所以「取最密集窗口」会选错 —— 必须按密度逐个尝试，
-再用 sanity check 筛。
-
-**sanity check 不通过就拒绝输出。** `_printk` 必须在（注意不是 `printk` ——
-那是宏），`kallsyms_lookup_name` 必须不在。第一次实现时选的区域里有
-`kallsyms_lookup_name`，脚本直接报错而不是给出「全部模块都缺」的错误结论 ——
-**错误的结论比没有结论更糟**。
-
-**按 KMI 逐个跳过不匹配的模块。** 工具第一次实际使用时踩到的：拿
-android12-5.10 和 android16-6.12 的 `.ko` 去比对 Meizu 6.1.25 的导出表，
-报出 **144 个「缺失」**，实际全是版本不匹配 ——
-
-```
-5.10 模块缺 __cfi_slowpath / arm64_const_caps_ready / cpu_hwcap_keys
-        （6.1 内核没有，5.10 有）
-6.12 模块缺 __kmalloc_noprof / __fortify_panic
-        （6.12 的新 API，6.1 当然没有）
-```
-
-只有同名 KMI 的模块才有比对意义。加了 `--kmi` 参数后按文件名逐个判断，
-不匹配的直接跳过并打印原因、不计入缺失数。这类工具最危险的不是漏报，
-是误报 —— 144 个假缺失会让人以为「全都坏了」，反而掩盖真正的那一个。
+**`zram-lkm`。** 增加构建期导出检查（见该仓库 `2ba41c3`）。
 
 ### 版本变体
 
-几个符号在 6.x 中间改过形态，不能一个名字走到底：
+| 符号 | 变化 | 处理 |
+|---|---|---|
+| `kmem_cache_alloc_lru` | 6.10 起为宏，符号名 `_noprof` | 条件条目宏 + 同名函数 |
+| `__percpu_counter_init` | 6.6 起为 `_many`（多 `nr_counters`） | 条件条目宏 + 同名函数 |
+| `d_tmpfile` | 6.7 起更名 `d_mark_tmpfile` | 条件条目宏 |
+| `d_parent_ino` | 6.12 新增 | 条件条目宏 + 同名函数 |
+| `generic_encode_ino32_fh` | 6.9 新增 | 条件条目宏 |
 
-| 符号 | 变化 |
-|---|---|
-| `kmem_cache_alloc_lru` | **6.10** 起变成宏，真符号叫 `_noprof` |
-| `__percpu_counter_init` | **6.6** 起变成 `_many`（多一个 `nr_counters` 参数）|
-| `d_tmpfile` | **6.7** 起改名 `d_mark_tmpfile` |
-| `d_parent_ino` | **6.12** 新增 |
-| `generic_encode_ino32_fh` | **6.9** 新增 |
-
-全部做成条件条目宏（`VNS_OVL_VFSC_*_ENTRY`），每个宏都有真分支和空分支，
-**并列**而不是嵌套 —— 嵌套会让外层条件为假时内层宏未定义。
-
-`generic_encode_ino32_fh` 有一点特殊：6.9 以下原代码把它降级成 `NULL`
-（那时默认编码器就是 NULL），6.9+ 改成运行时指针。两者版本互斥。
-
-**但条件条目宏 + 对象式 `#define` 还不够。** `_many` 那两个和 `d_parent_ino`
-加上去之后，6.12 的 `nm -u` 里它们还在 —— 因为没有直接调用点，调用发生在
-内核头文件的 `static inline` 函数体里：
-
-```c
-static inline void percpu_counter_destroy(struct percpu_counter *fbc)
-{
-	percpu_counter_destroy_many(fbc, 1);     /* 这个引用在这里就固化了 */
-}
-```
-
-那个体在 compat 头之前解析完，对象式宏管不到。三个都得改用同名函数
-（签名取自上游 v6.12 头文件 —— 本地 BTF 是 6.1.138，没有 6.10+/6.12 的符号）。
-
-改完之后三个 KMI 的 VFS 类静态导入降到 1~2 个，剩下的
-`__percpu_down_read` / `percpu_counter_add_batch` 是 percpu-rwsem 锁原语和
-`percpu_counter_add` 的底层实现，被大量内联代码引用，裁掉会连带破坏内核自身 ——
-不存在被裁的可能。
-
-### 构建期防护
-
-`scripts/build_modules.sh` 里原来有一个 `BAD_SYMS` 检查，但只 `[WARN]` 不失败，
-而且清单只有 12 条。这一版扩到 **53 条**，并新增一条硬检查：
-
-```
-MUST_NOT_APPEAR="get_next_ino cgroup_add_dfl_cftypes dev_forward_skb
-                 eth_header_cache eth_header_cache_update
-                 drmm_crtc_init_with_planes ..."
-```
-
-这 15 个是**已验证修好**的符号。一旦它们重新出现在某个 `.ko` 的 `nm -u` 里，
-`build_modules.sh` 直接 `exit 1` —— 宁可这一格 CI 变红，也不要发出一个用户装不上
-的包。
-
-区分两档的原因：`BAD_SYMS` 里还有历史包袱（部分符号在某些内核上本来就该静态
-引用），只能软告警；`MUST_NOT_APPEAR` 里的回退一定是缺陷。
-
-### 顺带修掉的
-
-**macvlan 的 `dev_forward_skb`**：v0.1.22 把 `__dev_forward_skb` 改写成
-`dev_forward_skb`，但 6.12 的厂商内核**两个都没导出** —— 等于把 A 的缺失换成
-B 的缺失。改成同名转发函数，优先 `dev_forward_skb`，回退 `__dev_forward_skb`，
-两个都没有时 `kfree_skb` + 返回 `-EINVAL`。
-
-**同一类错误犯了第二次**（上一段写完才发现）：`dev_mc_add_excl` 被改写成
-`dev_mc_add`，而 Meizu 6.1.25 上**这两个也都不导出**，同批还有 `dev_mc_del` 和
-`netdev_is_rx_handler_busy`。三个都补进 `MACVLAN_SYMRES`。详见上面「用真实内核
-验证」一节。
-
-教训写在明处：**任何「A 换成 B」的替换，必须先确认 B 在目标内核的导出表里。**
-这条前后踩了两次，都是因为没有可查的导出表 —— 现在
-`scripts/verify_against_bootimg.py` 可以提前查。
-
-**vkms 的 `drmm_crtc_init_with_planes`**：6.12 厂商只裁了较新的 `drmm_` 版本。
-换成 `drm_crtc_init_with_planes` —— 两者签名**完全相同**（都是 variadic），
-上游都 `EXPORT_SYMBOL`，是纯 drop-in。语义差异只有清理方式，而 vkms 的 CRTC
-挂在 `drm_mode_config` 的 `crtc_list` 上，`drm_mode_config_cleanup()` 会统一清理。
-
-**`droid_lkm_cpu` / `droid_lkm_pids` 的 `cgroup_add_dfl_cftypes`**：原来直接调用，
-而同一个模块里的 `cgroup_rm_cftypes` 早就走 `cpu_ksym()` 解析了。改成同样走指针。
-
-**崩溃现场自动采集**：`post-fs-data.sh` 启动时检查 `/sys/fs/pstore/`，有内容就
-说明上次是内核崩溃退出的，复制到 `/data/adb/droidspaces_lkm.d/pstore-<时间戳>.txt`
-并提示用户贴到 issue。和原有的「面包屑」（卡死但没 panic）互补。
+符号由内核头文件的 `static inline` 调用时，`#define` 无法覆盖（内联体在
+compat 头之前解析），须使用同名转发函数。`generic_read_dir`、`kmem_cache_alloc_lru`、
+`__percpu_counter_init_many`、`percpu_counter_destroy_many`、`d_parent_ino` 属此类。
 
 ### 验证
 
-七个 KMI 全部构建通过，`[SYM]` 检查全部为 0；`MUST_NOT_APPEAR` 零回退。
-产物用 `nm -u` 逐项确认。
+- 七个 KMI 构建通过；`BAD_SYMS` 检查结果全部为 0。
+- Meizu 21 Pro（6.1.25）：10 个模块，缺失 0。数据源为报告者提供的 `boot.img`。
+- PHZ110（MediaTek mt6989 / 6.1.157）：10 个模块，缺失 0。数据源为
+  `/proc/kallsyms` 的 `__ksymtab_` 条目（22081 项）。
+- PHZ110 实机加载：`macvlan` 模块 `insmod` 成功（`rc=0`），
+  `ip link add ... type macvlan` 成功；容器能力检查 8/8 通过，`Unknown symbol` 计数 0。
 
-更强的证据在上面「用真实内核验证」一节：拿 issue #2 报告者提供的 boot.img
-（Meizu 21 Pro / 6.1.25）提取导出表后，全部 10 个模块 **0 缺失** ——
-这是判定「能不能装上」的最终标准，不只是「编过了」。
+### 已知问题
 
-另外说明一处**判断修正**：v0.1.22 之后的几轮里，我一直把
-`capable_wrt_inode_uidgid` 的 `[SYM]` 告警当成假阳性（理由是源码注释写着
-「5.10 上它总是导出的」）。拿到真实导出表后证明那个判断是错的 ——
-5.10 成立不等于 6.1 的厂商内核成立。**注释里的断言也要验证，不能直接采信。**
-
-`lkm4ctr_lite`（不带 vendored overlayfs 的精简版）同样受益 —— 它排除 overlayfs
-但保留 `ipc/mqueue.o`、`glue/lkm4ctr_diagfs.c`、`fs/nsfs.o`，那些文件的 VFS 依赖
-正是靠这一层的同名转发函数覆盖。
+- issue #1（Redmi Note 12 Turbo / 5.10.269）报告的无限重启未复现确认。
+  该设备 `/sys/fs/pstore` 为空，表明为挂起而非 panic；需报告者后续反馈。
+- issue #3 / #4（6.12.23-android16-5）报告的符号已修复，但缺少对应设备内核，
+  未做同类验证。
 
 ## v0.1.22 — 符号兼容性、日志诊断、国际化
 
