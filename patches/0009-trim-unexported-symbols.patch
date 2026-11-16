@@ -1,11 +1,12 @@
 diff --git a/glue/vendor_kernel_diag.c b/glue/vendor_kernel_diag.c
-index 9b1a99b..4e8a10b 100644
+index 9b1a99b..f71f04e 100644
 --- a/glue/vendor_kernel_diag.c
 +++ b/glue/vendor_kernel_diag.c
-@@ -29,6 +29,28 @@
+@@ -29,6 +29,29 @@
  
  #include "../vendor/vendor_kernel.h"
  #include "vendor_kernel_diag.h"
++#include "lkm4ctr_log.h"
 +#include "shadow_hook.h"
 +
 +/*
@@ -31,7 +32,7 @@ index 9b1a99b..4e8a10b 100644
  
  size_t vendor_kernel_diag_snprintf(char *buf, size_t buflen)
  {
-@@ -335,7 +357,9 @@ static int vns_diag_ns_delete(u64 key)
+@@ -335,7 +358,9 @@ static int vns_diag_ns_delete(u64 key)
  	if (pid) {
  		task = get_pid_task(pid, PIDTYPE_PID);
  		if (task) {
@@ -43,13 +44,14 @@ index 9b1a99b..4e8a10b 100644
  			for (i = 0; i < VNS_DIAG_NS_DRAIN_ITERS; i++) {
  				struct task_struct *t = get_pid_task(pid, PIDTYPE_PID);
 diff --git a/glue/vendor_kernel_ovl_vfs_compat.c b/glue/vendor_kernel_ovl_vfs_compat.c
-index e9e9549..a1c381a 100644
+index e9e9549..b30b365 100644
 --- a/glue/vendor_kernel_ovl_vfs_compat.c
 +++ b/glue/vendor_kernel_ovl_vfs_compat.c
-@@ -108,34 +108,8 @@ int vns_ovl_vfs_compat_resolve(void)
+@@ -107,35 +107,8 @@ int vns_ovl_vfs_compat_resolve(void)
+  * seq_escape_str()/seq_escape_mem()/string_escape_str(), whose availability
   * and exact signature vary across this file's KMI range.
   */
- #if LINUX_VERSION_CODE < KERNEL_VERSION(6, 1, 0)
+-#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 1, 0)
 -void seq_escape(struct seq_file *m, const char *s, const char *esc)
 -{
 -	char c;
@@ -82,7 +84,7 @@ index e9e9549..a1c381a 100644
  
  /*
   * [BUILD-COMPAT] logfc (fs/fs_context.c). Genuinely EXPORT_SYMBOL'd on
-@@ -181,3 +155,102 @@ void logfc(struct fc_log *log, const char *prefix, char level, const char *fmt,
+@@ -181,3 +154,102 @@ void logfc(struct fc_log *log, const char *prefix, char level, const char *fmt,
  }
  
  #endif /* LINUX_VERSION_CODE in [5.10, 6.19) */

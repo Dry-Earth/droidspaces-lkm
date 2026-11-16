@@ -60,7 +60,8 @@ if "ip_check_defrag(" in s and "macvlan_skip_defrag" not in s:
  * 整个 macvlan 装不上。这里退化成不做分片重组：skb 原样返回。
  */
 static inline struct sk_buff *macvlan_skip_defrag(struct net *net,
-						  struct sk_buff *skb, u8 user)
+						  struct sk_buff *skb,
+						  unsigned int user)
 {
 	return skb;
 }
