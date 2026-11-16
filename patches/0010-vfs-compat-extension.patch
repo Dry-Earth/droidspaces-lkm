@@ -83,10 +83,10 @@ index f326a9a..23bd379 100644
  	X(d_tmpfile)
 diff --git a/glue/vns_vfs_shared_syms.h b/glue/vns_vfs_shared_syms.h
 new file mode 100644
-index 0000000..a1ba554
+index 0000000..b53fce4
 --- /dev/null
 +++ b/glue/vns_vfs_shared_syms.h
-@@ -0,0 +1,89 @@
+@@ -0,0 +1,90 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +/*
 + * vns_vfs_shared_syms.h - VFS helpers needed outside fs/overlayfs
@@ -134,6 +134,7 @@ index 0000000..a1ba554
 +struct inode;
 +struct dentry;
 +struct dir_context;
++struct address_space;
 +struct percpu_counter;
 +struct lock_class_key;
 +
@@ -142,7 +143,7 @@ index 0000000..a1ba554
 +extern void (*vns_ovl_vfsc_inc_nlink)(struct inode *);
 +extern void (*vns_ovl_vfsc_set_nlink)(struct inode *, unsigned int);
 +extern int (*vns_ovl_vfsc_generic_read_dir)(struct file *, struct dir_context *);
-+extern void (*vns_ovl_vfsc_truncate_inode_pages_final)(struct inode *);
++extern void (*vns_ovl_vfsc_truncate_inode_pages_final)(struct address_space *);
 +extern void (*vns_ovl_vfsc_d_instantiate)(struct dentry *, struct inode *);
 +extern struct inode *(*vns_ovl_vfsc_ihold)(struct inode *);
 +extern void (*vns_ovl_vfsc_inode_init_once)(struct inode *);
