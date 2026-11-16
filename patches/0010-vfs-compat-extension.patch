@@ -17,6 +17,43 @@ index d5f5f48..29c05d9 100644
  #define LKM4CTR_DIAGFS_MAGIC	0x4C4B4D34 /* "LKM4" */
  #define LKM4CTR_DIAGFS_TAG	"diagfs"
  
+diff --git a/glue/lkm4ctr_main.c b/glue/lkm4ctr_main.c
+index 457baec..83112ab 100644
+--- a/glue/lkm4ctr_main.c
++++ b/glue/lkm4ctr_main.c
+@@ -7,6 +7,7 @@
+ #include "shadow_hook.h"
+ 
+ int vns_trim_symbols_init(void);
++int vns_ovl_vfs_compat_resolve(void);
+ int vendor_kernel_init(void);
+ int vendor_kernel_module_exit(void);
+ void vns_user_ns_exit(void);
+@@ -43,6 +44,24 @@ static int __init lkm4ctr_init(void)
+ 	 */
+ 	vns_trim_symbols_init();
+ 
++	/*
++	 * 解析 VFS 兼容清单里的符号。
++	 *
++	 * 这一步原本只在 overlayfs 初始化时做（vendor/fs/overlayfs/super.c），
++	 * 但那发生在 vendor_kernel_init() 之后。而 vendor_kernel_init() 里的
++	 * mqueue 初始化要经过 mqueue_fill_super()，那条路径会调用
++	 * inc_nlink/ihold/d_instantiate/current_umask 等 —— 如果这时指针还是
++	 * NULL，同名转发函数就是空操作，inode 建不出来，
++	 * mq_init_ns 最终返回 -ENOMEM（实测 Qualcomm SM7675 / 6.1.138：
++	 * "failed to init default ipc namespace (-12)"）。
++	 *
++	 * 所以提前到这里。解析失败不阻断加载：overlayfs 会自己再调一次并
++	 * 按需降级，其它子系统各有兜底。
++	 */
++	if (vns_ovl_vfs_compat_resolve())
++		LKM4CTR_WARN(LKM4CTR_TAG,
++			     "VFS compat symbols not fully resolved; vendored overlayfs will be unavailable");
++
+ 	ret = vendor_kernel_init();
+ 	if (ret) {
+ 		LKM4CTR_ERR(LKM4CTR_TAG,
 diff --git a/glue/vendor_kernel_ipc_syscalls.c b/glue/vendor_kernel_ipc_syscalls.c
 index 0f951ba..3ef6633 100644
 --- a/glue/vendor_kernel_ipc_syscalls.c
