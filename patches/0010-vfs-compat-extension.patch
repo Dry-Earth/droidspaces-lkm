@@ -18,10 +18,10 @@ index d5f5f48..29c05d9 100644
  #define LKM4CTR_DIAGFS_TAG	"diagfs"
  
 diff --git a/glue/vendor_kernel_ovl_vfs_compat.c b/glue/vendor_kernel_ovl_vfs_compat.c
-index e9e9549..c580d4d 100644
+index e9e9549..72b8f72 100644
 --- a/glue/vendor_kernel_ovl_vfs_compat.c
 +++ b/glue/vendor_kernel_ovl_vfs_compat.c
-@@ -59,6 +59,74 @@ VNS_OVL_VFS_COMPAT_LIST(VNS_OVL_VFSC_DEFINE)
+@@ -59,6 +59,111 @@ VNS_OVL_VFS_COMPAT_LIST(VNS_OVL_VFSC_DEFINE)
  VNS_OVL_VFS_COMPAT_LIST_BF(VNS_OVL_VFSC_DEFINE)
  #undef VNS_OVL_VFSC_DEFINE
  
@@ -67,6 +67,43 @@ index e9e9549..c580d4d 100644
 +	return vns_ovl_vfsc_kmem_cache_alloc_lru(s, lru, gfp);
 +}
 +#endif /* VNS_OVL_HAVE_KMEM_CACHE_ALLOC_LRU */
++
++/*
++ * __percpu_counter_init / percpu_counter_destroy - same-name forwarding
++ * definitions, deliberately not #define aliases.
++ *
++ * percpu_counter_init() is a macro with CONFIG_LOCKDEP and a static inline
++ * without it (<linux/percpu_counter.h>); both spell the underlying call as
++ * __percpu_counter_init(...) and both are parsed before this header can run.
++ * A #define therefore either misses the inline body entirely or perturbs the
++ * argument shuffle -- the latter produced
++ *
++ *   failed to init default ipc namespace (-12)
++ *
++ * on the Qualcomm SM7675 device (vns_msg_accounting_init -> ENOMEM).
++ *
++ * Defining functions with the kernel's own names fixes both cases: every
++ * reference inside this module, from inline bodies and direct calls alike,
++ * links here, so no static import is emitted.
++ *
++ * Needed where a vendor kernel trims these exports (Meizu 6.1.25); harmless
++ * where they are exported (SM7675).
++ *
++ * __nocfi: the bodies make indirect calls.
++ */
++int __nocfi __percpu_counter_init(struct percpu_counter *fbc, s64 amount,
++				  gfp_t gfp, struct lock_class_key *key)
++{
++	if (!vns_ovl_vfsc___percpu_counter_init)
++		return -ENOENT;
++	return vns_ovl_vfsc___percpu_counter_init(fbc, amount, gfp, key);
++}
++
++void __nocfi percpu_counter_destroy(struct percpu_counter *fbc)
++{
++	if (vns_ovl_vfsc_percpu_counter_destroy)
++		vns_ovl_vfsc_percpu_counter_destroy(fbc);
++}
 +
 +
 +/*
