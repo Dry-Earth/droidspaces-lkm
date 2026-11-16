@@ -286,7 +286,7 @@ bool __nocfi netdev_is_rx_handler_busy(struct net_device *dev)
     if eol < 0:
         eol = len(s)
     s = s[:eol + 1] + shim + s[eol + 1:]
-    done.append("注入 MACVLAN_SYMRES 同名转发 shim（3 个符号）")
+    done.append("注入 MACVLAN_SYMRES 同名转发 shim（6 个符号）")
 
     # 在 module_init 里调用解析
     import re as _re
