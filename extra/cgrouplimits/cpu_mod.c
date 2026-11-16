@@ -324,6 +324,31 @@ static void (*p_rstat_flush_release)(void);
 static int (*p_kern_path)(const char *name, unsigned int flags,
 			  struct path *path);
 static void (*p_path_put)(const struct path *path);
+
+/*
+ * 解析一个内核符号，带两道保护。思路借自 _patchHarmony 的 ds_compat_sym()：
+ *
+ *   1. kallrecon_klp() 是内核自己的 kallsyms_lookup_name。有些内核会从它那里
+ *      隐藏地址，这时回退到 kallsyms_name_to_addr()（KallRecon 自己的遍历，
+ *      直接读 kallsyms 表，不经过内核函数）。
+ *
+ *   2. 解析结果如果落在本模块的地址范围内，说明拿到的是我们自己的同名 shim，
+ *      不是内核函数。这种指针一旦调用就是自己调自己，必须当成"解析失败"。
+ *      内核没有某个符号时，kallsyms 查找会顺着模块表找到 shim，
+ *      所以这一步不是防御性代码，是真实会发生的路径。
+ */
+static void *cpu_ksym(const char *name)
+{
+	unsigned long addr = 0;
+
+	if (kallrecon_klp)
+		addr = kallrecon_klp(name);
+	if (!addr)
+		addr = kallsyms_name_to_addr(name);
+	if (addr && within_module(addr, THIS_MODULE))
+		return NULL;
+	return (void *)addr;
+}
 static unsigned long ctl_bstat_off;
 static unsigned long ctl_kn_priv_off;
 
@@ -359,25 +384,25 @@ static bool ctl_cgrp_alive(struct cgroup *cgrp)
 static void cpu_resolve_syms(void)
 {
 	p_css_task_iter_start =
-		(void *)kallrecon_klp("css_task_iter_start");
+		cpu_ksym("css_task_iter_start");
 	p_css_task_iter_next =
-		(void *)kallrecon_klp("css_task_iter_next");
+		cpu_ksym("css_task_iter_next");
 	p_css_task_iter_end =
-		(void *)kallrecon_klp("css_task_iter_end");
+		cpu_ksym("css_task_iter_end");
 	p_send_sig_info =
-		(void *)kallrecon_klp("send_sig_info");
+		cpu_ksym("send_sig_info");
 	p_rstat_flush_hold =
-		(void *)kallrecon_klp("cgroup_rstat_flush_hold");
+		cpu_ksym("cgroup_rstat_flush_hold");
 	p_rstat_flush_release =
-		(void *)kallrecon_klp("cgroup_rstat_flush_release");
+		cpu_ksym("cgroup_rstat_flush_release");
 	p_task_sched_runtime =
-		(void *)kallrecon_klp("task_sched_runtime");
+		cpu_ksym("task_sched_runtime");
 	/* 5.10 未导出，解析不到就不安装 cftype（见声明处注释） */
 	p_cgroup_rm_cftypes =
-		(void *)kallrecon_klp("cgroup_rm_cftypes");
+		cpu_ksym("cgroup_rm_cftypes");
 	/* [TRIM] 裁剪内核上可能不存在，解析不到就跳过 sysctl 存在性检查 */
-	p_kern_path = (void *)kallrecon_klp("kern_path");
-	p_path_put  = (void *)kallrecon_klp("path_put");
+	p_kern_path = cpu_ksym("kern_path");
+	p_path_put  = cpu_ksym("path_put");
 }
 
 /*
@@ -835,7 +860,7 @@ static int __init droid_lkm_cpu_init(void)
 		return -ENODATA;
 	}
 
-	mem_ss_addr = kallrecon_klp("memory_cgrp_subsys");
+	mem_ss_addr = (unsigned long)cpu_ksym("memory_cgrp_subsys");
 	if (!mem_ss_addr) {
 		cpu_err("memory_cgrp_subsys not found\n");
 		return -ENODEV;
