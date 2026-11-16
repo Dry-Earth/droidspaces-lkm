@@ -15,7 +15,7 @@
 | `droid_lkm_cpu` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | `uart_guard` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 
-Download the combined `droidspaces-lkm-arm64.zip` (picks the right build at boot
+Download the combined `droidspaces-lkm-arm64-<version>.zip` (picks the right build at boot
 from the kernel release), or a per-KMI `droidspaces-lkm-<kmi>-arm64.zip`.
 
 > **Do not trust the CI job status alone.** Since v0.1.20 the build fails the job

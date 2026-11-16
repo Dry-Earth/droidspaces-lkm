@@ -8,8 +8,8 @@ name: build
 #   devtmpfs_lkm-<kmi>.ko   注册 devtmpfs 文件系统
 #   macvlan-<kmi>.ko        容器独立局域网 IP
 #   ip6table_nat-<kmi>.ko   IPv6 NAT
-#   droidspaces-lkm-<kmi>-arm64.zip   单 KMI 的模块包
-#   droidspaces-lkm-arm64.zip         全 KMI 合并包, 开机按 osrelease 自动选
+#   droidspaces-lkm-<kmi>-arm64-<ver>.zip   单 KMI 的模块包
+#   droidspaces-lkm-arm64-<ver>.zip         全 KMI 合并包, 开机按 osrelease 自动选
 #   source-<tag>.tar.gz               对应源码快照 (GPL-2.0 要求)
 #
 # 构建用 SukiSU-Ultra 的 DDK 容器, 内含该 KMI 真实的
@@ -278,10 +278,23 @@ jobs:
             echo "::warning::没有传 version，模块包会沿用 module.prop 里的固定版本号"
           fi
 
+          # 文件名带上版本号。
+          #
+          # 之前固定叫 droidspaces-lkm-arm64.zip，用户下了好几个版本之后
+          # 本地全叫同一个名字，浏览器只会加 (1)(2) 后缀，分不清哪个是哪个。
+          # release 页面上也一样：两个 release 的资产名完全相同。
+          #
+          # 没传 version 时保持旧名（ci.yml 那种只验证编译的路径）。
+          VERSUF=""
+          if [ -n "${{ inputs.version }}" ]; then
+            VERSUF="-${{ inputs.version }}"
+          fi
+          echo "包名后缀: [${VERSUF}]"
+
           # 全 KMI 合并包
-          ( cd "$STAGE" && zip -qr1 "$GITHUB_WORKSPACE/dist/droidspaces-lkm-arm64.zip" . )
+          ( cd "$STAGE" && zip -qr1 "$GITHUB_WORKSPACE/dist/droidspaces-lkm-arm64${VERSUF}.zip" . )
           echo "=== 合并包内容 ==="
-          unzip -l "$GITHUB_WORKSPACE/dist/droidspaces-lkm-arm64.zip"
+          unzip -l "$GITHUB_WORKSPACE/dist/droidspaces-lkm-arm64${VERSUF}.zip"
 
           # 按 KMI 拆分单包
           for f in dist/*.ko; do
@@ -304,7 +317,7 @@ jobs:
               sed -i "s|^version=.*|version=$v|" "$S/module.prop"
               sed -i "s|^versionCode=.*|versionCode=$(date +%Y%m%d%H%M)|" "$S/module.prop"
             fi
-            ( cd "$S" && zip -qr1 "$GITHUB_WORKSPACE/dist/droidspaces-lkm-$kmi-arm64.zip" . )
+            ( cd "$S" && zip -qr1 "$GITHUB_WORKSPACE/dist/droidspaces-lkm-$kmi-arm64${VERSUF}.zip" . )
           done
 
           echo "=== 最终 dist ==="

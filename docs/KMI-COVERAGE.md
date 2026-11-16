@@ -15,7 +15,7 @@
 | `droid_lkm_cpu` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | `uart_guard` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 
-下载全 KMI 合并包 `droidspaces-lkm-arm64.zip`（开机按 `osrelease` 自动选），
+下载全 KMI 合并包 `droidspaces-lkm-arm64-<version>.zip`（开机按 `osrelease` 自动选），
 或按 KMI 精确下载 `droidspaces-lkm-<kmi>-arm64.zip`。
 
 ## 构建方式
