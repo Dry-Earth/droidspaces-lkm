@@ -183,7 +183,7 @@ diff --git a/glue/vendor_kernel_ovl_vfs_compat.c b/glue/vendor_kernel_ovl_vfs_co
 index e9e9549..405fd1c 100644
 --- a/glue/vendor_kernel_ovl_vfs_compat.c
 +++ b/glue/vendor_kernel_ovl_vfs_compat.c
-@@ -59,22 +59,419 @@ VNS_OVL_VFS_COMPAT_LIST(VNS_OVL_VFSC_DEFINE)
+@@ -59,22 +59,443 @@ VNS_OVL_VFS_COMPAT_LIST(VNS_OVL_VFSC_DEFINE)
  VNS_OVL_VFS_COMPAT_LIST_BF(VNS_OVL_VFSC_DEFINE)
  #undef VNS_OVL_VFSC_DEFINE
  
@@ -232,13 +232,18 @@ index e9e9549..405fd1c 100644
 +
 +struct file;
 +
++/* 前置声明：带 within_module 守卫的解析 helper 在文件后面定义。
++ * 这里必须用守卫版而不是裸 shadow_hook_resolve —— 本函数本身就是
++ * 同名转发，裸解析会命中自己造成无限递归。 */
++static void *vns_ovl_vfsc_resolve(const char *name);
++
 +/* 存指针的槽位；由 vns_ovl_vfs_compat_resolve() 填。 */
 +static struct path *(*vns_bfup_slot)(struct file *);
 +
 +__maybe_unused struct path *__nocfi backing_file_user_path(struct file *f)
 +{
 +	if (!vns_bfup_slot)
-+		vns_bfup_slot = (void *)shadow_hook_resolve("backing_file_user_path");
++		vns_bfup_slot = (void *)vns_ovl_vfsc_resolve("backing_file_user_path");
 +	if (!vns_bfup_slot)
 +		return NULL;
 +	return vns_bfup_slot(f);
@@ -568,6 +573,25 @@ index e9e9549..405fd1c 100644
 +
 +static unsigned int vns_ovl_resolve_failed;
 +
++/*
++ * 解析守卫（与 0009 的 trim_resolve() 同理，必备而非防御性代码）：
++ *
++ * 本文件定义了 get_next_ino / clear_inode / inc_nlink / generic_read_dir /
++ * backing_file_user_path 等与内核同名的转发函数，而 shadow_hook_resolve()
++ * 查的是 kallsyms 全表 —— **包含本模块自己的符号表**。若它把地址解析回
++ * 我们自己的同名转发定义，指针就自指，第一次调用变成无限递归，内核栈
++ * 一秒钟打穿。0009 的 trim_resolve() 已经记载过这个坑并加了守卫，这里
++ * 必须同样处理。
++ */
++static void *vns_ovl_vfsc_resolve(const char *name)
++{
++	unsigned long addr = shadow_hook_resolve(name);
++
++	if (addr && within_module(addr, THIS_MODULE))
++		return NULL;
++	return (void *)addr;
++}
++
  int vns_ovl_vfs_compat_resolve(void)
  {
 +/*
@@ -586,7 +610,7 @@ index e9e9549..405fd1c 100644
  #define VNS_OVL_VFSC_RESOLVE(name) \
  	do { \
  		vns_ovl_vfsc_##name = (typeof(vns_ovl_vfsc_##name)) \
- 			shadow_hook_resolve(#name); \
+ 			vns_ovl_vfsc_resolve(#name); \
 -		if (!vns_ovl_vfsc_##name) { \
 -			LKM4CTR_ERR("vendor_kernel", \
 -				    "overlayfs: could not resolve VFS symbol '%s'; vendored overlayfs unavailable", \
