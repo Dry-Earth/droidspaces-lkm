@@ -610,7 +610,8 @@ index e9e9549..405fd1c 100644
  #define VNS_OVL_VFSC_RESOLVE(name) \
  	do { \
  		vns_ovl_vfsc_##name = (typeof(vns_ovl_vfsc_##name)) \
- 			vns_ovl_vfsc_resolve(#name); \
+-			shadow_hook_resolve(#name); \
++			vns_ovl_vfsc_resolve(#name); \
 -		if (!vns_ovl_vfsc_##name) { \
 -			LKM4CTR_ERR("vendor_kernel", \
 -				    "overlayfs: could not resolve VFS symbol '%s'; vendored overlayfs unavailable", \
