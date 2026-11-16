@@ -116,10 +116,14 @@ v0.1.22 发布后，`nm -u` 实测每个 KMI 的 `lkm4ctr` 还有多少 VFS 类�
 | android14-5.15 | 2 | −93% |
 | android14-6.1 | 3 | −50% |
 | android15-6.6 | 5 | −86% |
-| android16-6.12 | 8 | −80% |
+| android16-6.12 | 7 | −82% |
 
 剩下的都是内核必然导出的基础设施（`percpu_counter_add_batch`、
 `__percpu_down_read` 之类），不是可裁的辅助函数。
+
+这组数字来自 `nm -u` 逐项核对。6.12 那一项已经把最后的
+`generic_encode_ino32_fh` 算进去了（6.9+ 才存在，6.6 走 `NULL` 降级所以
+不参与计数）。
 
 ### 三种机制，对应三类失效
 
