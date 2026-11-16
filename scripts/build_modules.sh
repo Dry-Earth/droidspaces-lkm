@@ -212,6 +212,15 @@ if [ -n "$KSRC" ] && [ -f "$KSRC/drivers/net/macvlan.c" ]; then
     # 那个头必须从内核树的 include 路径解析。把副本塞进模块目录反而会因为它
     # 自己内部又 include 别的东西而失败 (表现为 "No such file or directory")
     cp "$KSRC/drivers/net/macvlan.c" "$DST/"
+    # [TRIM] 去掉三个在部分厂商内核上不导出的符号依赖：
+    #   ndo_dflt_fdb_dump  删掉赋值（NULL 时 rtnl_fdb_dump 本来就会回退到它）
+    #   __netif_rx         → netif_rx（同一条收包路径，后者所有内核都导出）
+    #   ip_check_defrag    → 恒等内联，跳过分片重组（唯一有语义损失的替换）
+    # 依据与取舍写在 scripts/patch_macvlan.py 的头注释里。
+    if [ -f "$WS/scripts/patch_macvlan.py" ]; then
+        python3 "$WS/scripts/patch_macvlan.py" "$DST/macvlan.c" || \
+            warn "macvlan @ $KMI (源码改写失败，将有符号依赖)"
+    fi
     gen_makefile "$DST" macvlan "-DCONFIG_MACVLAN=1"
     if make -C "$KDIR" M="$DST" KCFLAGS="$GUARD_CFLAGS" modules -j"$NPROC"; then
         cp "$DST/macvlan.ko" "$OUT/macvlan-$KMI.ko" && log "  [OK]"
