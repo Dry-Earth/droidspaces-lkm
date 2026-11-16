@@ -585,7 +585,7 @@ index 7cc1a34..5a58309 100644
  int ovl_get_write_access(struct dentry *dentry)
  {
 diff --git a/vendor/ipc/mqueue.c b/vendor/ipc/mqueue.c
-index 0473ef5..34ad13b 100644
+index 0473ef5..e63e004 100644
 --- a/vendor/ipc/mqueue.c
 +++ b/vendor/ipc/mqueue.c
 @@ -75,6 +75,11 @@
@@ -608,12 +608,7 @@ index 0473ef5..34ad13b 100644
  static inline void set_cookie(struct sk_buff *skb, char code)
  {
  	((char *)skb->data)[NOTIFY_COOKIE_LEN-1] = code;
-@@ -1936,12 +1940,14 @@ static int init_mqueue_fs(void)
- 	} else {
- 		goto out_sysctl;
- 	}
-+		mqueue_fs_type_registered);
- 
+@@ -1940,8 +1944,9 @@ static int init_mqueue_fs(void)
  	spin_lock_init(&mq_lock);
  
  	error = mq_init_ns(&init_ipc_ns);
