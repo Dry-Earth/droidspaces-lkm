@@ -79,7 +79,7 @@ M_EXPORT_MISS_ONE="%s needs %s — not exported by this kernel"
 M_EXPORT_MISS_HEAD="%s missing. This is a vendor-kernel export-table difference,"
 M_EXPORT_MISS_TAIL="not a broken package — please paste this whole section into the issue."
 M_CAP_USERNS="user namespace"
-M_CAP_PIDMNT="PID + mount + user namespace combo"
+M_CAP_PIDMNT="PID + mount namespace combo"
 M_CAP_PROC="mount /proc inside container"
 M_CAP_DEVTMPFS="devtmpfs (registered, %s nodes after mount)"
 M_CAP_DEVTMPFS_NO="devtmpfs not registered"
@@ -158,7 +158,7 @@ zh)
 
     # --- 能力验证 ---
     M_CAP_USERNS="user namespace"
-    M_CAP_PIDMNT="PID + mount + user namespace 组合"
+    M_CAP_PIDMNT="PID + mount 命名空间组合"
     M_CAP_PROC="容器内挂载 /proc"
     M_CAP_DEVTMPFS="devtmpfs（已注册，挂载后 %s 个节点）"
     M_CAP_DEVTMPFS_NO="devtmpfs 未注册"
@@ -232,7 +232,7 @@ ja)
     M_EXPORT_MISS_TAIL="パッケージ破損ではありません —— issue にはこの部分を貼ってください。"
 
     M_CAP_USERNS="ユーザー名前空間"
-    M_CAP_PIDMNT="PID + mount + ユーザー名前空間の組み合わせ"
+    M_CAP_PIDMNT="PID + mount 名前空間の組み合わせ"
     M_CAP_PROC="コンテナ内で /proc をマウント"
     M_CAP_DEVTMPFS="devtmpfs（登録済み、マウント後 %s ノード）"
     M_CAP_DEVTMPFS_NO="devtmpfs 未登録"

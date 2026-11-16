@@ -125,17 +125,27 @@ else
     echo "  [FAIL] ${M_CAP_USERNS}"
 fi
 
-if unshare -Urmpf true 2>/dev/null; then
+# PID + mount 命名空间组合。不带 -U：容器用的是宿主的 user namespace，
+# 加 -U 会进入一个新 userns，那里的 root 挂不了 proc（内核的 userns 挂载限制），
+# 报出来的 FAIL 与模块能力无关。service.sh 用的也是不带 -U 的写法。
+if unshare -pmf true 2>/dev/null; then
     echo "  [OK]   ${M_CAP_PIDMNT}"
 else
     echo "  [FAIL] ${M_CAP_PIDMNT}"
 fi
 
-if unshare -Urmpf sh -c 'mount -t proc proc /proc' 2>/dev/null; then
+# 容器内挂载 /proc。挂到临时目录而不是覆盖 /proc：
+# 覆盖一个已存在的挂载点在 userns 下会 EPERM，且真挂上去会污染当前会话。
+_procmnt=/data/local/tmp/.dsp_proctest
+rm -rf "$_procmnt" 2>/dev/null
+mkdir -p "$_procmnt" 2>/dev/null
+if unshare -pf mount -t proc proc "$_procmnt" 2>/dev/null; then
     echo "  [OK]   ${M_CAP_PROC}"
+    umount "$_procmnt" 2>/dev/null
 else
     echo "  [FAIL] ${M_CAP_PROC}"
 fi
+rm -rf "$_procmnt" 2>/dev/null
 
 # /proc/filesystems 的格式是 "nodev<TAB>devtmpfs"：第一列是 nodev，
 # 文件系统名在第二列。用 ^devtmpfs 永远匹配不到 —— 这个错误让「操作」按钮
