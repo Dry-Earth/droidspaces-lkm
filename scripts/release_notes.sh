@@ -77,14 +77,28 @@ cat <<'NOTE'
 
 ---
 
-The package is not signed. Verify the reported version in `module.prop`
-after installation, then check the **Action** button on the KernelSU module
-page: it lists every loaded module and reports which kernel symbols are
-missing, if any.
+The `.ko` files are not signed. On kernels built with
+`CONFIG_MODULE_SIG_FORCE=y` they cannot be inserted at all, and `insmod`
+reports `module verification failed`. Check with:
+
+```sh
+zcat /proc/config.gz | grep CONFIG_MODULE_SIG_FORCE
+```
+
+If a module fails to load, press the **Action** button on the KernelSU module
+page and include its output in the issue. It lists every module's load state and
+reports which kernel symbols this kernel does not export.
 NOTE
 
 cat <<'NOTE'
 
-安装包未签名。安装后先在 `module.prop` 里确认版本号，再点 KernelSU 模块页的
-**「操作」**按钮：它会列出已加载的模块，并报出本内核缺少哪些符号（如有）。
+`.ko` 未签名。内核若编译时开了 `CONFIG_MODULE_SIG_FORCE=y`，这些模块**完全装不上**，
+`insmod` 会报 `module verification failed`。确认方式：
+
+```sh
+zcat /proc/config.gz | grep CONFIG_MODULE_SIG_FORCE
+```
+
+模块装不上时，请点 KernelSU 模块页的**「操作」**按钮，把输出贴进 issue。它会列出
+每个模块的加载状态，并报出本内核没有导出哪些符号。
 NOTE
