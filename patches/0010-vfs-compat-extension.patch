@@ -18,10 +18,10 @@ index d5f5f48..29c05d9 100644
  #define LKM4CTR_DIAGFS_TAG	"diagfs"
  
 diff --git a/glue/vendor_kernel_ovl_vfs_compat.c b/glue/vendor_kernel_ovl_vfs_compat.c
-index e9e9549..0905fc1 100644
+index e9e9549..3f7cb60 100644
 --- a/glue/vendor_kernel_ovl_vfs_compat.c
 +++ b/glue/vendor_kernel_ovl_vfs_compat.c
-@@ -59,6 +59,41 @@ VNS_OVL_VFS_COMPAT_LIST(VNS_OVL_VFSC_DEFINE)
+@@ -59,6 +59,60 @@ VNS_OVL_VFS_COMPAT_LIST(VNS_OVL_VFSC_DEFINE)
  VNS_OVL_VFS_COMPAT_LIST_BF(VNS_OVL_VFSC_DEFINE)
  #undef VNS_OVL_VFSC_DEFINE
  
@@ -52,6 +52,25 @@ index e9e9549..0905fc1 100644
 +	return vns_ovl_vfsc_kmem_cache_alloc_lru(s, lru, gfp);
 +}
 +
++/*
++ * generic_read_dir - same-name forwarding definition, not a #define alias.
++ *
++ * The #define form works for direct calls but not where the name is taken as a
++ * function address: overlayfs puts it in a struct file_operations initialiser
++ * (".read = generic_read_dir"), and (*vns_ovl_vfsc_generic_read_dir) is not a
++ * compile-time constant there. A real function with the kernel's own name is
++ * addressable and callable both ways.
++ *
++ * Signature matches the kernel's: int generic_read_dir(struct file *,
++ * struct dir_context *).
++ */
++int __nocfi generic_read_dir(struct file *file, struct dir_context *ctx)
++{
++	if (!vns_ovl_vfsc_generic_read_dir)
++		return -EIO;
++	return vns_ovl_vfsc_generic_read_dir(file, ctx);
++}
++
 +int vns_percpu_counter_init(struct percpu_counter *fbc, s64 amount,
 +			    gfp_t gfp, struct lock_class_key *key)
 +{
@@ -64,7 +83,7 @@ index e9e9549..0905fc1 100644
  {
  #define VNS_OVL_VFSC_RESOLVE(name) \
 diff --git a/glue/vendor_kernel_ovl_vfs_compat.h b/glue/vendor_kernel_ovl_vfs_compat.h
-index f326a9a..87b31a6 100644
+index f326a9a..8d92296 100644
 --- a/glue/vendor_kernel_ovl_vfs_compat.h
 +++ b/glue/vendor_kernel_ovl_vfs_compat.h
 @@ -643,6 +643,38 @@ static inline void generic_fill_statx_attr(struct inode *inode, struct kstat *st
@@ -106,7 +125,7 @@ index f326a9a..87b31a6 100644
  	X(lookup_positive_unlocked) \
  	VNS_OVL_VFSC_VMASETFILE_ENTRY(X) \
  	X(d_tmpfile)
-@@ -992,6 +1024,37 @@ static inline void vns_ovl_revert_creds_compat(const struct cred *revert_cred)
+@@ -992,6 +1024,36 @@ static inline void vns_ovl_revert_creds_compat(const struct cred *revert_cred)
  #define security_file_ioctl (*vns_ovl_vfsc_security_file_ioctl)
  #define iterate_dir (*vns_ovl_vfsc_iterate_dir)
  #define vfs_setpos (*vns_ovl_vfsc_vfs_setpos)
@@ -140,16 +159,15 @@ index f326a9a..87b31a6 100644
 +#define current_umask (*vns_ovl_vfsc_current_umask)
 +#define __percpu_counter_init (*vns_ovl_vfsc___percpu_counter_init)
 +#define percpu_counter_destroy (*vns_ovl_vfsc_percpu_counter_destroy)
-+#define generic_read_dir (*vns_ovl_vfsc_generic_read_dir)
  #define d_tmpfile (*vns_ovl_vfsc_d_tmpfile)
  #define errseq_check (*vns_ovl_vfsc_errseq_check)
  #define lookup_positive_unlocked (*vns_ovl_vfsc_lookup_positive_unlocked)
 diff --git a/glue/vns_vfs_shared_syms.h b/glue/vns_vfs_shared_syms.h
 new file mode 100644
-index 0000000..02872e1
+index 0000000..968d57d
 --- /dev/null
 +++ b/glue/vns_vfs_shared_syms.h
-@@ -0,0 +1,97 @@
+@@ -0,0 +1,95 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +/*
 + * vns_vfs_shared_syms.h - VFS helpers needed outside fs/overlayfs
@@ -205,7 +223,6 @@ index 0000000..02872e1
 +extern void (*vns_ovl_vfsc_drop_nlink)(struct inode *);
 +extern void (*vns_ovl_vfsc_inc_nlink)(struct inode *);
 +extern void (*vns_ovl_vfsc_set_nlink)(struct inode *, unsigned int);
-+extern int (*vns_ovl_vfsc_generic_read_dir)(struct file *, struct dir_context *);
 +extern void (*vns_ovl_vfsc_truncate_inode_pages_final)(struct address_space *);
 +extern void (*vns_ovl_vfsc_d_instantiate)(struct dentry *, struct inode *);
 +extern struct inode *(*vns_ovl_vfsc_ihold)(struct inode *);
@@ -220,7 +237,6 @@ index 0000000..02872e1
 +#define drop_nlink			(*vns_ovl_vfsc_drop_nlink)
 +#define inc_nlink			(*vns_ovl_vfsc_inc_nlink)
 +#define set_nlink			(*vns_ovl_vfsc_set_nlink)
-+#define generic_read_dir		(*vns_ovl_vfsc_generic_read_dir)
 +#define truncate_inode_pages_final	(*vns_ovl_vfsc_truncate_inode_pages_final)
 +#define d_instantiate			(*vns_ovl_vfsc_d_instantiate)
 +#define ihold				(*vns_ovl_vfsc_ihold)
