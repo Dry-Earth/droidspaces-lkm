@@ -1,0 +1,235 @@
+diff --git a/glue/lkm4ctr_diagfs.c b/glue/lkm4ctr_diagfs.c
+index d5f5f48..8691bfc 100644
+--- a/glue/lkm4ctr_diagfs.c
++++ b/glue/lkm4ctr_diagfs.c
+@@ -224,6 +224,14 @@
+ #include "lkm4ctr_diagfs.h"
+ #include "lkm4ctr_compat.h"
+ 
++/* [TRIM-COMPAT] VFS helpers this file calls may be trimmed from the
++ * module symbol table on production GKI. The compat header declares
++ * them as runtime pointers and #defines the bare names, so every call
++ * site below goes through the resolved address instead of a static
++ * import. Included after the kernel headers so typeof() sees the real
++ * declarations. */
++#include "vendor_kernel_ovl_vfs_compat.h"
++
+ #define LKM4CTR_DIAGFS_MAGIC	0x4C4B4D34 /* "LKM4" */
+ #define LKM4CTR_DIAGFS_TAG	"diagfs"
+ 
+diff --git a/glue/vendor_kernel_ovl_vfs_compat.h b/glue/vendor_kernel_ovl_vfs_compat.h
+index f326a9a..23bd379 100644
+--- a/glue/vendor_kernel_ovl_vfs_compat.h
++++ b/glue/vendor_kernel_ovl_vfs_compat.h
+@@ -643,6 +643,36 @@ static inline void generic_fill_statx_attr(struct inode *inode, struct kstat *st
+ 	X(security_file_ioctl) \
+ 	X(iterate_dir) \
+ 	X(vfs_setpos) \
++	X(__insert_inode_hash) \
++	X(capable_wrt_inode_uidgid) \
++	X(clear_inode) \
++	X(clear_nlink) \
++	X(d_instantiate) \
++	X(d_obtain_alias) \
++	X(d_splice_alias) \
++	X(drop_nlink) \
++	X(finish_open) \
++	X(generic_file_splice_read) \
++	X(generic_permission) \
++	X(iget5_locked) \
++	X(ihold) \
++	X(ilookup5) \
++	X(in_group_p) \
++	X(inc_nlink) \
++	X(init_special_inode) \
++	X(inode_init_once) \
++	X(inode_init_owner) \
++	X(inode_set_flags) \
++	X(notify_change) \
++	X(set_nlink) \
++	X(setattr_prepare) \
++	X(sync_filesystem) \
++	X(touch_atime) \
++	X(unlock_new_inode) \
++	X(vfs_fsync) \
++	X(current_umask) \
++	X(__percpu_counter_init) \
++	X(percpu_counter_destroy) \
+ 	X(lookup_positive_unlocked) \
+ 	VNS_OVL_VFSC_VMASETFILE_ENTRY(X) \
+ 	X(d_tmpfile)
+diff --git a/vendor/fs/overlayfs/copy_up.c b/vendor/fs/overlayfs/copy_up.c
+index 64cb9ba..7d3f242 100644
+--- a/vendor/fs/overlayfs/copy_up.c
++++ b/vendor/fs/overlayfs/copy_up.c
+@@ -68,6 +68,14 @@
+ #include <linux/exportfs.h>
+ #include "overlayfs.h"
+ 
++/* [TRIM-COMPAT] VFS helpers this file calls may be trimmed from the
++ * module symbol table on production GKI. The compat header declares
++ * them as runtime pointers and #defines the bare names, so every call
++ * site below goes through the resolved address instead of a static
++ * import. Included after the kernel headers so typeof() sees the real
++ * declarations. */
++#include "../../../glue/vendor_kernel_ovl_vfs_compat.h"
++
+ #define OVL_COPY_UP_CHUNK_SIZE (1 << 20)
+ 
+ static int ovl_ccup_set(const char *buf, const struct kernel_param *param)
+diff --git a/vendor/fs/overlayfs/dir.c b/vendor/fs/overlayfs/dir.c
+index f3cf652..5de4cc7 100644
+--- a/vendor/fs/overlayfs/dir.c
++++ b/vendor/fs/overlayfs/dir.c
+@@ -67,6 +67,14 @@
+ #endif
+ #include "overlayfs.h"
+ 
++/* [TRIM-COMPAT] VFS helpers this file calls may be trimmed from the
++ * module symbol table on production GKI. The compat header declares
++ * them as runtime pointers and #defines the bare names, so every call
++ * site below goes through the resolved address instead of a static
++ * import. Included after the kernel headers so typeof() sees the real
++ * declarations. */
++#include "../../../glue/vendor_kernel_ovl_vfs_compat.h"
++
+ static unsigned short ovl_redirect_max = 256;
+ module_param_named(redirect_max, ovl_redirect_max, ushort, 0644);
+ MODULE_PARM_DESC(redirect_max,
+diff --git a/vendor/fs/overlayfs/export.c b/vendor/fs/overlayfs/export.c
+index ee100cc..ce627ce 100644
+--- a/vendor/fs/overlayfs/export.c
++++ b/vendor/fs/overlayfs/export.c
+@@ -61,6 +61,14 @@
+ #include <linux/ratelimit.h>
+ #include "overlayfs.h"
+ 
++/* [TRIM-COMPAT] VFS helpers this file calls may be trimmed from the
++ * module symbol table on production GKI. The compat header declares
++ * them as runtime pointers and #defines the bare names, so every call
++ * site below goes through the resolved address instead of a static
++ * import. Included after the kernel headers so typeof() sees the real
++ * declarations. */
++#include "../../../glue/vendor_kernel_ovl_vfs_compat.h"
++
+ static int ovl_encode_maybe_copy_up(struct dentry *dentry)
+ {
+ 	int err;
+diff --git a/vendor/fs/overlayfs/file.c b/vendor/fs/overlayfs/file.c
+index 6234d0d..3e1996b 100644
+--- a/vendor/fs/overlayfs/file.c
++++ b/vendor/fs/overlayfs/file.c
+@@ -65,6 +65,14 @@
+ #endif
+ #include "overlayfs.h"
+ 
++/* [TRIM-COMPAT] VFS helpers this file calls may be trimmed from the
++ * module symbol table on production GKI. The compat header declares
++ * them as runtime pointers and #defines the bare names, so every call
++ * site below goes through the resolved address instead of a static
++ * import. Included after the kernel headers so typeof() sees the real
++ * declarations. */
++#include "../../../glue/vendor_kernel_ovl_vfs_compat.h"
++
+ #if VNS_OVL_NEED_BACKING_FILE_FALLBACK
+ struct ovl_aio_req {
+ 	struct kiocb iocb;
+diff --git a/vendor/fs/overlayfs/util.c b/vendor/fs/overlayfs/util.c
+index 7cc1a34..5a58309 100644
+--- a/vendor/fs/overlayfs/util.c
++++ b/vendor/fs/overlayfs/util.c
+@@ -64,6 +64,14 @@
+ #include <linux/ratelimit.h>
+ #include "overlayfs.h"
+ 
++/* [TRIM-COMPAT] VFS helpers this file calls may be trimmed from the
++ * module symbol table on production GKI. The compat header declares
++ * them as runtime pointers and #defines the bare names, so every call
++ * site below goes through the resolved address instead of a static
++ * import. Included after the kernel headers so typeof() sees the real
++ * declarations. */
++#include "../../../glue/vendor_kernel_ovl_vfs_compat.h"
++
+ /* Get write access to upper mnt - may fail if upper sb was remounted ro */
+ int ovl_get_write_access(struct dentry *dentry)
+ {
+diff --git a/vendor/ipc/mqueue.c b/vendor/ipc/mqueue.c
+index 0473ef5..6d203d9 100644
+--- a/vendor/ipc/mqueue.c
++++ b/vendor/ipc/mqueue.c
+@@ -63,6 +63,11 @@
+ #include <linux/sched/signal.h>
+ #include <linux/sched/user.h>
+ 
++/* [TRIM-COMPAT] helpers this file calls may be trimmed from the module
++ * symbol table on production GKI; the compat header turns them into
++ * runtime pointers so no static import is emitted. */
++#include "../../glue/vendor_kernel_ovl_vfs_compat.h"
++
+ #include "../vendor_kernel.h"
+ /* [BUILD-COMPAT] LKM4CTR ring-buffer logging (see glue/lkm4ctr_log.h);
+  * replaces upstream pr_warn/pr_info so all output goes through the module's
+diff --git a/vendor/ipc/msg.c b/vendor/ipc/msg.c
+index 0cded6b..241376d 100644
+--- a/vendor/ipc/msg.c
++++ b/vendor/ipc/msg.c
+@@ -52,6 +52,11 @@
+ 
+ #include <asm/current.h>
+ #include <linux/uaccess.h>
++
++/* [TRIM-COMPAT] helpers this file calls may be trimmed from the module
++ * symbol table on production GKI; the compat header turns them into
++ * runtime pointers so no static import is emitted. */
++#include "../../glue/vendor_kernel_ovl_vfs_compat.h"
+ #include "../vendor_kernel.h"
+ 
+ #undef SYSCALL_METADATA
+diff --git a/vendor/ipc/namespace.c b/vendor/ipc/namespace.c
+index d72a3aa..d489233 100644
+--- a/vendor/ipc/namespace.c
++++ b/vendor/ipc/namespace.c
+@@ -32,6 +32,11 @@
+ #include <linux/hashtable.h>
+ #include <linux/module.h>
+ 
++/* [TRIM-COMPAT] helpers this file calls may be trimmed from the module
++ * symbol table on production GKI; the compat header turns them into
++ * runtime pointers so no static import is emitted. */
++#include "../../glue/vendor_kernel_ovl_vfs_compat.h"
++
+ #include "util.h"
+ #include "../vendor_kernel.h"
+ #include "../include/uapi/vendor_kernel.h"
+diff --git a/vendor/ipc/util.c b/vendor/ipc/util.c
+index 46c3da0..f59b61e 100644
+--- a/vendor/ipc/util.c
++++ b/vendor/ipc/util.c
+@@ -75,6 +75,11 @@
+ #include <linux/rhashtable.h>
+ #include <linux/log2.h>
+ 
++/* [TRIM-COMPAT] helpers this file calls may be trimmed from the module
++ * symbol table on production GKI; the compat header turns them into
++ * runtime pointers so no static import is emitted. */
++#include "../../glue/vendor_kernel_ovl_vfs_compat.h"
++
+ #include <asm/unistd.h>
+ 
+ #include "util.h"
+diff --git a/vendor/kernel/nsproxy.c b/vendor/kernel/nsproxy.c
+index 31d9e2a..55c0773 100644
+--- a/vendor/kernel/nsproxy.c
++++ b/vendor/kernel/nsproxy.c
+@@ -65,6 +65,11 @@
+ #include <linux/llist.h>
+ #include <linux/version.h>
+ #include <linux/workqueue.h>
++
++/* [TRIM-COMPAT] helpers this file calls may be trimmed from the module
++ * symbol table on production GKI; the compat header turns them into
++ * runtime pointers so no static import is emitted. */
++#include "../../glue/vendor_kernel_ovl_vfs_compat.h"
+ #include "../vendor_kernel.h"
+ #include "../include/uapi/vendor_kernel.h"
+ #include "../../glue/shadow_hook.h"
