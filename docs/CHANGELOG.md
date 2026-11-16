@@ -18,6 +18,36 @@
 这一轮把「符号问题」从「出问题再修」推到三个方向。三条都经过 CI 全量矩阵和
 真机验证（Redmi Pad 2410CRP4CG / Qualcomm SM7675 / 6.1.138）。
 
+## v0.1.24
+
+### 修复
+
+**`versionCode` 超出 int32 范围，KernelSU 从未能解析。**
+
+KernelSU 的 `Module.kt` 将 `versionCode` 声明为 `Int`，`Downloader.kt` 用
+`.toInt()` 解析。`build.yml` 生成的值为 `%Y%m%d%H%M`（12 位），v0.1.23 得到
+`202611170004`，超出 `Integer.MAX_VALUE` (2147483647) 94 倍，`.toInt()` 抛出
+`NumberFormatException`，更新检查失败。
+
+v0.1.22（`202611161425`）同样超出范围，因此该问题自引入以来一直存在。
+
+改为 `YYYYMMDDnn`：
+
+```
+versionCode = YYYYMMDD * 100 + 小时 * 4 + 分钟 / 15
+```
+
+取值范围 `2026111700`–`2026111795`，上限 2,026,117,995 < 2,147,483,647。
+每日 96 个槽位。超出范围时构建直接失败。
+
+分 KMI 包改为读取 `dist/version-code.txt`，与全 KMI 包使用同一个值。
+
+`scripts/gen_release_meta.py` 增加 int32 上限校验，超范围拒绝生成 `update.json`。
+
+### 变更
+
+无功能变更。此版本仅为修正更新检查与元数据同步。
+
 ## v0.1.23
 
 `versionCode` 由构建时写入（`YYYYMMDDHHMM`，见 `.github/workflows/build.yml`）。
