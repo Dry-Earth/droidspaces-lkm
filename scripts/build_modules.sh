@@ -438,7 +438,7 @@ inode_set_flags init_special_inode unlock_new_inode iget5_locked ilookup5 \
 insert_inode_hash __insert_inode_hash finish_open notify_change \
 setattr_prepare sync_filesystem touch_atime truncate_inode_pages_final \
 vfs_fsync generic_permission generic_file_splice_read kmem_cache_alloc_lru \
-capable_wrt_inode_uidgid in_group_p current_umask \
+in_group_p current_umask \
 __percpu_counter_init percpu_counter_destroy"
 bad=0
 for ko in "$OUT"/*-"$KMI".ko; do
