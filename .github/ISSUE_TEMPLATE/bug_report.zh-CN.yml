@@ -97,37 +97,66 @@ body:
   - type: textarea
     id: bootlog
     attributes:
-      label: Boot logs / 开机日志文件
+      label: 开机日志
       description: |
-        Boot problems cannot be diagnosed without these. Attach them **as
-        files**, not screenshots.
         开机类问题没有这几份日志基本无法定位。请**作为文件附件**传上来，不要只截图。
 
-        1. this boot's kernel log / 本次开机的内核日志
+        1. 本次开机的内核日志
            su -c dmesg > /sdcard/dmesg.txt
 
-        2. the module's own log / 模块自己的日志
+        2. 模块自己的日志
            su -c 'cat /data/adb/droidspaces_lkm.log' > /sdcard/droidspaces_lkm.log
-           （文件不存在说明 service.sh 没跑，请注明 / if the file is missing,
-           service.sh never ran — say so）
+           （文件不存在说明 service.sh 没跑，请注明）
 
-        3. for hangs, reboots or safe mode, the *previous* boot's log /
-           开机卡住、重启、进安全模式时，要上一轮开机的日志
+        3. 开机卡住、重启、进安全模式时，要**上一轮**开机的日志
            su -c 'cat /sys/fs/pstore/console-ramoops-0' > /sdcard/pstore.txt
-           older kernels / 老内核: /proc/last_kmsg
-           include pc and lr / 要含 pc 与 lr
+           老内核: /proc/last_kmsg
+           要含 pc 与 lr
 
-        Also useful / 顺手带上这两条更好:
+        顺手带上这两条更好:
            su -c 'cat /proc/crypto' > /sdcard/crypto.txt
            su -c lsmod > /sdcard/lsmod.txt
 
-        No root? Write "no root, cannot capture" and describe what you saw.
         拿不到 root 就写「无 root，无法抓取」并描述现象。
       placeholder: |
-        Upload the .txt files, or paste the relevant parts here.
         上传上面那几个 .txt，或直接粘贴 dmesg / 模块日志 / pstore 的关键段落。
     validations:
       required: true
+
+  - type: textarea
+    id: bootimg
+    attributes:
+      label: boot 镜像（装不上时强烈建议提供）
+      description: |
+        每家厂商裁掉的 EXPORT_SYMBOL 集合都不一样。日志只说明**缺了什么**，
+        只有 boot 镜像能说明这台内核**到底导出了什么**。有了它，我可以在你
+        刷机**之前**就把每个模块和你的内核比对一遍 —— 不用再来回
+        「刷机 → 失败 → 贴日志」。
+
+        怎么取（任选一种）：
+
+        1. 从官方固件包里提取（不用 root）
+           下载你机型对应版本的完整 OTA 包，里面通常有 boot.img 或
+           init_boot.img。
+
+        2. 从设备上直接 dd（需要 root）
+           su -c 'ls -l /dev/block/by-name/boot*'
+           su -c 'dd if=/dev/block/by-name/boot_a of=/sdcard/boot.img'
+           A/B 分区的设备试 boot_a 和 boot_b，哪个能读到就用哪个。
+
+        3. 从 payload.bin 提取
+           用 payload_dumper：https://github.com/vm03/payload_dumper
+
+        隐私：boot.img 里只有内核和 ramdisk，**不含个人数据、账号或应用**。
+
+        不方便给也没关系 —— 在设备上跑这一条，把输出贴上来，效果完全一样：
+
+           su -c "grep -a '__ksymtab_' /proc/kallsyms | sed 's/.*__ksymtab_//' | sort -u" > exports.txt
+      placeholder: |
+        把 boot.img 作为文件附件传上来，或粘贴 exports.txt 的内容
+        （约两万个符号名），两者都拿不到就写「无法获取」。
+    validations:
+      required: false
 
   - type: textarea
     id: steps
