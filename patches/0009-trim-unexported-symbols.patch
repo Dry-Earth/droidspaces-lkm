@@ -1,162 +1,146 @@
-diff --git a/glue/vendor_kernel_diag.c b/glue/vendor_kernel_diag.c
-index 9b1a99b..f71f04e 100644
---- a/glue/vendor_kernel_diag.c
-+++ b/glue/vendor_kernel_diag.c
-@@ -29,6 +29,29 @@
+diff --git a/glue/lkm4ctr_main.c b/glue/lkm4ctr_main.c
+index a33176b..457baec 100644
+--- a/glue/lkm4ctr_main.c
++++ b/glue/lkm4ctr_main.c
+@@ -6,6 +6,7 @@
+ #include "lkm4ctr_log.h"
+ #include "shadow_hook.h"
  
- #include "../vendor/vendor_kernel.h"
- #include "vendor_kernel_diag.h"
-+#include "lkm4ctr_log.h"
++int vns_trim_symbols_init(void);
+ int vendor_kernel_init(void);
+ int vendor_kernel_module_exit(void);
+ void vns_user_ns_exit(void);
+@@ -35,6 +36,13 @@ static int __init lkm4ctr_init(void)
+ 		return ret;
+ 	}
+ 
++	/*
++	 * 同名的 file_remove_privs / kill_pid 是转发定义，必须在
++	 * shadow_hijack_init() 之后解析 —— 那一步才建立起 kallsyms 查询机制。
++	 * 解析失败不阻断加载：这两个符号都有降级路径。
++	 */
++	vns_trim_symbols_init();
++
+ 	ret = vendor_kernel_init();
+ 	if (ret) {
+ 		LKM4CTR_ERR(LKM4CTR_TAG,
+diff --git a/glue/vendor_kernel_trim_symbols.c b/glue/vendor_kernel_trim_symbols.c
+new file mode 100644
+index 0000000..dfda884
+--- /dev/null
++++ b/glue/vendor_kernel_trim_symbols.c
+@@ -0,0 +1,173 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/*
++ * vendor_kernel_trim_symbols.c - 三个可能被厂商内核删掉导出标记的符号。
++ *
++ * 现象（droidspaces-lkm issue #2、lkm4ctr issue #12 完全同型）：
++ *   符号在 /proc/kallsyms 里能找到，但
++ *   cat /proc/kallsyms | grep -E '__ksymtab_<sym>$' 没有任何输出。
++ *   模块加载只查导出表（__ksymtab），于是：
++ *     lkm4ctr: Unknown symbol file_remove_privs (err -2)
++ *
++ * 做法：定义与内核同名的函数，内部转给 shadow_hook_resolve() 解析到的
++ * 真实实现。同名定义会让模块里所有对该符号的调用（包括内核头里
++ * static inline 展开出来的）都链接到这里，于是不再产生 undefined 引用。
++ * 写法参照 PR #13 的 vendor_kernel_legacy_symbols.c。
++ *
++ * 三个符号的性质不同，失败策略也不同：
++ *   file_remove_privs  可选 —— 解析不到就跳过特权位清理（返回 0）。
++ *                      overlayfs 复制时会重新应用属性，不破坏文件内容。
++ *   kill_pid           可选 —— 解析不到就返回 -ESRCH，调用方原本就有
++ *                      超时排空路径兜底。
++ *   seq_escape_mem     不需要解析 —— 直接用 seq_putc/seq_puts 本地实现，
++ *                      这两个是 seq_file 的基础原语，任何内核都导出。
++ */
++#include <linux/version.h>
++#include <linux/kernel.h>
++#include <linux/module.h>
++#include <linux/fs.h>
++#include <linux/seq_file.h>
++#include <linux/sched/signal.h>
++#include <linux/pid.h>
++#include <linux/errno.h>
++#include <linux/string.h>
++
 +#include "shadow_hook.h"
++#include "lkm4ctr_log.h"
++
++#define VNS_TRIM_TAG	"trim_symbols"
++
++static int (*real_file_remove_privs)(struct file *file);
++static int (*real_kill_pid)(struct pid *pid, int sig, int group);
 +
 +/*
-+ * [TRIM] kill_pid 在部分厂商内核上不导出（issue #2 实测 Meizu 6.1.25 没有）。
-+ * 改运行时解析：解析不到就不发信号 —— 下面那段本来就是"尽力让任务干净退出"，
-+ * 发不出 SIGKILL 会退化成后面原有的超时排空路径。
++ * 解析守卫：本文件定义了与内核同名的 file_remove_privs / kill_pid，
++ * 而 shadow_hook_resolve() 查的是 kallsyms 全表（含模块符号表）。
++ * 如果它把地址解析回我们自己这个转发定义，调用就变成无限递归 ——
++ * 内核栈一秒钟就打穿。
++ *
++ * 所以凡解析结果落在本模块地址范围内的，一律当作"没解析到"。
++ * 这个判断不是防御性代码，是这条路线（同名转发 + 运行时解析）的必备前提。
 + */
-+typedef int (*vns_kill_pid_fn_t)(struct pid *pid, int sig, int group);
-+static vns_kill_pid_fn_t vns_kill_pid_fn;
-+static bool vns_kill_pid_checked;
-+
-+static void vns_kill_pid_resolve(void)
++static void *trim_resolve(const char *name)
 +{
-+	if (vns_kill_pid_checked)
-+		return;
-+	vns_kill_pid_checked = true;
-+	vns_kill_pid_fn = (vns_kill_pid_fn_t)shadow_hook_resolve("kill_pid");
-+	if (!vns_kill_pid_fn)
-+		LKM4CTR_WARN("vendor_kernel",
-+			     "kill_pid 未解析到；容器退出时不做组级 SIGKILL");
++	unsigned long addr = shadow_hook_resolve(name);
++
++	if (addr && within_module(addr, THIS_MODULE))
++		return NULL;
++	return (void *)addr;
 +}
 +
- 
- size_t vendor_kernel_diag_snprintf(char *buf, size_t buflen)
- {
-@@ -335,7 +358,9 @@ static int vns_diag_ns_delete(u64 key)
- 	if (pid) {
- 		task = get_pid_task(pid, PIDTYPE_PID);
- 		if (task) {
--			kill_pid(pid, SIGKILL, 1);
-+			vns_kill_pid_resolve();
-+			if (vns_kill_pid_fn)
-+				vns_kill_pid_fn(pid, SIGKILL, 1);
- 			put_task_struct(task);
- 			for (i = 0; i < VNS_DIAG_NS_DRAIN_ITERS; i++) {
- 				struct task_struct *t = get_pid_task(pid, PIDTYPE_PID);
-diff --git a/glue/vendor_kernel_ovl_vfs_compat.c b/glue/vendor_kernel_ovl_vfs_compat.c
-index e9e9549..b30b365 100644
---- a/glue/vendor_kernel_ovl_vfs_compat.c
-+++ b/glue/vendor_kernel_ovl_vfs_compat.c
-@@ -107,35 +107,8 @@ int vns_ovl_vfs_compat_resolve(void)
-  * seq_escape_str()/seq_escape_mem()/string_escape_str(), whose availability
-  * and exact signature vary across this file's KMI range.
-  */
--#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 1, 0)
--void seq_escape(struct seq_file *m, const char *s, const char *esc)
--{
--	char c;
-+/* 原有 <6.1 的 seq_escape 实现已移到文件末尾的 [TRIM] 块 */
- 
--	while ((c = *s++) != '\0') {
--		if (!strchr(esc, c)) {
--			seq_putc(m, c);
--			continue;
--		}
--		switch (c) {
--		case '\n':
--			seq_puts(m, "\\n");
--			break;
--		case '\t':
--			seq_puts(m, "\\t");
--			break;
--		case '\\':
--			seq_puts(m, "\\\\");
--			break;
--		default:
--			seq_putc(m, '\\');
--			seq_putc(m, '0' + ((unsigned char)c >> 6));
--			seq_putc(m, '0' + (((unsigned char)c >> 3) & 7));
--			seq_putc(m, '0' + ((unsigned char)c & 7));
--		}
--	}
--}
--#endif /* LINUX_VERSION_CODE < 6.1.0 */
- 
- /*
-  * [BUILD-COMPAT] logfc (fs/fs_context.c). Genuinely EXPORT_SYMBOL'd on
-@@ -181,3 +154,102 @@ void logfc(struct fc_log *log, const char *prefix, char level, const char *fmt,
- }
- 
- #endif /* LINUX_VERSION_CODE in [5.10, 6.19) */
++int vns_trim_symbols_init(void);
 +
-+
-+/* ---------------- [TRIM] 两个不导出符号的实现 ---------------- */
-+
-+/*
-+ * file_remove_privs：file.c 用它清掉 S_ISUID/S_ISGID 之类的特权位。
-+ * 厂商内核可能不导出（issue #2 实测 Meizu 6.1.25 就没有）。
-+ */
-+int (*vns_file_remove_privs_ptr)(struct file *file);
-+
-+void vns_file_remove_privs_resolve(void)
++int vns_trim_symbols_init(void)
 +{
-+	static bool done;
-+	int (*fn)(struct file *);
-+
-+	if (done)
-+		return;
-+	done = true;
-+
-+	fn = (int (*)(struct file *))shadow_hook_resolve("file_remove_privs");
-+	if (!fn)
-+		LKM4CTR_WARN("vendor_kernel",
++	real_file_remove_privs =
++		(typeof(real_file_remove_privs))trim_resolve("file_remove_privs");
++	if (!real_file_remove_privs)
++		LKM4CTR_WARN(VNS_TRIM_TAG,
 +			     "file_remove_privs 未解析到；overlayfs 跳过特权位清理");
-+	vns_file_remove_privs_ptr = fn;
++
++	real_kill_pid = (typeof(real_kill_pid))trim_resolve("kill_pid");
++	if (!real_kill_pid)
++		LKM4CTR_WARN(VNS_TRIM_TAG,
++			     "kill_pid 未解析到；容器退出时不做组级 SIGKILL");
++
++	return 0;
 +}
 +
 +/*
-+ * 6.1 之前 seq_escape 是真函数：本地提供同名定义，模块里就没有对它的
-+ * undefined 引用。6.1 及以后它变成内联，由 vns_trim_shims.h 把
-+ * seq_escape_mem 换成下面那个实现。
++ * 与内核同名。fs.h 里是普通 extern 声明，这里给定义 —— 模块内所有调用
++ * 都落到这个实现，内核导出表里有没有这个符号都不再影响加载。
++ * __nocfi 必需：内部是间接调用，CONFIG_CFI_CLANG=y 的内核会在间接调用点
++ * 做类型检查，解析出来的地址不经过 kCFI 登记，不标就 panic。
 + */
-+#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 1, 0)
-+void seq_escape(struct seq_file *m, const char *s, const char *esc)
++int __nocfi file_remove_privs(struct file *file)
 +{
-+	char c;
-+
-+	while ((c = *s++) != '\0') {
-+		if (!strchr(esc, c)) {
-+			seq_putc(m, c);
-+			continue;
-+		}
-+		switch (c) {
-+		case '\n':
-+			seq_puts(m, "\\n");
-+			break;
-+		case '\t':
-+			seq_puts(m, "\\t");
-+			break;
-+		case '\\':
-+			seq_puts(m, "\\\\");
-+			break;
-+		default:
-+			seq_putc(m, '\\');
-+			seq_putc(m, '0' + ((unsigned char)c >> 6));
-+			seq_putc(m, '0' + (((unsigned char)c >> 3) & 7));
-+			seq_putc(m, '0' + ((unsigned char)c & 7));
-+		}
-+	}
++	return real_file_remove_privs ? real_file_remove_privs(file) : 0;
 +}
-+#else
++
++int __nocfi kill_pid(struct pid *pid, int sig, int group)
++{
++	return real_kill_pid ? real_kill_pid(pid, sig, group) : -ESRCH;
++}
++
 +/*
-+ * seq_escape_mem 的本地实现。签名取自 linux v6.1 include/linux/seq_file.h:
++ * 6.1 起 <linux/seq_file.h>：
++ *
 + *   void seq_escape_mem(struct seq_file *m, const char *src, size_t len,
 + *                       unsigned int flags, const char *esc);
 + *
-+ * flags 里 overlayfs 只用 ESCAPE_OCTAL（=0）。其余 flag 位这里不区分 ——
-+ * 本模块只有 params.c 的 seq_show_option 会走到，那条路径永远是 OCTAL。
++ *   static inline void seq_escape_str(...) { seq_escape_mem(m, src, strlen(src), flags, esc); }
++ *   static inline void seq_escape(...)    { seq_escape_str(m, s, ESCAPE_OCTAL, esc); }
++ *
++ * 所以给 seq_escape 换名没用也没必要 —— 那个内联展开出的最终调用就是
++ * seq_escape_mem，直接给同名定义接住即可。它是普通 void 声明（不是
++ * static inline），定义同名不会冲突。
++ *
++ * flags 这里不区分：本模块只有 params.c 的 seq_show_option 会走到，
++ * 那条路径永远是 ESCAPE_OCTAL（=0）。
 + */
-+void lkm4ctr_seq_escape_mem(struct seq_file *m, const char *src, size_t len,
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 1, 0)
++void __nocfi seq_escape_mem(struct seq_file *m, const char *src, size_t len,
 +			    unsigned int flags, const char *esc)
 +{
 +	(void)flags;
@@ -186,93 +170,48 @@ index e9e9549..b30b365 100644
 +		}
 +	}
 +}
-+#endif
-diff --git a/glue/vns_trim_shims.h b/glue/vns_trim_shims.h
-new file mode 100644
-index 0000000..19dd1d9
---- /dev/null
-+++ b/glue/vns_trim_shims.h
-@@ -0,0 +1,57 @@
-+/* Public Domain since creation (AI-generated; no copyright subsists; not CC0). */
++#else
 +/*
-+ * vns_trim_shims.h - 把两个在部分厂商内核上不导出的符号转成运行时解析 / 本地实现。
-+ *
-+ * 为什么不加进 vendor_kernel_ovl_vfs_compat.h：
-+ * 那个头会把几十个 VFS 调用一起重定向，而 file.c / params.c 现在完全没被它
-+ * 覆盖。把整个兼容头塞进这两个文件，等于一次性改变它们的全部调用面，
-+ * 编译面太大。这里只动真正需要动的那两个符号。
++ * 6.1 之前 seq_escape 是真函数（非内联），本地提供同名定义即可，
++ * 同样不需要解析。
 + */
-+#ifndef _VNS_TRIM_SHIMS_H
-+#define _VNS_TRIM_SHIMS_H
-+
-+#include <linux/types.h>
-+#include <linux/version.h>
-+
-+struct file;
-+struct seq_file;
-+
-+/*
-+ * file_remove_privs —— file.c 直接调用，厂商内核可能没有 EXPORT_SYMBOL。
-+ *
-+ * 惰性解析：第一次调用才查（shadow_hook 的 kallsyms 机制必须已就绪）。
-+ * 解析不到返回 0（跳过特权位清理）—— overlayfs 复制时会重新应用属性，
-+ * 跳过这一步不破坏文件内容；比整个模块装不上好。
-+ *
-+ * #define 必须在本头被包含时内核已经声明过 file_remove_privs（即 <linux/fs.h>
-+ * 之后），否则会把内核自己的声明改名。
-+ */
-+extern int (*vns_file_remove_privs_ptr)(struct file *file);
-+extern void vns_file_remove_privs_resolve(void);
-+
-+static inline int vns_file_remove_privs(struct file *file)
++void __nocfi seq_escape(struct seq_file *m, const char *s, const char *esc)
 +{
-+	if (!vns_file_remove_privs_ptr)
-+		vns_file_remove_privs_resolve();
-+	return vns_file_remove_privs_ptr ? vns_file_remove_privs_ptr(file) : 0;
++	char c;
++
++	while ((c = *s++) != '\0') {
++		if (!strchr(esc, c)) {
++			seq_putc(m, c);
++			continue;
++		}
++		switch (c) {
++		case '\n':
++			seq_puts(m, "\\n");
++			break;
++		case '\t':
++			seq_puts(m, "\\t");
++			break;
++		case '\\':
++			seq_puts(m, "\\\\");
++			break;
++		default:
++			seq_putc(m, '\\');
++			seq_putc(m, '0' + ((unsigned char)c >> 6));
++			seq_putc(m, '0' + (((unsigned char)c >> 3) & 7));
++			seq_putc(m, '0' + ((unsigned char)c & 7));
++		}
++	}
 +}
-+#define file_remove_privs vns_file_remove_privs
-+
-+/*
-+ * seq_escape_mem —— 6.1 起 <linux/seq_file.h> 把 seq_escape() 做成 static
-+ * inline，经 seq_escape_str() 展开成对 seq_escape_mem() 的真实调用。
-+ * 那个函数是 EXPORT_SYMBOL 的，但厂商内核可能删掉。
-+ *
-+ * 换 seq_escape 没用（内联体里调的还是 seq_escape_mem），所以换它本身。
-+ * 这个 #define 必须在 <linux/seq_file.h> 之前生效：头里的声明和内联体里的
-+ * 调用会一起被改名，与我们下面的定义对上。
-+ *
-+ * 6.1 之前 seq_escape 是真函数，本地提供同名定义即可（见 .c），不需要这里介入。
-+ */
-+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 1, 0)
-+#define seq_escape_mem lkm4ctr_seq_escape_mem
-+void lkm4ctr_seq_escape_mem(struct seq_file *m, const char *src, size_t len,
-+			    unsigned int flags, const char *esc);
 +#endif
-+
-+#endif /* _VNS_TRIM_SHIMS_H */
-diff --git a/vendor/fs/overlayfs/file.c b/vendor/fs/overlayfs/file.c
-index 6234d0d..3abd710 100644
---- a/vendor/fs/overlayfs/file.c
-+++ b/vendor/fs/overlayfs/file.c
-@@ -58,6 +58,8 @@
- #include <linux/security.h>
- #include <linux/mm.h>
- #include <linux/fs.h>
-+/* [TRIM] 必须在 <linux/fs.h> 之后：否则 #define file_remove_privs 会改掉内核自己的声明 */
-+#include "../../../glue/vns_trim_shims.h"
- /* [BUILD-COMPAT] backing-file.h only exists >=6.9 (backing_file_read_iter etc.);
-  * backing_file_open() lives in <linux/fs.h> on 6.6. */
- #if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 9, 0)
-diff --git a/vendor/fs/overlayfs/params.c b/vendor/fs/overlayfs/params.c
-index 6459418..8dddea5 100644
---- a/vendor/fs/overlayfs/params.c
-+++ b/vendor/fs/overlayfs/params.c
-@@ -34,6 +34,8 @@
- #include <linux/fs_context.h>
- #include <linux/fs_parser.h>
- #include <linux/posix_acl_xattr.h>
-+/* [TRIM] 必须在 seq_file.h 之前：把 seq_escape_mem 换成本地实现，否则内联展开会产生对该符号的静态导入 */
-+#include "../../../glue/vns_trim_shims.h"
- #include <linux/seq_file.h>
- #include <linux/xattr.h>
- #include "overlayfs.h"
+diff --git a/vendor/Makefile b/vendor/Makefile
+index 89608a3..e8e465e 100644
+--- a/vendor/Makefile
++++ b/vendor/Makefile
+@@ -19,6 +19,7 @@ obj-m += lkm4ctr.o
+ endif
+ 
+ lkm4ctr-objs := \
++	../glue/vendor_kernel_trim_symbols.o \
+ 	../glue/lkm4ctr_main.o \
+ 	../glue/lkm4ctr_log.o \
+ 	../glue/lkm4ctr_diagfs.o \
