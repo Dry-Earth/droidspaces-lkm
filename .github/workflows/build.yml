@@ -270,10 +270,19 @@ jobs:
           if [ -n "${{ inputs.version }}" ]; then
             v="${{ inputs.version }}"
             sed -i "s|^version=.*|version=$v|" "$STAGE/module.prop"
-            # versionCode 用时间戳，保证 KSU 认为它比上一版新
-            sed -i "s|^versionCode=.*|versionCode=$(date +%Y%m%d%H%M)|" "$STAGE/module.prop"
+            # versionCode 用时间戳，保证 KSU 认为它比上一版新。
+            #
+            # 只算一次并落盘到 dist/version-code.txt：release.yml 要靠这个
+            # 文件把**完全相同的值**写进 update.json。手写过的两次都错了
+            # （写成 10 位的 2026111700，而包里是 12 位的 202611170004，
+            # 数值比较下 20 亿 < 2026 亿，KernelSU 永远判定已是最新）。
+            VC=$(date +%Y%m%d%H%M)
+            sed -i "s|^versionCode=.*|versionCode=$VC|" "$STAGE/module.prop"
+            echo "$VC" > "$GITHUB_WORKSPACE/dist/version-code.txt"
+            echo "$v"  > "$GITHUB_WORKSPACE/dist/version-name.txt"
             echo "=== module.prop ==="
             cat "$STAGE/module.prop"
+            echo "versionCode for update.json: $(cat "$GITHUB_WORKSPACE/dist/version-code.txt")"
           else
             echo "::warning::没有传 version，模块包会沿用 module.prop 里的固定版本号"
           fi
