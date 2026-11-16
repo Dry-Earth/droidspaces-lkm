@@ -327,7 +327,7 @@ index e9e9549..7006e6f 100644
  {
  #define VNS_OVL_VFSC_RESOLVE(name) \
 diff --git a/glue/vendor_kernel_ovl_vfs_compat.h b/glue/vendor_kernel_ovl_vfs_compat.h
-index f326a9a..180f763 100644
+index f326a9a..71c1baf 100644
 --- a/glue/vendor_kernel_ovl_vfs_compat.h
 +++ b/glue/vendor_kernel_ovl_vfs_compat.h
 @@ -135,6 +135,18 @@ int vfs_path_lookup(struct dentry *dentry, struct vfsmount *mnt,
@@ -492,7 +492,17 @@ index f326a9a..180f763 100644
  #define d_tmpfile (*vns_ovl_vfsc_d_tmpfile)
  #define errseq_check (*vns_ovl_vfsc_errseq_check)
  #define lookup_positive_unlocked (*vns_ovl_vfsc_lookup_positive_unlocked)
-@@ -1146,11 +1259,11 @@ static inline void vns_ovl_revert_creds_compat(const struct cred *revert_cred)
+@@ -1004,6 +1117,9 @@ static inline void vns_ovl_revert_creds_compat(const struct cred *revert_cred)
+ #endif /* MID */
+ 
+ #if VNS_OVL_TIER_OLD
++/* generic_read_dir 不在这里 #define：readdir.c 里是
++ * .read = generic_read_dir（取地址），(*ptr) 不是编译期常量，
++ * 所以用 compat.c 里的同名转发函数。同 MID 层的处理。 */
+ #define mount_nodev (*vns_ovl_vfsc_mount_nodev)
+ #define prepare_creds (*vns_ovl_vfsc_prepare_creds)
+ #define errseq_sample (*vns_ovl_vfsc_errseq_sample)
+@@ -1146,11 +1262,11 @@ static inline void vns_ovl_revert_creds_compat(const struct cred *revert_cred)
   * this forwards straight to the real symbol.
   */
  #define setattr_prepare(idmap, dentry, attr) \
@@ -506,7 +516,7 @@ index f326a9a..180f763 100644
  #define security_file_ioctl (*vns_ovl_vfsc_security_file_ioctl)
  #define vfs_fadvise (*vns_ovl_vfsc_vfs_fadvise)
  #define vfs_ioctl (*vns_ovl_vfsc_vfs_ioctl)
-@@ -1160,6 +1273,35 @@ static inline void vns_ovl_revert_creds_compat(const struct cred *revert_cred)
+@@ -1160,6 +1276,34 @@ static inline void vns_ovl_revert_creds_compat(const struct cred *revert_cred)
  #define vfs_path_lookup (*vns_ovl_vfsc_vfs_path_lookup)
  #define rw_verify_area (*vns_ovl_vfsc_rw_verify_area)
  #define d_tmpfile (*vns_ovl_vfsc_d_tmpfile)
@@ -525,7 +535,6 @@ index f326a9a..180f763 100644
 +#define d_splice_alias (*vns_ovl_vfsc_d_splice_alias)
 +#define drop_nlink (*vns_ovl_vfsc_drop_nlink)
 +#define generic_file_splice_read (*vns_ovl_vfsc_generic_file_splice_read)
-+#define generic_read_dir (*vns_ovl_vfsc_generic_read_dir)
 +#define iget5_locked (*vns_ovl_vfsc_iget5_locked)
 +#define ilookup5 (*vns_ovl_vfsc_ilookup5)
 +#define in_group_p (*vns_ovl_vfsc_in_group_p)
