@@ -81,7 +81,7 @@ index 0f951ba..e0c0aa0 100644
  	vns_sem_init_ns(&vns_default_ipc_ns);
  	vns_shm_init_ns(&vns_default_ipc_ns);
 diff --git a/glue/vendor_kernel_ovl_vfs_compat.c b/glue/vendor_kernel_ovl_vfs_compat.c
-index e9e9549..907a922 100644
+index e9e9549..2e477f6 100644
 --- a/glue/vendor_kernel_ovl_vfs_compat.c
 +++ b/glue/vendor_kernel_ovl_vfs_compat.c
 @@ -59,6 +59,328 @@ VNS_OVL_VFS_COMPAT_LIST(VNS_OVL_VFSC_DEFINE)
@@ -353,7 +353,7 @@ index e9e9549..907a922 100644
 + * 对象式宏展开，变成语法错误。
 + */
 +
-+__nocfi voidd_add(struct dentry *dentry, struct inode *inode)
++__nocfi void d_add(struct dentry *dentry, struct inode *inode)
 +{
 +	if (vns_ovl_vfsc_d_add)
 +		vns_ovl_vfsc_d_add(dentry, inode);
@@ -373,14 +373,14 @@ index e9e9549..907a922 100644
 +	return vns_ovl_vfsc_d_path(path, buf, buflen);
 +}
 +
-+__nocfi intvfs_fsync_range(struct file *file, loff_t start, loff_t end, int datasync)
++__nocfi int vfs_fsync_range(struct file *file, loff_t start, loff_t end, int datasync)
 +{
 +	if (!vns_ovl_vfsc_vfs_fsync_range)
 +		return 0;
 +	return vns_ovl_vfsc_vfs_fsync_range(file, start, end, datasync);
 +}
 +
-+__nocfi intvfs_getattr_nosec(const struct path *path, struct kstat *stat, u32 request_mask, unsigned int query_flags)
++__nocfi int vfs_getattr_nosec(const struct path *path, struct kstat *stat, u32 request_mask, unsigned int query_flags)
 +{
 +	if (!vns_ovl_vfsc_vfs_getattr_nosec)
 +		return 0;
