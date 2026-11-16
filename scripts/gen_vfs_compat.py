@@ -73,6 +73,31 @@ BUILTIN = {
 }
 
 
+def _is_scalar(btf, tid):
+    """返回类型是否可以用 (T)0 强转（标量）。结构体/联合体/数组不行。"""
+    seen = 0
+    while tid and tid < len(btf.types) and btf.types[tid] and seen < 32:
+        t = btf.types[tid]
+        k = t["kind"]
+        if k == BTF_KIND_INT or k == BTF_KIND_FLOAT:
+            return True
+        if k == BTF_KIND_PTR:
+            return True
+        if k == BTF_KIND_ENUM or k == BTF_KIND_ENUM64:
+            return True
+        if k == BTF_KIND_STRUCT or k == BTF_KIND_UNION:
+            return False
+        if k == BTF_KIND_ARRAY:
+            return False
+        if k in (BTF_KIND_TYPEDEF, BTF_KIND_CONST, BTF_KIND_VOLATILE,
+                 BTF_KIND_RESTRICT, BTF_KIND_TYPE_TAG):
+            tid = t["type"]
+            seen += 1
+            continue
+        return True
+    return True
+
+
 class BTF:
     def __init__(self, path):
         data = open(path, "rb").read()
@@ -179,6 +204,10 @@ class BTF:
             return "volatile " + self.tname(t["type"], decl)
         if k == BTF_KIND_RESTRICT:
             return self.tname(t["type"], decl)
+        if k == BTF_KIND_TYPE_TAG:
+            # BTF 的 type tag 是 __user / __iomem 这类注解，不改 ABI，
+            # 也不改 C 声明 —— 直接穿透到内层类型。
+            return self.tname(t["type"], decl)
         if k == BTF_KIND_TYPEDEF:
             base = t["name"]
             return f"{base} {decl}".strip()
@@ -262,8 +291,14 @@ def gen(btf, symbols, header_comment):
     W("#ifndef _VNS_GEN_VFS_COMPAT_H")
     W("#define _VNS_GEN_VFS_COMPAT_H")
     W("")
+    W("/*")
+    W(" * 本文件要在内核构建环境里编译：ssize_t / loff_t / dev_t / gfp_t /")
+    W(" * umode_t / pid_t 这些基础 typedef 由 <linux/types.h> 及 <linux/kernel.h>")
+    W(" * 提供。宿主机 gcc 单测时需要自己补。")
+    W(" */")
     W("#include <linux/types.h>")
     W("#include <linux/kernel.h>")
+    W("#include <linux/string.h>")
     W("")
     W("#ifndef __nocfi")
     W("#define __nocfi")
@@ -294,6 +329,7 @@ def gen(btf, symbols, header_comment):
 
     # 指针 + 同名转发函数
     table = []
+    needs = set()
     for s in symbols:
         if s not in sigs:
             continue
@@ -308,21 +344,43 @@ def gen(btf, symbols, header_comment):
         argcall = ", ".join(argnames)
         retdecl = btf.tname(ret, "")
 
+        scalar = _is_scalar(btf, ret)
         W(f"/* {s} */")
         W(f"extern {retdecl} (*vns_p_{s})({argstr});")
-        body_ret = "return " if retdecl != "void" else ""
         W(f"__nocfi {retdecl} {s}({argstr})")
         W("{")
         if retdecl == "void":
             W(f"\tif (vns_p_{s})")
             W(f"\t\tvns_p_{s}({argcall});")
-        else:
+        elif scalar:
             W(f"\tif (!vns_p_{s})")
             W(f"\t\treturn ({retdecl})0;")
-            W(f"\t{body_ret}vns_p_{s}({argcall});")
+            W(f"\treturn vns_p_{s}({argcall});")
+        else:
+            # 结构体/联合体按值返回：不能用 (T)0 强转，用 C99 复合字面量
+            W(f"\tif (!vns_p_{s})")
+            W(f"\t\treturn ({retdecl}){{0}};")
+            W(f"\treturn vns_p_{s}({argcall});")
         W("}")
         W("")
         table.append(s)
+
+        # 按值返回或按值传参的 typedef：调用方必须自己提供定义
+        for _tid, what in [(ret, "returns")] + [(pt, "takes") for _, pt in params]:
+            if _tid and _tid < len(btf.types) and btf.types[_tid] \
+               and btf.types[_tid]["kind"] == BTF_KIND_TYPEDEF:
+                agg = btf.types[_tid]
+                needs.add((agg["name"], s, what))
+
+    if needs:
+        W("/*")
+        W(" * 下面这些 typedef 按值参与函数签名，本文件只做前置声明。")
+        W(" * 调用方必须自己包含提供其定义的头文件（例如 zstd 需要")
+        W(" * <linux/zstd.h>），否则编译不过。")
+        W(" */")
+        for tyname, sym, what in sorted(needs):
+            W(f"/*   {tyname}: used by {sym} ({what} it by value) */")
+        W("")
 
     # 解析表
     W("/* 解析表：调用方用 kallsyms 逐个填 vns_p_* 指针 */")
