@@ -81,10 +81,10 @@ index 0f951ba..e0c0aa0 100644
  	vns_sem_init_ns(&vns_default_ipc_ns);
  	vns_shm_init_ns(&vns_default_ipc_ns);
 diff --git a/glue/vendor_kernel_ovl_vfs_compat.c b/glue/vendor_kernel_ovl_vfs_compat.c
-index e9e9549..d1971a4 100644
+index e9e9549..939409d 100644
 --- a/glue/vendor_kernel_ovl_vfs_compat.c
 +++ b/glue/vendor_kernel_ovl_vfs_compat.c
-@@ -59,6 +59,200 @@ VNS_OVL_VFS_COMPAT_LIST(VNS_OVL_VFSC_DEFINE)
+@@ -59,6 +59,241 @@ VNS_OVL_VFS_COMPAT_LIST(VNS_OVL_VFSC_DEFINE)
  VNS_OVL_VFS_COMPAT_LIST_BF(VNS_OVL_VFSC_DEFINE)
  #undef VNS_OVL_VFSC_DEFINE
  
@@ -105,6 +105,47 @@ index e9e9549..d1971a4 100644
 +		return 0;
 +	return vns_ovl_vfsc_get_next_ino();
 +}
++
++/*
++ * backing_file_user_path - 防御性同名转发。
++ *
++ * 背景（issue #3 K90PM / #4 一加15，6.12.23-android16-5）
++ * ------------------------------------------------------
++ * 这两台设备的 lkm4ctr 报 "Unknown symbol backing_file_user_path"。
++ *
++ * 诡异之处：源码里唯一的调用点在 vendor/fs/overlayfs/file.c 的
++ *   #if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 18, 0)
++ * 分支内，而 CI 的 android16-6.12 实测 vermagic 是 6.12.76（< 6.18），
++ * 兼容头的 VNS_OVL_HAVE_BACKING_FILE_USER_PATH 也是同一条件。按静态分析
++ * 这个符号**不该出现**，但 nm -u 确认它确实在 .ko 的未定义表里。
++ *
++ * 没拿到 DDK 的 include/generated/uapi/linux/version.h 之前无法进一步定位，
++ * 所以先做防御：只要目标内核有这个名字（< 6.18 的树里通常没有声明），
++ * 就提供一个同名函数把它接住；没有引用时靠 __maybe_unused 让编译器丢弃。
++ *
++ * 为什么不用 typeof(&name)：6.12 的标准头里根本没这个声明，typeof 会编不过。
++ * 所以这里手写原型 —— struct path *backing_file_user_path(struct file *)。
++ *
++ * 解析放在 vns_ovl_vfs_compat_resolve() 里（那边已经在遍历符号表）。
++ */
++#if !VNS_OVL_HAVE_BACKING_FILE_USER_PATH && \
++	LINUX_VERSION_CODE >= KERNEL_VERSION(6, 12, 0)
++
++struct file;
++
++/* 存指针的槽位；由 vns_ovl_vfs_compat_resolve() 填。 */
++static struct path *(*vns_bfup_slot)(struct file *);
++
++static __maybe_unused struct path *__nocfi backing_file_user_path(struct file *f)
++{
++	if (!vns_bfup_slot)
++		vns_bfup_slot = (void *)shadow_hook_resolve("backing_file_user_path");
++	if (!vns_bfup_slot)
++		return NULL;
++	return vns_bfup_slot(f);
++}
++
++#endif /* !VNS_OVL_HAVE_BACKING_FILE_USER_PATH && >= 6.12 */
 +
 +#if VNS_OVL_TIER_MID
 +/*
