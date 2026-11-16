@@ -88,11 +88,33 @@ cgroup 控制器。多数厂商内核为了通过 GKI ABI 检查把这些都编�
 | `droid_lkm_pids.ko` | 仿真 pids 控制器 | `CGROUP_PIDS` | ✅ |
 | `droid_lkm_cpu.ko` | 时间片 CPU 配额 | `CFS_BANDWIDTH` | ✅ |
 | `uart_guard.ko` | tty 属性读取保护（kprobe） | 无（防厂商内核 `uart_get_info` 锁崩） | ✅ |
+| `mali_nsfix.ko` | 重定向 `mali_kbase` 的 pid 查找，使 GPU context 能在 PID 命名空间内创建 | 无（补驱动的一处假设，见[它的说明](extra/mali_nsfix/README.zh-CN.md)） | 🔵 |
 
-**八个模块全部开机加载。** 三个补充模块（`droid_lkm_pids` / `droid_lkm_cpu` /
-`uart_guard`）排在最后，不会挡住前面五个：它们失败时设备照常开机、照常跑容器，
-只是少了对应的限额或 tty 保护。想"装但不加载"某个，在模块目录放
-`disable_pids` / `disable_cpu` / `disable_uart_guard` 文件即可。
+**九个模块都会开机加载**，但其中两个带平台条件（见下）。三个补充模块
+（`droid_lkm_pids` / `droid_lkm_cpu` / `uart_guard`）排在最后，不会挡住前面五个：
+它们失败时设备照常开机、照常跑容器，只是少了对应的限额或 tty 保护。想"装但不
+加载"某个，在模块目录放 `disable_pids` / `disable_cpu` / `disable_uart_guard` /
+`disable_mali` 文件即可。
+
+### 按平台条件加载的模块
+
+`vkms` 和 `mali_nsfix` 是为 Mali 平台准备的。高通上两者都没有意义，会被跳过 ——
+判断依据是设备实际报告的状态，不是厂商名列表。
+
+| 模块 | 什么时候加载 | 什么时候跳过 |
+| --- | --- | --- |
+| `vkms.ko` | 还没有 `/dev/dri/renderD128` | 已有 render node（高通多数由 kgsl 原生提供） |
+| `mali_nsfix.ko` | 存在 `/dev/mali0`，或已加载 `mali_kbase` | 设备没有 Mali GPU |
+
+`mali_nsfix` 不是 MTK 专用的：它补的是 `mali_kbase` 的一处假设，任何 Mali 设备
+都适用。不加载时，容器内进程创建 GPU context 会得到 `eglInitialize()` 返回
+`0x3001`，`dmesg` 里是 `mali 13000000.mali: Failed to get pid pointer for
+<comm>/<pid>`。驱动调用 `find_get_pid(current->tgid)`，而 `tgid` 永远是初始命名
+空间的值、`find_get_pid()` 却经由调用者的活动命名空间解析，容器进程两者不一致，
+查找失败。机制与实测数据见 [`extra/mali_nsfix/README.zh-CN.md`](extra/mali_nsfix/README.zh-CN.md)。
+
+Mali 容器还需要什么（Android 侧合成器配置、`dma-buf` 处理），见 RootFS 仓库的
+[桌面与 Anland 指南](https://github.com/misaka5202/Droidspaces-anland6-rootfs/blob/main/docs/zh/桌面与Anland.md)。
 
 ## 安装
 

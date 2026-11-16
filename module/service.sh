@@ -397,11 +397,36 @@ load_mod lkm4ctr ""
 load_mod devtmpfs_lkm "devtmpfs_probe=2"
 load_mod ip6table_nat ""
 load_mod macvlan ""
+# ---------------------------------------------------------------------------
+# 平台判定
+#
+# MTK 用 Mali GPU，两件事都需要：
+#   vkms        厂商内核通常没开 CONFIG_DRM_VKMS，没有 /dev/dri/renderD128
+#   mali_nsfix  mali_kbase 的 find_get_pid 在 PID 命名空间内解析失败
+# 高通的 kgsl/Adreno 自带 render node，两者都不需要。
+#
+# 判据不写死厂商名，用可观测的事实：
+#   mali_nsfix  —— 有没有 mali_kbase（/dev/mali0）。这样三星等 Mali 机型也覆盖到，
+#                  它修的本来就是 Mali 驱动，不是 MTK 特有。
+#   vkms        —— 还没有 /dev/dri/renderD128 才需要。高通有原生 render node 时
+#                  自然跳过；缺少 render node 的高通机型仍然能拿到桌面。
+# ---------------------------------------------------------------------------
+GPU_HAS_MALI=0
+if [ -e /dev/mali0 ] || lsmod 2>/dev/null | grep -q '^mali_kbase'; then
+    GPU_HAS_MALI=1
+fi
+
+dlog "platform: mali=${GPU_HAS_MALI} renderD128=$([ -e /dev/dri/renderD128 ] && echo present || echo absent)"
+
 # vkms 依赖 drm.ko 导出的 drm_crtc_add_crc_entry。5.10 里这个符号是导出的，
 # 但它属于 drm.ko 的**模块依赖**：drm 还没加载时 insmod 只会报
 # "Unknown symbol"，而这里跑在 late_start，drm 未必已经就绪。
 # 所以失败后重试几次，而不是一次就放弃。
-if ! load_mod vkms ""; then
+# 已经有 render node 就不装 vkms：高通机型多数由 kgsl/Adreno 原生提供，
+# 再装一个只会多出一个用不上的 card 节点。
+if [ -e /dev/dri/renderD128 ]; then
+    dlog "[SKIP] ${M_SKIP_VKMS}"
+elif ! load_mod vkms ""; then
     for _try in 1 2 3 4 5; do
         sleep 2
         if load_mod vkms ""; then
@@ -428,13 +453,23 @@ MODDIR="/data/adb/modules/droidspaces_lkm"
 # 放最后，钩不上也不影响容器本身；想排查时看 dmesg 里的 uart_guard 行。
 [ -f "$MODDIR/disable_uart_guard" ] || load_mod uart_guard ""
 
+# mali_nsfix：把 mali_kbase 的 find_get_pid 重定向到 group leader。
+# 只在 Mali 平台上加载 —— 它在 find_get_pid 这个热点函数上挂 kprobe，
+# 没有 mali_kbase 的设备装上纯属浪费。
+# 它在 GPU context 创建路径上，失败不影响容器本身。
+if [ "$GPU_HAS_MALI" = "1" ]; then
+    [ -f "$MODDIR/disable_mali" ] || load_mod mali_nsfix ""
+else
+    dlog "[SKIP] ${M_SKIP_MALI}"
+fi
+
 # 注意：这里**不清零**开机计数器。
 # service.sh 只代表"模块加载流程跑完"，不代表系统能正常起来 —— 加载成功后
 # 卡死的情况真实发生过。清零交给 boot-completed.sh，那是 Android 真正启动
 # 完成的信号。
 
 dlog "--- lsmod ---"
-lsmod 2>/dev/null | grep -E '^(lkm4ctr|devtmpfs_lkm|ip6table_nat|macvlan|vkms|droid_lkm_pids|droid_lkm_cpu|uart_guard)' | while read -r _l; do dlog "  $_l"; done
+lsmod 2>/dev/null | grep -E '^(lkm4ctr|devtmpfs_lkm|ip6table_nat|macvlan|vkms|droid_lkm_pids|droid_lkm_cpu|uart_guard|mali_nsfix)' | while read -r _l; do dlog "  $_l"; done
 
 dlog "${M_LOG_CAPS}"
 unshare -pf true 2>/dev/null \

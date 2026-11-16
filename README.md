@@ -94,12 +94,39 @@ they are the reason this project exists at v1.0.0 rather than v0.x.
 | `droid_lkm_pids.ko` | Emulated pids controller | `CGROUP_PIDS` | ✅ |
 | `droid_lkm_cpu.ko` | Time-slice CPU quota | `CFS_BANDWIDTH` | ✅ |
 | `uart_guard.ko` | tty attribute read protection (kprobe) | none (guards a vendor `uart_get_info` lock bug) | ✅ |
+| `mali_nsfix.ko` | Redirects `mali_kbase`'s pid lookup so GPU contexts can be created in a PID namespace | none (fixes a driver assumption; see [its README](extra/mali_nsfix/README.md)) | 🔵 |
 
-**All eight load at boot.** The three supplementary modules (`droid_lkm_pids`,
-`droid_lkm_cpu`, `uart_guard`) go last and cannot block the five above them: a
-failure there leaves a device that still boots and runs containers, just without
-the corresponding limit or tty guard. To install but not load one, drop a
-`disable_pids` / `disable_cpu` / `disable_uart_guard` file in the module directory.
+**All nine load at boot,** subject to the two platform conditions below. The
+three supplementary modules (`droid_lkm_pids`, `droid_lkm_cpu`, `uart_guard`) go
+last and cannot block the five above them: a failure there leaves a device that
+still boots and runs containers, just without the corresponding limit or tty
+guard. To install but not load one, drop a `disable_pids` / `disable_cpu` /
+`disable_uart_guard` / `disable_mali` file in the module directory.
+
+### Platform-dependent modules
+
+`vkms` and `mali_nsfix` exist for Mali platforms. Neither is useful on Qualcomm,
+and both are skipped there — the decision is made from what the device reports,
+not from a list of vendor names.
+
+| Module | Loaded when | Skipped when |
+|---|---|---|
+| `vkms.ko` | `/dev/dri/renderD128` does not exist yet | a render node already exists (most Qualcomm kernels provide one through kgsl) |
+| `mali_nsfix.ko` | `/dev/mali0` exists or `mali_kbase` is loaded | no Mali GPU present |
+
+`mali_nsfix` is not MTK-specific: it patches a `mali_kbase` assumption, so any
+Mali device benefits. Without it, a containerised process that tries to create a
+GPU context gets `eglInitialize()` returning `0x3001`, and `dmesg` shows
+`mali 13000000.mali: Failed to get pid pointer for <comm>/<pid>`. The driver
+calls `find_get_pid(current->tgid)`, where `tgid` is an initial-namespace value
+while `find_get_pid()` resolves through the caller's active namespace; for a
+container process the two disagree and the lookup fails. See
+[`extra/mali_nsfix/README.md`](extra/mali_nsfix/README.md) for the mechanism and
+measurements.
+
+What else a Mali container needs — the Android-side compositor settings and the
+`dma-buf` handling — is in the RootFS repository's
+[desktop and Anland guide](https://github.com/misaka5202/Droidspaces-anland6-rootfs/blob/main/docs/en/desktop-and-anland.md).
 
 ## Install
 

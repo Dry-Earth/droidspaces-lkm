@@ -51,7 +51,7 @@ echo
 
 echo "=== ${M_SEC_LOAD} ==="
 if lsmod | grep -qE '^(lkm4ctr|devtmpfs_lkm)'; then
-    lsmod | grep -E '^(lkm4ctr|devtmpfs_lkm|ip6table_nat|macvlan|vkms|droid_lkm_pids|droid_lkm_cpu|uart_guard)'
+    lsmod | grep -E '^(lkm4ctr|devtmpfs_lkm|ip6table_nat|macvlan|vkms|droid_lkm_pids|droid_lkm_cpu|uart_guard|mali_nsfix)'
 else
     echo "${M_NOT_LOADED}"
 fi
@@ -158,6 +158,18 @@ fi
 [ -e /dev/dri/renderD128 ] \
     && echo "  [OK]   ${M_CAP_VKMS}" \
     || echo "  [--]   ${M_CAP_VKMS_NO}"
+
+# Mali：有 /dev/mali0 说明是 Mali 平台，这时 mali_nsfix 是否加载决定容器内能否
+# 创建 GPU context。没有 /dev/mali0 的设备直接标 [--]，不制造无关的 FAIL。
+if [ -e /dev/mali0 ]; then
+    if lsmod | grep -q '^mali_nsfix'; then
+        echo "  [OK]   ${M_CAP_MALI}"
+    else
+        echo "  [FAIL] ${M_CAP_MALI_NO}"
+    fi
+else
+    echo "  [--]   ${M_CAP_MALI_NA}"
+fi
 echo
 
 echo "=== ${M_SEC_LOG} ==="
