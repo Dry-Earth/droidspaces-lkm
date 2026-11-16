@@ -81,19 +81,32 @@ index 0f951ba..e0c0aa0 100644
  	vns_sem_init_ns(&vns_default_ipc_ns);
  	vns_shm_init_ns(&vns_default_ipc_ns);
 diff --git a/glue/vendor_kernel_ovl_vfs_compat.c b/glue/vendor_kernel_ovl_vfs_compat.c
-index e9e9549..b91f5d4 100644
+index e9e9549..d1971a4 100644
 --- a/glue/vendor_kernel_ovl_vfs_compat.c
 +++ b/glue/vendor_kernel_ovl_vfs_compat.c
-@@ -59,6 +59,205 @@ VNS_OVL_VFS_COMPAT_LIST(VNS_OVL_VFSC_DEFINE)
+@@ -59,6 +59,200 @@ VNS_OVL_VFS_COMPAT_LIST(VNS_OVL_VFSC_DEFINE)
  VNS_OVL_VFS_COMPAT_LIST_BF(VNS_OVL_VFSC_DEFINE)
  #undef VNS_OVL_VFSC_DEFINE
  
 +/*
-+ * Wrapper for the __percpu_counter_init() alias in vns_vfs_shared_syms.h.
-+ * Declared there so call sites outside fs/overlayfs keep one spelling; defined
-+ * here so the lockdep key argument is dropped once instead of at every use.
++ * get_next_ino - same-name forwarding definition.
++ *
++ * Called from vendor/ipc/mqueue.c and glue/lkm4ctr_diagfs.c as
++ * inode->i_ino = get_next_ino(). Unresolved on some vendor 6.12 kernels
++ * (issue #3 / #4: "lkm4ctr 需要 get_next_ino —— 本内核未导出"), which made the
++ * whole module refuse to load.
++ *
++ * Signature per include/linux/fs.h: unsigned int get_next_ino(void).
++ * __nocfi: the body makes an indirect call.
 + */
++unsigned int __nocfi get_next_ino(void)
++{
++	if (!vns_ovl_vfsc_get_next_ino)
++		return 0;
++	return vns_ovl_vfsc_get_next_ino();
++}
 +
++#if VNS_OVL_TIER_MID
 +/*
 + * The definitions below forward to pointers that exist only in the MID
 + * tier's compat list, so each is guarded exactly like that list is.
@@ -103,7 +116,6 @@ index e9e9549..b91f5d4 100644
 + * The extra >= 6.0 guards mirror VNS_OVL_HAVE_KMEM_CACHE_ALLOC_LRU: those
 + * three names only entered the MID list for 6.0-and-later kernels.
 + */
-+#if VNS_OVL_TIER_MID
 +
 +/*
 + * Same-name forwarding definitions for the VFS helpers in vendor/ipc/ and
@@ -184,23 +196,6 @@ index e9e9549..b91f5d4 100644
 +		vns_ovl_vfsc_truncate_inode_pages_final(mapping);
 +}
 +
-+/*
-+ * get_next_ino - same-name forwarding definition.
-+ *
-+ * Called from vendor/ipc/mqueue.c and glue/lkm4ctr_diagfs.c as
-+ * inode->i_ino = get_next_ino(). Unresolved on some vendor 6.12 kernels
-+ * (issue #3 / #4: "lkm4ctr 需要 get_next_ino —— 本内核未导出"), which made the
-+ * whole module refuse to load.
-+ *
-+ * Signature per include/linux/fs.h: unsigned int get_next_ino(void).
-+ * __nocfi: the body makes an indirect call.
-+ */
-+unsigned int __nocfi get_next_ino(void)
-+{
-+	if (!vns_ovl_vfsc_get_next_ino)
-+		return 0;
-+	return vns_ovl_vfsc_get_next_ino();
-+}
 +
 +#if VNS_OVL_HAVE_KMEM_CACHE_ALLOC_LRU
 +/*
@@ -291,7 +286,7 @@ index e9e9549..b91f5d4 100644
  {
  #define VNS_OVL_VFSC_RESOLVE(name) \
 diff --git a/glue/vendor_kernel_ovl_vfs_compat.h b/glue/vendor_kernel_ovl_vfs_compat.h
-index f326a9a..9e3c92c 100644
+index f326a9a..d0ae0b2 100644
 --- a/glue/vendor_kernel_ovl_vfs_compat.h
 +++ b/glue/vendor_kernel_ovl_vfs_compat.h
 @@ -135,6 +135,18 @@ int vfs_path_lookup(struct dentry *dentry, struct vfsmount *mnt,
@@ -362,7 +357,15 @@ index f326a9a..9e3c92c 100644
  	X(lookup_positive_unlocked) \
  	VNS_OVL_VFSC_VMASETFILE_ENTRY(X) \
  	X(d_tmpfile)
-@@ -992,6 +1039,36 @@ static inline void vns_ovl_revert_creds_compat(const struct cred *revert_cred)
+@@ -659,6 +706,7 @@ static inline void generic_fill_statx_attr(struct inode *inode, struct kstat *st
+ #define VNS_OVL_VFS_COMPAT_LIST(X) \
+ 	X(mount_nodev) \
+ 	X(prepare_creds) \
++	X(get_next_ino) \
+ 	X(errseq_sample) \
+ 	X(mntput) \
+ 	X(__mnt_is_readonly) \
+@@ -992,6 +1040,36 @@ static inline void vns_ovl_revert_creds_compat(const struct cred *revert_cred)
  #define security_file_ioctl (*vns_ovl_vfsc_security_file_ioctl)
  #define iterate_dir (*vns_ovl_vfsc_iterate_dir)
  #define vfs_setpos (*vns_ovl_vfsc_vfs_setpos)
