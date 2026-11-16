@@ -414,7 +414,7 @@ index e9e9549..2e477f6 100644
  {
  #define VNS_OVL_VFSC_RESOLVE(name) \
 diff --git a/glue/vendor_kernel_ovl_vfs_compat.h b/glue/vendor_kernel_ovl_vfs_compat.h
-index f326a9a..3d4cfe1 100644
+index f326a9a..5cc6083 100644
 --- a/glue/vendor_kernel_ovl_vfs_compat.h
 +++ b/glue/vendor_kernel_ovl_vfs_compat.h
 @@ -135,6 +135,32 @@ int vfs_path_lookup(struct dentry *dentry, struct vfsmount *mnt,
@@ -450,14 +450,12 @@ index f326a9a..3d4cfe1 100644
  /* backing_file_open() exists since 6.6 (in <linux/fs.h>); the full
   * backing_file_ctx-based API (backing_file_read_iter()/write_iter()/
   * splice_read()/splice_write()/mmap(), later moved to its own
-@@ -464,7 +490,9 @@ static inline void generic_fill_statx_attr(struct inode *inode, struct kstat *st
- 	X(revert_creds) \
+@@ -465,6 +491,8 @@ static inline void generic_fill_statx_attr(struct inode *inode, struct kstat *st
  	X(override_creds)
  #endif
--#define VNS_OVL_VFS_COMPAT_LIST(X) \
-+#define VNS_OVL_VFS_COMPAT_LIST(X) \ \ \
-+	VNS_OVL_VFSC_KMLRU_NO_PROF_ENTRY(X)
-+	X(finish_open)
+ #define VNS_OVL_VFS_COMPAT_LIST(X) \
++	VNS_OVL_VFSC_KMLRU_NO_PROF_ENTRY(X) \
++	X(finish_open) \
  	X(prepare_creds) \
  	X(errseq_sample) \
  	X(mntput) \
