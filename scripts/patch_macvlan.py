@@ -253,8 +253,31 @@ void __nocfi eth_header_cache_update(struct hh_cache *hh,
     import re as _re
     m = _re.search(r"static int __init macvlan_init_module\(void\)\s*\{", s)
     if m and "mv_resolve_syms();" not in s:
-        s = s.replace(m.group(0), m.group(0) + "\n\tmv_resolve_syms();", 1)
-        done.append("module_init 里调用 mv_resolve_syms()")
+        # 插在函数体内第一条语句之前，但要跳过变量声明。
+        #
+        # 直接插在 { 之后会触发 -Wdeclaration-after-statement，
+        # 在 5.10 / 5.15 上是硬错误（CI #78 就是这么挂的）：
+        #   error: mixing declarations and code is a C99 extension
+        #   [-Werror,-Wdeclaration-after-statement]
+        brace = s.find("{", m.start())
+        j = brace + 1
+        while True:
+            eol = s.find("\n", j)
+            if eol < 0:
+                break
+            st = s[j:eol].strip()
+            if not st:
+                j = eol + 1
+                continue
+            _DECL = ("int ", "unsigned ", "struct ", "long ", "void *",
+                     "u8 ", "u16 ", "u32 ", "u64 ", "bool ", "char *",
+                     "const ")
+            if st.endswith(";") and "(" not in st and st.startswith(_DECL):
+                j = eol + 1
+                continue
+            break
+        s = s[:j] + "\tmv_resolve_syms();\n" + s[j:]
+        done.append("module_init 里调用 mv_resolve_syms()（跳过变量声明）")
     elif not m:
         done.append("⚠ 找不到 macvlan_init_module")
 
