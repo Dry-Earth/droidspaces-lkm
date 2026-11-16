@@ -327,7 +327,7 @@ index e9e9549..7006e6f 100644
  {
  #define VNS_OVL_VFSC_RESOLVE(name) \
 diff --git a/glue/vendor_kernel_ovl_vfs_compat.h b/glue/vendor_kernel_ovl_vfs_compat.h
-index f326a9a..f38ea54 100644
+index f326a9a..180f763 100644
 --- a/glue/vendor_kernel_ovl_vfs_compat.h
 +++ b/glue/vendor_kernel_ovl_vfs_compat.h
 @@ -135,6 +135,18 @@ int vfs_path_lookup(struct dentry *dentry, struct vfsmount *mnt,
@@ -398,7 +398,16 @@ index f326a9a..f38ea54 100644
  	X(lookup_positive_unlocked) \
  	VNS_OVL_VFSC_VMASETFILE_ENTRY(X) \
  	X(d_tmpfile)
-@@ -659,6 +706,7 @@ static inline void generic_fill_statx_attr(struct inode *inode, struct kstat *st
+@@ -656,9 +703,16 @@ static inline void generic_fill_statx_attr(struct inode *inode, struct kstat *st
+ #endif /* MID */
+ 
+ #if VNS_OVL_TIER_OLD
++/*
++ * [OLD-TIER] 下面这批在 5.10 上同样可能被裁：
++ * 它们都不涉及 idmap 参数（5.10 没有 idmapped mounts），
++ * 源码里的 [TIER-OLD] 分支用的是旧签名，typeof() 能取到正确类型。
++ * kmem_cache_alloc_lru 例外 —— 它是 6.0 才引入的，5.10 上不存在。
++ */
  #define VNS_OVL_VFS_COMPAT_LIST(X) \
  	X(mount_nodev) \
  	X(prepare_creds) \
@@ -406,17 +415,13 @@ index f326a9a..f38ea54 100644
  	X(errseq_sample) \
  	X(mntput) \
  	X(__mnt_is_readonly) \
-@@ -743,8 +791,41 @@ static inline void generic_fill_statx_attr(struct inode *inode, struct kstat *st
+@@ -743,8 +797,37 @@ static inline void generic_fill_statx_attr(struct inode *inode, struct kstat *st
  	X(generic_fillattr) \
  	X(vfs_path_lookup) \
  	X(rw_verify_area) \
 -	X(d_tmpfile)
 -
 +	X(d_tmpfile) \
-+	/* [OLD-TIER] 下面这批在 5.10 上同样可能被裁：
-+	 * 它们都不涉及 idmap 参数（5.10 没有 idmapped mounts），
-+	 * 源码里的 [TIER-OLD] 分支用的是旧签名，typeof() 能取到正确类型。
-+	 * kmem_cache_alloc_lru 例外 —— 它是 6.0 才引入的，5.10 上不存在。 */
 +	X(d_instantiate) \
 +	X(d_obtain_alias) \
 +	X(d_splice_alias) \
@@ -450,7 +455,7 @@ index f326a9a..f38ea54 100644
  #define VNS_OVL_VFS_COMPAT_LIST_BF(X)
  #endif /* OLD */
  
-@@ -992,6 +1073,36 @@ static inline void vns_ovl_revert_creds_compat(const struct cred *revert_cred)
+@@ -992,6 +1075,36 @@ static inline void vns_ovl_revert_creds_compat(const struct cred *revert_cred)
  #define security_file_ioctl (*vns_ovl_vfsc_security_file_ioctl)
  #define iterate_dir (*vns_ovl_vfsc_iterate_dir)
  #define vfs_setpos (*vns_ovl_vfsc_vfs_setpos)
@@ -487,7 +492,7 @@ index f326a9a..f38ea54 100644
  #define d_tmpfile (*vns_ovl_vfsc_d_tmpfile)
  #define errseq_check (*vns_ovl_vfsc_errseq_check)
  #define lookup_positive_unlocked (*vns_ovl_vfsc_lookup_positive_unlocked)
-@@ -1146,11 +1257,11 @@ static inline void vns_ovl_revert_creds_compat(const struct cred *revert_cred)
+@@ -1146,11 +1259,11 @@ static inline void vns_ovl_revert_creds_compat(const struct cred *revert_cred)
   * this forwards straight to the real symbol.
   */
  #define setattr_prepare(idmap, dentry, attr) \
@@ -501,7 +506,7 @@ index f326a9a..f38ea54 100644
  #define security_file_ioctl (*vns_ovl_vfsc_security_file_ioctl)
  #define vfs_fadvise (*vns_ovl_vfsc_vfs_fadvise)
  #define vfs_ioctl (*vns_ovl_vfsc_vfs_ioctl)
-@@ -1160,6 +1271,35 @@ static inline void vns_ovl_revert_creds_compat(const struct cred *revert_cred)
+@@ -1160,6 +1273,35 @@ static inline void vns_ovl_revert_creds_compat(const struct cred *revert_cred)
  #define vfs_path_lookup (*vns_ovl_vfsc_vfs_path_lookup)
  #define rw_verify_area (*vns_ovl_vfsc_rw_verify_area)
  #define d_tmpfile (*vns_ovl_vfsc_d_tmpfile)
