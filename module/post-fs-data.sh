@@ -42,6 +42,51 @@ if [ -f "$SNAP" ]; then
 fi
 
 # ---------------------------------------------------------------------------
+# pstore 现场：上次启动如果是**内核崩溃**（不是卡死），console-ramoops 会有内容
+#
+# 和下面面包屑的分工：
+#   面包屑  -> 卡死（没有 panic），模块名还留在 loading 里
+#   pstore -> 真 panic（BUG/Oops/panic_on_oops），内核自己落盘的现场
+#
+# 为什么要自动抓：issue #1（5.10.269-gki）报无限重启，请用户手动
+#   cat /sys/fs/pstore/console-ramoops
+# 但一直没等到 —— 多数用户要么 panic 后马上重启把 ramoops 冲掉，要么根本
+# 进不去系统。这里自动做掉：这次启动能读到，就说明上次是崩溃退出的，
+# 复制到状态目录并 sync，之后哪次抓日志都能看到现场。
+#
+# 不主动清空 pstore：那是系统的资源，ramoops 由内核/用户态自己轮转。
+# ---------------------------------------------------------------------------
+_ps=/sys/fs/pstore
+if [ -d "$_ps" ]; then
+    _n=0
+    for _f in "$_ps"/console-ramoops* "$_ps"/dmesg-ramoops*; do
+        [ -f "$_f" ] && [ -s "$_f" ] && _n=$((_n + 1))
+    done
+    if [ "$_n" -gt 0 ]; then
+        _out="$STATE_DIR/pstore-$(date '+%Y%m%d-%H%M%S').txt"
+        {
+            printf '=== pstore 现场 ===\n'
+            printf '本机内核: %s\n' "$(uname -r)"
+            printf '说明: 上一次启动是内核崩溃退出的（正常重启时 pstore 为空）\n\n'
+            for _f in "$_ps"/console-ramoops* "$_ps"/dmesg-ramoops*; do
+                [ -f "$_f" ] || continue
+                [ -s "$_f" ] || continue
+                printf -- '--- %s ---\n' "$(basename "$_f")"
+                cat "$_f"
+                printf '\n'
+            done
+        } > "$_out" 2>/dev/null
+        sync
+        plog "上次启动是内核崩溃退出，pstore 现场已保存：$_out"
+        plog "  把这个文件贴到 issue 里，里面通常有 panic 前的完整 dmesg"
+        # 只保留最近 3 份，避免状态目录无限增长
+        ls -1t "$STATE_DIR"/pstore-*.txt 2>/dev/null | tail -n +4 | while read -r _old; do
+            rm -f "$_old" 2>/dev/null
+        done
+    fi
+fi
+
+# ---------------------------------------------------------------------------
 # 面包屑判定：上次开机是不是死在某个模块的 insmod 上
 #
 # service.sh 在每个 insmod 前把模块名写进 loading 并 sync，成功后删掉。
