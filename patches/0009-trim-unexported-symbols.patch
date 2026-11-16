@@ -1,0 +1,192 @@
+diff --git a/glue/lkm4ctr_main.c b/glue/lkm4ctr_main.c
+index a33176b..457baec 100644
+--- a/glue/lkm4ctr_main.c
++++ b/glue/lkm4ctr_main.c
+@@ -6,6 +6,7 @@
+ #include "lkm4ctr_log.h"
+ #include "shadow_hook.h"
+ 
++int vns_trim_symbols_init(void);
+ int vendor_kernel_init(void);
+ int vendor_kernel_module_exit(void);
+ void vns_user_ns_exit(void);
+@@ -35,6 +36,13 @@ static int __init lkm4ctr_init(void)
+ 		return ret;
+ 	}
+ 
++	/*
++	 * 同名的 file_remove_privs / kill_pid 是转发定义，必须在
++	 * shadow_hijack_init() 之后解析 —— 那一步才建立起 kallsyms 查询机制。
++	 * 解析失败不阻断加载：这两个符号都有降级路径。
++	 */
++	vns_trim_symbols_init();
++
+ 	ret = vendor_kernel_init();
+ 	if (ret) {
+ 		LKM4CTR_ERR(LKM4CTR_TAG,
+diff --git a/glue/vendor_kernel_trim_symbols.c b/glue/vendor_kernel_trim_symbols.c
+new file mode 100644
+index 0000000..e95b50b
+--- /dev/null
++++ b/glue/vendor_kernel_trim_symbols.c
+@@ -0,0 +1,148 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/*
++ * vendor_kernel_trim_symbols.c - 三个可能被厂商内核删掉导出标记的符号。
++ *
++ * 现象（droidspaces-lkm issue #2、lkm4ctr issue #12 完全同型）：
++ *   符号在 /proc/kallsyms 里能找到，但
++ *   cat /proc/kallsyms | grep -E '__ksymtab_<sym>$' 没有任何输出。
++ *   模块加载只查导出表（__ksymtab），于是：
++ *     lkm4ctr: Unknown symbol file_remove_privs (err -2)
++ *
++ * 做法：定义与内核同名的函数，内部转给 shadow_hook_resolve() 解析到的
++ * 真实实现。同名定义会让模块里所有对该符号的调用（包括内核头里
++ * static inline 展开出来的）都链接到这里，于是不再产生 undefined 引用。
++ * 写法参照 PR #13 的 vendor_kernel_legacy_symbols.c。
++ *
++ * 三个符号的性质不同，失败策略也不同：
++ *   file_remove_privs  可选 —— 解析不到就跳过特权位清理（返回 0）。
++ *                      overlayfs 复制时会重新应用属性，不破坏文件内容。
++ *   kill_pid           可选 —— 解析不到就返回 -ESRCH，调用方原本就有
++ *                      超时排空路径兜底。
++ *   seq_escape_mem     不需要解析 —— 直接用 seq_putc/seq_puts 本地实现，
++ *                      这两个是 seq_file 的基础原语，任何内核都导出。
++ */
++#include <linux/version.h>
++#include <linux/kernel.h>
++#include <linux/module.h>
++#include <linux/fs.h>
++#include <linux/seq_file.h>
++#include <linux/sched/signal.h>
++#include <linux/pid.h>
++#include <linux/errno.h>
++#include <linux/string.h>
++
++#include "shadow_hook.h"
++#include "lkm4ctr_log.h"
++
++#define VNS_TRIM_TAG	"trim_symbols"
++
++static int (*real_file_remove_privs)(struct file *file);
++static int (*real_kill_pid)(struct pid *pid, int sig, int group);
++
++/*
++ * 解析守卫：本文件定义了与内核同名的 file_remove_privs / kill_pid，
++ * 而 shadow_hook_resolve() 查的是 kallsyms 全表（含模块符号表）。
++ * 如果它把地址解析回我们自己这个转发定义，调用就变成无限递归 ——
++ * 内核栈一秒钟就打穿。
++ *
++ * 所以凡解析结果落在本模块地址范围内的，一律当作"没解析到"。
++ * 这个判断不是防御性代码，是这条路线（同名转发 + 运行时解析）的必备前提。
++ */
++static void *trim_resolve(const char *name)
++{
++	unsigned long addr = shadow_hook_resolve(name);
++
++	if (addr && within_module(addr, THIS_MODULE))
++		return NULL;
++	return (void *)addr;
++}
++
++int vns_trim_symbols_init(void);
++
++int vns_trim_symbols_init(void)
++{
++	real_file_remove_privs =
++		(typeof(real_file_remove_privs))trim_resolve("file_remove_privs");
++	if (!real_file_remove_privs)
++		LKM4CTR_WARN(VNS_TRIM_TAG,
++			     "file_remove_privs 未解析到；overlayfs 跳过特权位清理");
++
++	real_kill_pid = (typeof(real_kill_pid))trim_resolve("kill_pid");
++	if (!real_kill_pid)
++		LKM4CTR_WARN(VNS_TRIM_TAG,
++			     "kill_pid 未解析到；容器退出时不做组级 SIGKILL");
++
++	return 0;
++}
++
++/*
++ * 与内核同名。fs.h 里是普通 extern 声明，这里给定义 —— 模块内所有调用
++ * 都落到这个实现，内核导出表里有没有这个符号都不再影响加载。
++ * __nocfi 必需：内部是间接调用，CONFIG_CFI_CLANG=y 的内核会在间接调用点
++ * 做类型检查，解析出来的地址不经过 kCFI 登记，不标就 panic。
++ */
++int __nocfi file_remove_privs(struct file *file)
++{
++	return real_file_remove_privs ? real_file_remove_privs(file) : 0;
++}
++
++int __nocfi kill_pid(struct pid *pid, int sig, int group)
++{
++	return real_kill_pid ? real_kill_pid(pid, sig, group) : -ESRCH;
++}
++
++/*
++ * 6.1 起 <linux/seq_file.h>：
++ *
++ *   void seq_escape_mem(struct seq_file *m, const char *src, size_t len,
++ *                       unsigned int flags, const char *esc);
++ *
++ *   static inline void seq_escape_str(...) { seq_escape_mem(m, src, strlen(src), flags, esc); }
++ *   static inline void seq_escape(...)    { seq_escape_str(m, s, ESCAPE_OCTAL, esc); }
++ *
++ * 所以给 seq_escape 换名没用也没必要 —— 那个内联展开出的最终调用就是
++ * seq_escape_mem，直接给同名定义接住即可。它是普通 void 声明（不是
++ * static inline），定义同名不会冲突。
++ *
++ * flags 这里不区分：本模块只有 params.c 的 seq_show_option 会走到，
++ * 那条路径永远是 ESCAPE_OCTAL（=0）。
++ */
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 1, 0)
++void __nocfi seq_escape_mem(struct seq_file *m, const char *src, size_t len,
++			    unsigned int flags, const char *esc)
++{
++	(void)flags;
++
++	while (len--) {
++		unsigned char c = (unsigned char)*src++;
++
++		if (!esc || !strchr(esc, c)) {
++			seq_putc(m, c);
++			continue;
++		}
++		switch (c) {
++		case '\n':
++			seq_puts(m, "\\n");
++			break;
++		case '\t':
++			seq_puts(m, "\\t");
++			break;
++		case '\\':
++			seq_puts(m, "\\\\");
++			break;
++		default:
++			seq_putc(m, '\\');
++			seq_putc(m, '0' + (c >> 6));
++			seq_putc(m, '0' + ((c >> 3) & 7));
++			seq_putc(m, '0' + (c & 7));
++		}
++	}
++}
++#else
++/*
++ * 6.1 之前不需要在这里定义 seq_escape：上游 vendor_kernel_ovl_vfs_compat.c
++ * 已经为 <6.1 提供了同名本地实现。两边都定义会在最终 LTO 链接时报
++ *   ld.lld: error: duplicate symbol: seq_escape
++ * 所以这里只负责 6.1+ 的 seq_escape_mem。
++ */
++#endif
+diff --git a/vendor/Makefile b/vendor/Makefile
+index 89608a3..e8e465e 100644
+--- a/vendor/Makefile
++++ b/vendor/Makefile
+@@ -19,6 +19,7 @@ obj-m += lkm4ctr.o
+ endif
+ 
+ lkm4ctr-objs := \
++	../glue/vendor_kernel_trim_symbols.o \
+ 	../glue/lkm4ctr_main.o \
+ 	../glue/lkm4ctr_log.o \
+ 	../glue/lkm4ctr_diagfs.o \

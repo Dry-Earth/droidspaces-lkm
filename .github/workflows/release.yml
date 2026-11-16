@@ -34,6 +34,9 @@ jobs:
     uses: ./.github/workflows/build.yml
     with:
       package: true
+      # 把 tag 写进模块包的 module.prop，否则所有版本都报同一个固定号，
+      # 用户贴日志时无法区分装的是哪个构建（issue #2 就这么被带偏过）
+      version: ${{ inputs.tag || github.ref_name }}
 
   publish:
     name: publish

@@ -105,7 +105,7 @@ the corresponding limit or tty guard. To install but not load one, drop a
 
 ### Option A — KernelSU / APatch module (recommended)
 
-Download `droidspaces-lkm-arm64.zip` from [Releases](../../releases/latest),
+Download `droidspaces-lkm-arm64-<version>.zip` from [Releases](../../releases/latest),
 flash it in the manager, reboot.
 
 The module picks the `.ko` matching `/proc/sys/kernel/osrelease` at boot.
@@ -158,7 +158,7 @@ droidspaces check                          # "All required features found!"
 | `droidspaces-lkm-android15-6.6-arm64.zip` | Android 15 / 6.6 |
 | `droidspaces-lkm-android16-6.12-arm64.zip` | Android 16 / 6.12 |
 
-`droidspaces-lkm-arm64.zip` is the combined package: it carries the build for all 7 KMIs and picks the right one at boot from the kernel release plus `ro.board.first_api_level`. Pick a per-KMI zip instead if you want a smaller download.
+`droidspaces-lkm-arm64-<version>.zip` is the combined package: it carries the build for all 7 KMIs and picks the right one at boot from the kernel release plus `ro.board.first_api_level`. Pick a per-KMI zip instead if you want a smaller download.
 
 **arm64 only.** Non-GKI kernels and non-ARM64 devices are not supported.
 
