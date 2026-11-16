@@ -393,7 +393,25 @@ load_mod() {
 }
 
 dlog "${M_LOG_LOADING}"
+# lkm4ctr 有两个变体：
+#   lkm4ctr-<kmi>.ko       带 vendored overlayfs
+#   lkm4ctr-lite-<kmi>.ko  不带（给裁了 VFS 导出表的厂商内核）
+# 先试完整版；失败且 lite 存在时回退。lite 至少保住 PID/IPC/UTS namespace，
+# 也就是 Droidspaces 的硬性前提。
 load_mod lkm4ctr ""
+if ! lsmod 2>/dev/null | grep -q '^lkm4ctr '; then
+    if [ -f "$MODDIR/ko/lkm4ctr-lite-$KMI.ko" ]; then
+        dlog "$M_LITE_FALLBACK"
+        load_mod lkm4ctr-lite ""
+        if lsmod 2>/dev/null | grep -q '^lkm4ctr_lite '; then
+            dlog "$M_LITE_OK"
+        else
+            dlog "$M_LITE_FAIL"
+        fi
+    else
+        dlog "$M_LITE_ABSENT"
+    fi
+fi
 load_mod devtmpfs_lkm "devtmpfs_probe=2"
 load_mod ip6table_nat ""
 load_mod macvlan ""

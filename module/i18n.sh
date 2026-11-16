@@ -41,6 +41,10 @@ esac
 # 先把英文填成默认值，各语言分支只覆盖自己翻译过的键。
 # 这样某个语言漏翻一个键时回退到英文，而不是输出空字符串。
 M_KERNEL="Kernel  "
+M_LITE_FALLBACK="lkm4ctr failed to load, falling back to the lite build (no vendored overlayfs)"
+M_LITE_OK="lite build loaded; overlay uses the kernel's own implementation"
+M_LITE_FAIL="the lite build failed too -- the symbol gap is beyond what can be degraded"
+M_LITE_ABSENT="no lite build available to fall back to"
 M_MODULE_VER="Version "
 M_ARCH="Arch    "
 M_NONE="none"
@@ -110,6 +114,10 @@ case "$LANG_CODE" in
 zh)
     # --- 通用 ---
     M_KERNEL="内核    "
+    M_LITE_FALLBACK="lkm4ctr 加载失败，回退到精简版（不带 vendored overlayfs）"
+    M_LITE_OK="已加载精简版；overlay 使用内核自带实现"
+    M_LITE_FAIL="精简版也加载失败 —— 符号缺口超出可降级范围"
+    M_LITE_ABSENT="没有精简版可回退"
     M_MODULE_VER="模块版本"
     M_ARCH="架构    "
     M_NONE="无"
@@ -190,6 +198,10 @@ zh)
 ja)
     # 日语只做最小覆盖：大部分键回退英文，这里补齐最显眼的几句
     M_KERNEL="カーネル "
+    M_LITE_FALLBACK="lkm4ctr の読み込みに失敗しました。軽量版（vendored overlayfs なし）にフォールバックします"
+    M_LITE_OK="軽量版を読み込みました。overlay はカーネル標準実装を使います"
+    M_LITE_FAIL="軽量版も失敗しました。シンボル不足が縮退可能な範囲を超えています"
+    M_LITE_ABSENT="フォールバックできる軽量版がありません"
     M_MODULE_VER="モジュール版"
     M_ARCH="アーキ  "
     M_NONE="なし"

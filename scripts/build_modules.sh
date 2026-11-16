@@ -150,6 +150,31 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# 2) lkm4ctr_lite —— 不带 vendored overlayfs 的精简版
+#
+# 厂商裁掉一批 VFS EXPORT_SYMBOL 时，完整版会因为 overlayfs 那 19 个专属符号
+# 妆不上，连命名空间一起废掉。精简版把 overlayfs 全部排除，至少保住
+# PID/IPC/UTS namespace，也就是 Droidspaces 的硬性前提；overlay 用内核自带的
+# 那份（绝大多数 GKI 内核都有 CONFIG_OVERLAY_FS=y）。
+#
+# 必须是独立的 KBUILD_MODNAME（lkm4ctr_lite），不能只改文件名 —— 模块名来自
+# KBUILD_MODNAME，同名会让第二次 insmod 报 EEXIST，两个都装不上。
+#
+# 编之前先 clean：两个变体共用同一批 .o，不清理会拿到上一次的产物。
+# ---------------------------------------------------------------------------
+log "=== lkm4ctr_lite @ $KMI ==="
+make -C "$KDIR" M=/tmp/lkm4ctr/vendor clean >/dev/null 2>&1 || true
+if make -C "$KDIR" M=/tmp/lkm4ctr/vendor VNS_LITE=1 LKM4CTR_LOG_DMESG=y KCFLAGS="$GUARD_CFLAGS" modules -j"$NPROC"; then
+    if [ -f /tmp/lkm4ctr/vendor/lkm4ctr_lite.ko ]; then
+        cp /tmp/lkm4ctr/vendor/lkm4ctr_lite.ko "$OUT/lkm4ctr-lite-$KMI.ko" && log "  [OK]"
+    else
+        warn "lkm4ctr_lite @ $KMI (无产物)"
+    fi
+else
+    warn "lkm4ctr_lite @ $KMI"
+fi
+
+# ---------------------------------------------------------------------------
 # 2) vkms —— 内核树里的源码 + DRIVER_RENDER 补丁
 #
 # 上游 vkms 的 driver_features 没有 DRIVER_RENDER, drm_dev_register() 就

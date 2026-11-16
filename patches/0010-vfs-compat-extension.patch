@@ -18,7 +18,7 @@ index d5f5f48..29c05d9 100644
  #define LKM4CTR_DIAGFS_TAG	"diagfs"
  
 diff --git a/glue/lkm4ctr_main.c b/glue/lkm4ctr_main.c
-index 457baec..83112ab 100644
+index 457baec..83b98ea 100644
 --- a/glue/lkm4ctr_main.c
 +++ b/glue/lkm4ctr_main.c
 @@ -7,6 +7,7 @@
@@ -29,7 +29,7 @@ index 457baec..83112ab 100644
  int vendor_kernel_init(void);
  int vendor_kernel_module_exit(void);
  void vns_user_ns_exit(void);
-@@ -43,6 +44,24 @@ static int __init lkm4ctr_init(void)
+@@ -43,6 +44,23 @@ static int __init lkm4ctr_init(void)
  	 */
  	vns_trim_symbols_init();
  
@@ -47,9 +47,8 @@ index 457baec..83112ab 100644
 +	 * 所以提前到这里。解析失败不阻断加载：overlayfs 会自己再调一次并
 +	 * 按需降级，其它子系统各有兜底。
 +	 */
-+	if (vns_ovl_vfs_compat_resolve())
-+		LKM4CTR_WARN(LKM4CTR_TAG,
-+			     "VFS compat symbols not fully resolved; vendored overlayfs will be unavailable");
++	/* 返回 0 表示「尽力解析完成」；失败数已在函数内部记入日志。 */
++	vns_ovl_vfs_compat_resolve();
 +
  	ret = vendor_kernel_init();
  	if (ret) {
@@ -80,11 +79,37 @@ index 0f951ba..e0c0aa0 100644
  
  	vns_sem_init_ns(&vns_default_ipc_ns);
  	vns_shm_init_ns(&vns_default_ipc_ns);
+diff --git a/glue/vendor_kernel_overlay.c b/glue/vendor_kernel_overlay.c
+index f9c3546..12b0775 100644
+--- a/glue/vendor_kernel_overlay.c
++++ b/glue/vendor_kernel_overlay.c
+@@ -58,7 +58,20 @@
+  * not a fatal condition for the rest of vendor_kernel, so vns_overlay_init()
+  * still returns 0 in that case.
+  */
+-#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 10, 0) && LINUX_VERSION_CODE < KERNEL_VERSION(6, 19, 0)
++/*
++ * VNS_NO_OVERLAYFS: 构建「不带 vendored overlayfs」的精简版（lkm4ctr_lite）。
++ *
++ * 动机：厂商内核可能裁掉一批 VFS EXPORT_SYMBOL，而 vendored overlayfs 是这些
++ * 依赖的大户（33 个符号里有 19 个只被它用）。裁剪内核上整个 lkm4ctr 装不上，
++ * 连命名空间一起废掉。精简版把这些源文件全部排除，至少保住核心功能，
++ * overlayfs 用内核自带的那份（绝大多数 GKI 内核都有 CONFIG_OVERLAY_FS=y）。
++ *
++ * 排除后 vns_ovl_fs_type / vns_ovl_init / vns_ovl_exit 都不存在，所以走下面
++ * 那个 stub 分支 —— 和「内核版本不在 vendored 范围内」的处理完全一样。
++ */
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 10, 0) && \
++    LINUX_VERSION_CODE < KERNEL_VERSION(6, 19, 0) && \
++    !defined(VNS_NO_OVERLAYFS)
+ 
+ static struct file_system_type *(*real_get_fs_type)(const char *name);
+ 
 diff --git a/glue/vendor_kernel_ovl_vfs_compat.c b/glue/vendor_kernel_ovl_vfs_compat.c
-index e9e9549..d4a31b1 100644
+index e9e9549..b1a9f74 100644
 --- a/glue/vendor_kernel_ovl_vfs_compat.c
 +++ b/glue/vendor_kernel_ovl_vfs_compat.c
-@@ -59,6 +59,334 @@ VNS_OVL_VFS_COMPAT_LIST(VNS_OVL_VFSC_DEFINE)
+@@ -59,22 +59,369 @@ VNS_OVL_VFS_COMPAT_LIST(VNS_OVL_VFSC_DEFINE)
  VNS_OVL_VFS_COMPAT_LIST_BF(VNS_OVL_VFSC_DEFINE)
  #undef VNS_OVL_VFSC_DEFINE
  
@@ -416,9 +441,50 @@ index e9e9549..d4a31b1 100644
 +}
 +
 +
++static unsigned int vns_ovl_resolve_failed;
++static unsigned int vns_ovl_resolve_total;
++
  int vns_ovl_vfs_compat_resolve(void)
  {
++/*
++ * 尽力解析，不因为单个符号失败就中止。
++ *
++ * 原先是第一个失败就 return -ENOENT。这在 full 版里没问题，但在精简版
++ * （VNS_NO_OVERLAYFS）里 overlayfs 专用的符号必然解析不到，提前返回会让
++ * 排在后面的核心符号（mqueue 依赖的那些）也留在 NULL —— 于是同名转发函数
++ * 变成空操作，mq_init_ns 返回 -ENOMEM，整个模块装不上。
++ *
++ * 现在每个符号独立解析，全部尝试完再按失败数量报告。这样：
++ *   full 版：全部成功，返回 0
++ *   精简版：overlayfs 那些失败，但它们没人用；核心符号已经解析好
++ * 失败数只用于日志，调用方不需要因为部分失败而放弃整个模块。
++ */
  #define VNS_OVL_VFSC_RESOLVE(name) \
+ 	do { \
+ 		vns_ovl_vfsc_##name = (typeof(vns_ovl_vfsc_##name)) \
+ 			shadow_hook_resolve(#name); \
+-		if (!vns_ovl_vfsc_##name) { \
+-			LKM4CTR_ERR("vendor_kernel", \
+-				    "overlayfs: could not resolve VFS symbol '%s'; vendored overlayfs unavailable", \
+-				    #name); \
+-			return -ENOENT; \
+-		} \
++		if (!vns_ovl_vfsc_##name) \
++			vns_ovl_resolve_failed++; \
+ 	} while (0);
++	vns_ovl_resolve_failed = 0;
+ 	VNS_OVL_VFS_COMPAT_LIST(VNS_OVL_VFSC_RESOLVE)
+ 	VNS_OVL_VFS_COMPAT_LIST_BF(VNS_OVL_VFSC_RESOLVE)
+ #undef VNS_OVL_VFSC_RESOLVE
++
++	if (vns_ovl_resolve_failed) {
++		LKM4CTR_INFO("vendor_kernel",
++			     "overlayfs: %u VFS symbol(s) could not be resolved; those that could were kept (vendored overlayfs may be unavailable, the rest of the module is unaffected)",
++			     vns_ovl_resolve_failed);
++	}
+ 	return 0;
+ }
+ 
 diff --git a/glue/vendor_kernel_ovl_vfs_compat.h b/glue/vendor_kernel_ovl_vfs_compat.h
 index f326a9a..72e5999 100644
 --- a/glue/vendor_kernel_ovl_vfs_compat.h
@@ -953,6 +1019,90 @@ index 0000000..6b476d6
 +
 +#endif /* _VNS_VFS_SHARED_SYMS_H */
 \ No newline at end of file
+diff --git a/vendor/Makefile b/vendor/Makefile
+index e8e465e..709bb54 100644
+--- a/vendor/Makefile
++++ b/vendor/Makefile
+@@ -13,12 +13,27 @@
+ 
+ ifneq ($(KERNELRELEASE),)
+ 
++# 两个变体，由 VNS_LITE 选：
++#   VNS_LITE=0（默认）  lkm4ctr.ko      带 vendored overlayfs
++#   VNS_LITE=1          lkm4ctr_lite.ko 不带 overlayfs，给裁剪了 VFS 导出表的
++#                                       厂商内核用（至少保住命名空间/IPC）
++#
++# 必须是两个独立的 KBUILD_MODNAME，不能只改文件名 —— 模块名来自
++# KBUILD_MODNAME，同名会导致第二次 insmod 报 EEXIST。
++ifeq ($(VNS_LITE),1)
++obj-$(CONFIG_LKM4CTR) += lkm4ctr_lite.o
++ifeq ($(CONFIG_LKM4CTR),)
++obj-m += lkm4ctr_lite.o
++endif
++ccflags-y += -DVNS_NO_OVERLAYFS
++else
+ obj-$(CONFIG_LKM4CTR) += lkm4ctr.o
+ ifeq ($(CONFIG_LKM4CTR),)
+ obj-m += lkm4ctr.o
+ endif
++endif
+ 
+-lkm4ctr-objs := \
++LKM4CTR_BASE_OBJS := \
+ 	../glue/vendor_kernel_trim_symbols.o \
+ 	../glue/lkm4ctr_main.o \
+ 	../glue/lkm4ctr_log.o \
+@@ -44,17 +59,6 @@ lkm4ctr-objs := \
+ 	../glue/vendor_kernel_ipc_compat.o \
+ 	../glue/vendor_kernel_ipc_callbacks.o \
+ 	fs/nsfs.o \
+-	fs/overlayfs/super.o \
+-	fs/overlayfs/namei.o \
+-	fs/overlayfs/util.o \
+-	fs/overlayfs/inode.o \
+-	fs/overlayfs/dir.o \
+-	fs/overlayfs/readdir.o \
+-	fs/overlayfs/copy_up.o \
+-	fs/overlayfs/export.o \
+-	fs/overlayfs/file.o \
+-	fs/overlayfs/params.o \
+-	fs/overlayfs/xattrs.o \
+ 	kernel/cgroup/namespace.o \
+ 	kernel/time/namespace.o \
+ 	../glue/vendor_kernel_module.o \
+@@ -63,11 +67,31 @@ lkm4ctr-objs := \
+ 	../glue/vendor_kernel_syscalls_userns.o \
+ 	../glue/vendor_kernel_procfs.o \
+ 	../glue/vendor_kernel_procfs_userns.o \
+-	../glue/vendor_kernel_overlay.o \
+ 	../glue/vendor_kernel_ovl_vfs_compat.o \
+ 	../glue/vendor_kernel_diag.o \
+ 	../glue/vendor_kernel_compat.o
+ 
++# 只有 full 版才链接的部分
++LKM4CTR_OVL_OBJS := \
++	../glue/vendor_kernel_overlay.o \
++	fs/overlayfs/super.o \
++	fs/overlayfs/namei.o \
++	fs/overlayfs/util.o \
++	fs/overlayfs/inode.o \
++	fs/overlayfs/dir.o \
++	fs/overlayfs/readdir.o \
++	fs/overlayfs/copy_up.o \
++	fs/overlayfs/export.o \
++	fs/overlayfs/file.o \
++	fs/overlayfs/params.o \
++	fs/overlayfs/xattrs.o
++
++ifeq ($(VNS_LITE),1)
++lkm4ctr_lite-objs := $(LKM4CTR_BASE_OBJS)
++else
++lkm4ctr-objs := $(LKM4CTR_BASE_OBJS) $(LKM4CTR_OVL_OBJS)
++endif
++
+ OBJECT_FILES_NON_STANDARD_kernel/pid_namespace.o := y
+ 
+ ccflags-y += -I$(src)/../glue
 diff --git a/vendor/fs/overlayfs/copy_up.c b/vendor/fs/overlayfs/copy_up.c
 index 64cb9ba..7d3f242 100644
 --- a/vendor/fs/overlayfs/copy_up.c
