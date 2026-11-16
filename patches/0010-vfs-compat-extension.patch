@@ -485,10 +485,10 @@ index e9e9549..31e3d81 100644
  }
  
 diff --git a/glue/vendor_kernel_ovl_vfs_compat.h b/glue/vendor_kernel_ovl_vfs_compat.h
-index f326a9a..72e5999 100644
+index f326a9a..ebf7e9f 100644
 --- a/glue/vendor_kernel_ovl_vfs_compat.h
 +++ b/glue/vendor_kernel_ovl_vfs_compat.h
-@@ -130,11 +130,74 @@ int vfs_path_lookup(struct dentry *dentry, struct vfsmount *mnt,
+@@ -130,11 +130,88 @@ int vfs_path_lookup(struct dentry *dentry, struct vfsmount *mnt,
   * need the pre-rename name resolved. */
  #define VNS_OVL_TIER_HAVE_D_MARK_TMPFILE (LINUX_VERSION_CODE >= KERNEL_VERSION(6, 7, 0))
  #if VNS_OVL_TIER_HAVE_D_MARK_TMPFILE
@@ -504,6 +504,20 @@ index f326a9a..72e5999 100644
 +#define VNS_OVL_VFSC_PARENT_INO_ENTRY(X) X(d_parent_ino)
 +#else
 +#define VNS_OVL_VFSC_PARENT_INO_ENTRY(X)
++#endif
++
++/*
++ * generic_encode_ino32_fh()：6.9 引入（fs/exportfs/expfs.c, EXPORT_SYMBOL）。
++ *
++ * ovl 用它做默认编码器的判定：
++ *   if (sb->s_export_op->encode_fh == generic_encode_ino32_fh)
++ * 这是运行时比较，不是编译期初始化器，所以 (*ptr) 形式可用。
++ * 6.9 以下由下面的 #define ... NULL 降级处理（那时默认编码器就是 NULL）。
++ */
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 9, 0)
++#define VNS_OVL_VFSC_INO32FH_ENTRY(X) X(generic_encode_ino32_fh)
++#else
++#define VNS_OVL_VFSC_INO32FH_ENTRY(X)
 +#endif
 +
 +/* kmem_cache_alloc_lru() was introduced at 6.0 (<linux/slab.h>). The MID tier
@@ -564,7 +578,7 @@ index f326a9a..72e5999 100644
  /* backing_file_open() exists since 6.6 (in <linux/fs.h>); the full
   * backing_file_ctx-based API (backing_file_read_iter()/write_iter()/
   * splice_read()/splice_write()/mmap(), later moved to its own
-@@ -465,6 +528,9 @@ static inline void generic_fill_statx_attr(struct inode *inode, struct kstat *st
+@@ -465,6 +542,9 @@ static inline void generic_fill_statx_attr(struct inode *inode, struct kstat *st
  	X(override_creds)
  #endif
  #define VNS_OVL_VFS_COMPAT_LIST(X) \
@@ -574,7 +588,7 @@ index f326a9a..72e5999 100644
  	X(prepare_creds) \
  	X(errseq_sample) \
  	X(mntput) \
-@@ -534,11 +600,49 @@ static inline void generic_fill_statx_attr(struct inode *inode, struct kstat *st
+@@ -534,11 +614,50 @@ static inline void generic_fill_statx_attr(struct inode *inode, struct kstat *st
  	X(security_file_ioctl) \
  	X(iterate_dir) \
  	X(vfs_setpos) \
@@ -620,12 +634,13 @@ index f326a9a..72e5999 100644
 +	X(generic_read_dir) \
 +	VNS_OVL_VFSC_PARENT_INO_ENTRY(X) \
 +	VNS_OVL_VFSC_PCPU_INIT_ENTRY(X) \
-+	VNS_OVL_VFSC_PCPU_DESTROY_ENTRY(X)
++	VNS_OVL_VFSC_PCPU_DESTROY_ENTRY(X) \
++	VNS_OVL_VFSC_INO32FH_ENTRY(X)
 +
  
  #if !VNS_OVL_NEED_BACKING_FILE_FALLBACK
  #define VNS_OVL_VFS_COMPAT_LIST_BF(X) \
-@@ -643,9 +747,48 @@ static inline void generic_fill_statx_attr(struct inode *inode, struct kstat *st
+@@ -643,9 +762,48 @@ static inline void generic_fill_statx_attr(struct inode *inode, struct kstat *st
  	X(security_file_ioctl) \
  	X(iterate_dir) \
  	X(vfs_setpos) \
@@ -675,7 +690,7 @@ index f326a9a..72e5999 100644
  
  #define VNS_OVL_VFS_COMPAT_LIST_BF(X) \
  	X(vfs_iter_read) \
-@@ -656,9 +799,16 @@ static inline void generic_fill_statx_attr(struct inode *inode, struct kstat *st
+@@ -656,9 +814,16 @@ static inline void generic_fill_statx_attr(struct inode *inode, struct kstat *st
  #endif /* MID */
  
  #if VNS_OVL_TIER_OLD
@@ -692,7 +707,7 @@ index f326a9a..72e5999 100644
  	X(errseq_sample) \
  	X(mntput) \
  	X(__mnt_is_readonly) \
-@@ -743,8 +893,38 @@ static inline void generic_fill_statx_attr(struct inode *inode, struct kstat *st
+@@ -743,8 +908,38 @@ static inline void generic_fill_statx_attr(struct inode *inode, struct kstat *st
  	X(generic_fillattr) \
  	X(vfs_path_lookup) \
  	X(rw_verify_area) \
@@ -733,7 +748,7 @@ index f326a9a..72e5999 100644
  #define VNS_OVL_VFS_COMPAT_LIST_BF(X)
  #endif /* OLD */
  
-@@ -848,6 +1028,28 @@ VNS_OVL_VFS_COMPAT_LIST_BF(VNS_OVL_VFSC_DECLARE)
+@@ -848,6 +1043,33 @@ VNS_OVL_VFS_COMPAT_LIST_BF(VNS_OVL_VFSC_DECLARE)
   */
  #define down_write_killable (*vns_ovl_vfsc_down_write_killable)
  #define d_invalidate (*vns_ovl_vfsc_d_invalidate)
@@ -743,6 +758,11 @@ index f326a9a..72e5999 100644
 + * kmem_cache_alloc_lru 在 6.12 上是宏（见 VNS_OVL_VFSC_KMLRU_NO_PROF_ENTRY），
 + * 只有 6.0~6.11 能直接用这个符号名。
 + */
++/* generic_encode_ino32_fh：6.9+ 走运行时指针（调用点是运行期比较）。 */
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 9, 0)
++#define generic_encode_ino32_fh (*vns_ovl_vfsc_generic_encode_ino32_fh)
++#endif
++
 +#if VNS_OVL_TIER_HAVE_D_MARK_TMPFILE
 +#define d_mark_tmpfile (*vns_ovl_vfsc_d_mark_tmpfile)
 +#endif
@@ -762,7 +782,7 @@ index f326a9a..72e5999 100644
  #if LINUX_VERSION_CODE < KERNEL_VERSION(6, 18, 0)
  #define revert_creds (*vns_ovl_vfsc_revert_creds)
  #define override_creds (*vns_ovl_vfsc_override_creds)
-@@ -891,6 +1093,35 @@ static inline void vns_ovl_revert_creds_compat(const struct cred *revert_cred)
+@@ -891,6 +1113,35 @@ static inline void vns_ovl_revert_creds_compat(const struct cred *revert_cred)
  #define vma_set_file (*vns_ovl_vfsc_vma_set_file)
  #endif
  
@@ -798,7 +818,7 @@ index f326a9a..72e5999 100644
  #if !VNS_OVL_NEED_BACKING_FILE_FALLBACK
  #define backing_file_read_iter (*vns_ovl_vfsc_backing_file_read_iter)
  #define backing_file_write_iter (*vns_ovl_vfsc_backing_file_write_iter)
-@@ -992,6 +1223,35 @@ static inline void vns_ovl_revert_creds_compat(const struct cred *revert_cred)
+@@ -992,6 +1243,35 @@ static inline void vns_ovl_revert_creds_compat(const struct cred *revert_cred)
  #define security_file_ioctl (*vns_ovl_vfsc_security_file_ioctl)
  #define iterate_dir (*vns_ovl_vfsc_iterate_dir)
  #define vfs_setpos (*vns_ovl_vfsc_vfs_setpos)
@@ -834,7 +854,7 @@ index f326a9a..72e5999 100644
  #define d_tmpfile (*vns_ovl_vfsc_d_tmpfile)
  #define errseq_check (*vns_ovl_vfsc_errseq_check)
  #define lookup_positive_unlocked (*vns_ovl_vfsc_lookup_positive_unlocked)
-@@ -1004,6 +1264,9 @@ static inline void vns_ovl_revert_creds_compat(const struct cred *revert_cred)
+@@ -1004,6 +1284,9 @@ static inline void vns_ovl_revert_creds_compat(const struct cred *revert_cred)
  #endif /* MID */
  
  #if VNS_OVL_TIER_OLD
@@ -844,7 +864,7 @@ index f326a9a..72e5999 100644
  #define mount_nodev (*vns_ovl_vfsc_mount_nodev)
  #define prepare_creds (*vns_ovl_vfsc_prepare_creds)
  #define errseq_sample (*vns_ovl_vfsc_errseq_sample)
-@@ -1109,7 +1372,6 @@ static inline void vns_ovl_revert_creds_compat(const struct cred *revert_cred)
+@@ -1109,7 +1392,6 @@ static inline void vns_ovl_revert_creds_compat(const struct cred *revert_cred)
  #define vfs_iocb_iter_write (*vns_ovl_vfsc_vfs_iocb_iter_write)
  #define vfs_iter_write (*vns_ovl_vfsc_vfs_iter_write)
  #define iter_file_splice_write (*vns_ovl_vfsc_iter_file_splice_write)
@@ -852,7 +872,7 @@ index f326a9a..72e5999 100644
  #define vfs_fallocate (*vns_ovl_vfsc_vfs_fallocate)
  #define dentry_open (*vns_ovl_vfsc_dentry_open)
  #define open_with_fake_path (*vns_ovl_vfsc_open_with_fake_path)
-@@ -1146,11 +1408,11 @@ static inline void vns_ovl_revert_creds_compat(const struct cred *revert_cred)
+@@ -1146,11 +1428,11 @@ static inline void vns_ovl_revert_creds_compat(const struct cred *revert_cred)
   * this forwards straight to the real symbol.
   */
  #define setattr_prepare(idmap, dentry, attr) \
@@ -866,7 +886,7 @@ index f326a9a..72e5999 100644
  #define security_file_ioctl (*vns_ovl_vfsc_security_file_ioctl)
  #define vfs_fadvise (*vns_ovl_vfsc_vfs_fadvise)
  #define vfs_ioctl (*vns_ovl_vfsc_vfs_ioctl)
-@@ -1160,6 +1422,31 @@ static inline void vns_ovl_revert_creds_compat(const struct cred *revert_cred)
+@@ -1160,6 +1442,31 @@ static inline void vns_ovl_revert_creds_compat(const struct cred *revert_cred)
  #define vfs_path_lookup (*vns_ovl_vfsc_vfs_path_lookup)
  #define rw_verify_area (*vns_ovl_vfsc_rw_verify_area)
  #define d_tmpfile (*vns_ovl_vfsc_d_tmpfile)
