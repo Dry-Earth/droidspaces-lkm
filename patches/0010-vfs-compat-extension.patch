@@ -54,10 +54,10 @@ index 0f951ba..3ef6633 100644
  	/*
  	 * Give the default namespace a real ns_common inode number too (same
 diff --git a/glue/vendor_kernel_ovl_vfs_compat.c b/glue/vendor_kernel_ovl_vfs_compat.c
-index e9e9549..72b8f72 100644
+index e9e9549..bc8468e 100644
 --- a/glue/vendor_kernel_ovl_vfs_compat.c
 +++ b/glue/vendor_kernel_ovl_vfs_compat.c
-@@ -59,6 +59,111 @@ VNS_OVL_VFS_COMPAT_LIST(VNS_OVL_VFSC_DEFINE)
+@@ -59,6 +59,190 @@ VNS_OVL_VFS_COMPAT_LIST(VNS_OVL_VFSC_DEFINE)
  VNS_OVL_VFS_COMPAT_LIST_BF(VNS_OVL_VFSC_DEFINE)
  #undef VNS_OVL_VFSC_DEFINE
  
@@ -79,6 +79,85 @@ index e9e9549..72b8f72 100644
 + * three names only entered the MID list for 6.0-and-later kernels.
 + */
 +#if VNS_OVL_TIER_MID
++
++/*
++ * Same-name forwarding definitions for the VFS helpers vendor/ipc/* and
++ * glue/lkm4ctr_diagfs.c call.
++ *
++ * These were #define aliases in vns_vfs_shared_syms.h. That is fine in
++ * isolation but broke lkm4ctr on the Qualcomm SM7675 tablet: mq_init_ns()
++ * failed with -ENOMEM inside mq_create_mount() -> fc_mount() ->
++ * mqueue_fill_super(), whose inode setup runs right through these names.
++ *
++ * A real function with the kernel's own name has none of the macro's reach:
++ * every reference inside this module links here, no static import is emitted,
++ * and the call shape is exactly what the kernel expects.
++ *
++ * All are __nocfi: the bodies make indirect calls, and CONFIG_CFI_CLANG checks
++ * those at the call site.
++ */
++
++__nocfi void clear_inode(struct inode *inode)
++{
++	if (vns_ovl_vfsc_clear_inode)
++		vns_ovl_vfsc_clear_inode(inode);
++}
++
++__nocfi void drop_nlink(struct inode *inode)
++{
++	if (vns_ovl_vfsc_drop_nlink)
++		vns_ovl_vfsc_drop_nlink(inode);
++}
++
++__nocfi void inc_nlink(struct inode *inode)
++{
++	if (vns_ovl_vfsc_inc_nlink)
++		vns_ovl_vfsc_inc_nlink(inode);
++}
++
++__nocfi void set_nlink(struct inode *inode, unsigned int nlink)
++{
++	if (vns_ovl_vfsc_set_nlink)
++		vns_ovl_vfsc_set_nlink(inode, nlink);
++}
++
++__nocfi void d_instantiate(struct dentry *dentry, struct inode *inode)
++{
++	if (vns_ovl_vfsc_d_instantiate)
++		vns_ovl_vfsc_d_instantiate(dentry, inode);
++}
++
++__nocfi void ihold(struct inode *inode)
++{
++	if (vns_ovl_vfsc_ihold)
++		vns_ovl_vfsc_ihold(inode);
++}
++
++__nocfi void inode_init_once(struct inode *inode)
++{
++	if (vns_ovl_vfsc_inode_init_once)
++		vns_ovl_vfsc_inode_init_once(inode);
++}
++
++__nocfi int current_umask(void)
++{
++	if (!vns_ovl_vfsc_current_umask)
++		return 0;
++	return vns_ovl_vfsc_current_umask();
++}
++
++__nocfi int in_group_p(kgid_t gid)
++{
++	if (!vns_ovl_vfsc_in_group_p)
++		return 0;
++	return vns_ovl_vfsc_in_group_p(gid);
++}
++
++__nocfi void truncate_inode_pages_final(struct address_space *mapping)
++{
++	if (vns_ovl_vfsc_truncate_inode_pages_final)
++		vns_ovl_vfsc_truncate_inode_pages_final(mapping);
++}
 +
 +#if VNS_OVL_HAVE_KMEM_CACHE_ALLOC_LRU
 +/*
@@ -271,10 +350,10 @@ index f326a9a..2b617d0 100644
  #define lookup_positive_unlocked (*vns_ovl_vfsc_lookup_positive_unlocked)
 diff --git a/glue/vns_vfs_shared_syms.h b/glue/vns_vfs_shared_syms.h
 new file mode 100644
-index 0000000..df75ca7
+index 0000000..f4aa344
 --- /dev/null
 +++ b/glue/vns_vfs_shared_syms.h
-@@ -0,0 +1,103 @@
+@@ -0,0 +1,110 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +/*
 + * vns_vfs_shared_syms.h - VFS helpers needed outside fs/overlayfs
@@ -304,6 +383,23 @@ index 0000000..df75ca7
 + * Deliberately not `vns_vfs_*`: these are the overlayfs layer's storage, and
 + * keeping the `vns_ovl_vfsc_` name makes it obvious where they are defined and
 + * resolved.
++ */
++/*
++ * Functions, not macros.
++ *
++ * This header used to #define each of these names to (*vns_ovl_vfsc_<name>).
++ * That broke lkm4ctr on the Qualcomm SM7675 tablet:
++ *
++ *   vendor_kernel: failed to init default ipc namespace (-12)
++ *   -> mq_init_ns -> mq_create_mount -> fc_mount -> mqueue_fill_super
++ *
++ * The macros perturbed the VFS inode/superblock setup that mqueue performs
++ * during fc_mount(), and the mount then failed with ENOMEM. Only the extern
++ * declarations live here now; the vendor_kernel_ovl_vfs_compat.c side defines
++ * a real function with the kernel's own name for each, which every reference
++ * inside this module links to -- no static import, and no macro side effects.
++ *
++ * (Same treatment kmem_cache_alloc_lru / generic_read_dir already needed.)
 + */
 +#ifndef _VNS_VFS_SHARED_SYMS_H
 +#define _VNS_VFS_SHARED_SYMS_H
@@ -345,16 +441,6 @@ index 0000000..df75ca7
 +extern int (*vns_ovl_vfsc_current_umask)(void);
 +extern int (*vns_ovl_vfsc_in_group_p)(kgid_t);
 +
-+#define clear_inode			(*vns_ovl_vfsc_clear_inode)
-+#define drop_nlink			(*vns_ovl_vfsc_drop_nlink)
-+#define inc_nlink			(*vns_ovl_vfsc_inc_nlink)
-+#define set_nlink			(*vns_ovl_vfsc_set_nlink)
-+#define truncate_inode_pages_final	(*vns_ovl_vfsc_truncate_inode_pages_final)
-+#define d_instantiate			(*vns_ovl_vfsc_d_instantiate)
-+#define ihold				(*vns_ovl_vfsc_ihold)
-+#define inode_init_once			(*vns_ovl_vfsc_inode_init_once)
-+#define current_umask			(*vns_ovl_vfsc_current_umask)
-+#define in_group_p			(*vns_ovl_vfsc_in_group_p)
 +
 +/*
 + * percpu_counter_init() / percpu_counter_destroy() are NOT macro-redirected.
