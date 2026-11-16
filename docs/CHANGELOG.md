@@ -13,6 +13,73 @@
 `10001`–`10003` 这种小数字；如果新版本还用 `100`，KernelSU 更新器会认为
 100 < 10003 而不推送更新。日期编码天然单调递增，不会再因为版本号重置而倒退。
 
+## 未发布 — 三个方向的收口
+
+这一轮把「符号问题」从「出问题再修」推到三个方向。三条都经过 CI 全量矩阵和
+真机验证（Redmi Pad 2410CRP4CG / Qualcomm SM7675 / 6.1.138）。
+
+### A. BTF 自动生成符号转发层
+
+新增 `scripts/gen_vfs_compat.py`。给它符号名，从内核 BTF 取准确原型，机械生成
+转发层源码（类型前置声明 + 函数指针 + 同名转发函数 + 解析表）。
+
+    python3 scripts/gen_vfs_compat.py --btf /sys/kernel/btf/vmlinux \\
+        --symbols crypto_register_scomp LZ4_compress_HC --out glue/gen.c
+
+实测 BTF 来自 SM7675（5.6 MB，130651 个 type / 56432 个函数）：zram 的 14 个
+符号 14/14 可生成，lkm4ctr 的 33 个 VFS 符号 33/33 可生成，生成结果全部编译通过。
+
+**价值不只是省事**：生成器自动避开了手工时犯的全部签名错误 ——
+
+| 符号 | BTF 的真实签名 | 手工时写错的 |
+|---|---|---|
+| `ihold` | `void (struct inode *)` | 写成返回 `struct inode *` |
+| `current_umask` | `int (void)` | 写成 `umode_t` |
+| `truncate_inode_pages_final` | `void (struct address_space *)` | 写成 `struct inode *` |
+| `generic_read_dir` | `ssize_t (..., char *, ...)` | 写成 2 参数 |
+| `notify_change` | 4 参数（含 `delegated_inode`） | 漏了第四个 |
+
+局限：按值使用 typedef 时（`zstd_parameters`）生成文件只做声明，调用方必须自己
+包含提供定义的头。生成器会把这类符号列出来。
+
+### B. 拆出精简版 lkm4ctr_lite
+
+`lkm4ctr` 是聚合 50 个 object 的单模块，vendored overlayfs 的 11 个源文件贡献了
+33 个 VFS 符号里的 19 个。厂商裁掉这些导出后整个模块装不上，连 PID/IPC/UTS
+namespace 一起废掉 —— 而那些才是 Droidspaces 的硬性前提。
+
+现在编两个变体（`VNS_LITE` 选）：
+
+| 变体 | 大小 | 内容 |
+|---|---|---|
+| `lkm4ctr.ko` | 12175 KB | 带 vendored overlayfs |
+| `lkm4ctr_lite.ko` | 9515 KB | 不带，overlay 用内核自带的 |
+
+`service.sh` 先试完整版，失败且 lite 存在时回退。
+
+**必须是两个独立的 KBUILD_MODNAME**（`lkm4ctr` / `lkm4ctr_lite`），不能只改文件
+名 —— 模块名来自 KBUILD_MODNAME，同名会让第二次 insmod 报 EEXIST。
+
+真机验证回退路径（临时移走 full 版）：
+
+    lkm4ctr_lite          647168  339
+    PID + mount namespace   ✅ pid=1 ppid=0
+    容器内挂载 /proc        ✅ 131 个节点
+    user namespace          ✅
+    IPC namespace           ✅
+
+**顺带修了一个会重演 -12 的问题**：`vns_ovl_vfs_compat_resolve()` 原本遇到第一个
+解析失败就 `return -ENOENT`。lite 版里 overlayfs 专属符号必然失败，提前返回会让
+排在后面的核心符号（mqueue 依赖的）也留在 NULL —— 改成尽力解析，全部尝试完再
+按失败数报告。
+
+### C. zram-lkm 的内核导出检查
+
+见 zram-lkm 仓库的 `2ba41c3`。构建期导出每个 `.ko` 的未定义符号清单，`action.sh`
+拿它比对 `/proc/kallsyms` 的 `__ksymtab_`，直接报出本内核缺哪些。
+
+---
+
 ## v0.1.23 — 符号兼容层覆盖到全部七个 KMI
 
 `versionCode` 由构建时自动写入（`YYYYMMDDHHMM` 时间戳，见
