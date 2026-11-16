@@ -367,10 +367,25 @@ fi
 #   cgroup_rm_cftypes      5.10 里存在但没 EXPORT_SYMBOL_GPL（6.1 才加）
 #   drm_crtc_add_crc_entry 属 drm.ko 的模块依赖，加载时序不对就缺
 #   任何 _trace_android_vh_*  vendor hook，不是所有厂商内核都开
+#
+# CONFIG_TRIM_UNUSED_KSYMS 一类（厂商内核只保留树内模块用到的导出）：
+#   file_remove_privs / seq_escape_mem / kill_pid
+#       来自 vendored overlayfs 与 diag 路径。上游 lkm4ctr 已有
+#       VNS_OVL_VFS_COMPAT_LIST + shadow_hook_resolve 的运行时解析机制，
+#       但这三个当时没纳入 —— 于是在裁剪过的内核上报 Unknown symbol。
+#       实测：Meizu 21 Pro / Flyme 12.7 / 6.1.25-android14-11（issue #2）。
+#   path_put / kern_path
+#       droid_lkm_cpu 的路径解析用，同样会被裁。
+#   ip_check_defrag / __netif_rx / ndo_dflt_fdb_dump
+#       macvlan 从内核树源码编出来时引用的 IPv4/netdev 符号。
+#       注意 __netif_rx 在 5.18 之后已从主线移除 —— 出现它说明
+#       编译用的内核树比目标内核老，这类符号永远不可能在目标上解析到。
 # ---------------------------------------------------------------------------
 echo
 echo "=== $KMI 符号自检 ==="
-BAD_SYMS="__stack_chk_guard cgroup_rm_cftypes drm_crtc_add_crc_entry"
+BAD_SYMS="__stack_chk_guard cgroup_rm_cftypes drm_crtc_add_crc_entry \
+file_remove_privs seq_escape_mem kill_pid path_put kern_path \
+ip_check_defrag __netif_rx ndo_dflt_fdb_dump"
 bad=0
 for ko in "$OUT"/*-"$KMI".ko; do
     [ -f "$ko" ] || continue

@@ -305,6 +305,25 @@ static int (*p_cgroup_rm_cftypes)(struct cftype *cfts);
 static void (*p_rstat_flush_hold)(struct cgroup *cgrp);
 static unsigned long long (*p_task_sched_runtime)(struct task_struct *p);
 static void (*p_rstat_flush_release)(void);
+
+/*
+ * [TRIM] kern_path / path_put
+ *
+ * 厂商内核常打开 CONFIG_TRIM_UNUSED_KSYMS，只保留树内模块用到的导出符号。
+ * 这两个名字看着"到处都有"，在裁剪过的内核上却可能完全不在导出表里，
+ * 直接链接会让整个 droid_lkm_cpu 装不上：
+ *
+ *   droid_lkm_cpu: Unknown symbol path_put (err -2)
+ *   droid_lkm_cpu: Unknown symbol kern_path (err -2)
+ *
+ * 实测：Meizu 21 Pro / Flyme 12.7.0.0A / 6.1.25-android14-11（issue #2）。
+ *
+ * 这两处唯一用途是判断 sched_cfs_bandwidth_slice_us 这个 sysctl 是否已存在，
+ * 所以改成运行时解析：解析不到就跳过存在性检查，直接注册。
+ */
+static int (*p_kern_path)(const char *name, unsigned int flags,
+			  struct path *path);
+static void (*p_path_put)(const struct path *path);
 static unsigned long ctl_bstat_off;
 static unsigned long ctl_kn_priv_off;
 
@@ -356,6 +375,9 @@ static void cpu_resolve_syms(void)
 	/* 5.10 未导出，解析不到就不安装 cftype（见声明处注释） */
 	p_cgroup_rm_cftypes =
 		(void *)kallrecon_klp("cgroup_rm_cftypes");
+	/* [TRIM] 裁剪内核上可能不存在，解析不到就跳过 sysctl 存在性检查 */
+	p_kern_path = (void *)kallrecon_klp("kern_path");
+	p_path_put  = (void *)kallrecon_klp("path_put");
 }
 
 /*
@@ -778,12 +800,19 @@ static void cpu_sysctl_register(void)
 
 	if (cpu_sysctl_hdr)
 		return;
-	/* 只补上真正缺的那一项；内核自己注册过就别重复建 */
-	if (kern_path("/proc/sys/kernel/sched_cfs_bandwidth_slice_us",
-		      LOOKUP_FOLLOW, &p) == 0) {
-		path_put(&p);
-		cpu_info("sched_cfs_bandwidth_slice_us already present\n");
-		return;
+	/* 只补上真正缺的那一项；内核自己注册过就别重复建。
+	 * [TRIM] 裁剪内核上 kern_path/path_put 可能解析不到 —— 跳过存在性检查
+	 * 直接注册。最坏情况是内核本来就注册过、这里多一个同名条目，功能不受影响；
+	 * 而直接链接的代价是整个模块装不上，两者权衡明显偏向跳过。 */
+	if (p_kern_path && p_path_put) {
+		if (p_kern_path("/proc/sys/kernel/sched_cfs_bandwidth_slice_us",
+				LOOKUP_FOLLOW, &p) == 0) {
+			p_path_put(&p);
+			cpu_info("sched_cfs_bandwidth_slice_us already present\n");
+			return;
+		}
+	} else {
+		cpu_warn("kern_path/path_put 未解析到，跳过 sysctl 存在性检查\n");
 	}
 	cpu_sysctl_hdr = register_sysctl("kernel", cpu_sched_sysctls);
 	if (IS_ERR_OR_NULL(cpu_sysctl_hdr)) {
