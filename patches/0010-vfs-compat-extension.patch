@@ -54,7 +54,7 @@ index 0f951ba..3ef6633 100644
  	/*
  	 * Give the default namespace a real ns_common inode number too (same
 diff --git a/glue/vendor_kernel_ovl_vfs_compat.c b/glue/vendor_kernel_ovl_vfs_compat.c
-index e9e9549..d29c5ca 100644
+index e9e9549..bcde01d 100644
 --- a/glue/vendor_kernel_ovl_vfs_compat.c
 +++ b/glue/vendor_kernel_ovl_vfs_compat.c
 @@ -59,6 +59,190 @@ VNS_OVL_VFS_COMPAT_LIST(VNS_OVL_VFSC_DEFINE)
@@ -248,6 +248,20 @@ index e9e9549..d29c5ca 100644
  int vns_ovl_vfs_compat_resolve(void)
  {
  #define VNS_OVL_VFSC_RESOLVE(name) \
+@@ -66,11 +250,13 @@ int vns_ovl_vfs_compat_resolve(void)
+ 		vns_ovl_vfsc_##name = (typeof(vns_ovl_vfsc_##name)) \
+ 			shadow_hook_resolve(#name); \
+ 		if (!vns_ovl_vfsc_##name) { \
++			pr_err("lkm4ctr[diag] unresolved: %s\n", #name); \
+ 			LKM4CTR_ERR("vendor_kernel", \
+ 				    "overlayfs: could not resolve VFS symbol '%s'; vendored overlayfs unavailable", \
+ 				    #name); \
+ 			return -ENOENT; \
+ 		} \
++		pr_info("lkm4ctr[diag] resolved: %s\n", #name); \
+ 	} while (0);
+ 	VNS_OVL_VFS_COMPAT_LIST(VNS_OVL_VFSC_RESOLVE)
+ 	VNS_OVL_VFS_COMPAT_LIST_BF(VNS_OVL_VFSC_RESOLVE)
 diff --git a/glue/vendor_kernel_ovl_vfs_compat.h b/glue/vendor_kernel_ovl_vfs_compat.h
 index f326a9a..2b617d0 100644
 --- a/glue/vendor_kernel_ovl_vfs_compat.h
