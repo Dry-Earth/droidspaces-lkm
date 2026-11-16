@@ -169,6 +169,88 @@ overlayfs.h` 里的 inline 又早于所有 `.c`。
 
 → 轻量头补 extern，兼容层补同名函数。
 
+### 用真实内核验证（issue #2 的真根因）
+
+上面那组数字是**构建期统计**，说明不了「这台具体的内核到底能不能装上」。
+issue #2 的报告者后来提供了 `boot.img`（Meizu 21 Pro / 6.1.25），于是可以做
+真正的端到端判定：从 boot.img 里提取这台内核的导出表，再和 `.ko` 的未定义
+符号逐个比对。
+
+提取路径：
+
+```
+boot.img → kernel（offset 0x4000，未压缩 ARM64）
+        → __ksymtab_strings（0x1500000 附近，6594 个导出符号）
+```
+
+得到结果之后，`lkm4ctr` 在这台内核上的 207 个未定义符号里，**206 个都导出，
+只缺一个：`capable_wrt_inode_uidgid`**。
+
+这就是用户说「Looks like not working」的原因。而这个符号之前一直被我当成
+**假阳性**放过 —— 因为源码注释写着「5.10 上它总是导出的」。那句话对 5.10
+成立，但 Meizu 的 6.1.25 不导出。
+
+它的真实签名（从 BTF 取，同代 SM7675 / 6.1.138）：
+
+```c
+bool capable_wrt_inode_uidgid(struct user_namespace *mnt_userns,
+                              const struct inode *inode, int cap)
+```
+
+3 参数，第一个随版本变（5.12~6.2 是 `struct user_namespace *`，
+6.3+ 是 `struct mnt_idmap *`）。源码按 3 参数调用，所以 MID/NEW 用对象式宏
+指向运行时指针即可，`typeof()` 会取到当前内核的真实类型；OLD（5.10 只要
+2 参数）保留原来的丢 idmap 函数式宏。
+
+**同一个错误还出现了第二次**：`macvlan` 把 `dev_mc_add_excl` 改写成
+`dev_mc_add`（导出的那个），而 Meizu 上**两个都不导出**。同时缺的还有
+`dev_mc_del` 和 `netdev_is_rx_handler_busy`。三个都补进 `MACVLAN_SYMRES`
+同名转发层。
+
+Meizu 实际导出的 net 辅助（用来判断能换什么）：
+
+```
+dev_uc_add / dev_uc_del / dev_uc_sync*               导出
+dev_mc_sync / dev_mc_unsync / dev_mc_sync_multiple    导出
+dev_mc_add / dev_mc_del / dev_mc_add_excl             不导出
+eth_header / eth_header_cache* / netif_rx             导出
+dev_forward_skb / __dev_forward_skb                   不导出
+```
+
+注意 `dev_mc_sync` 系列虽然导出，但语义是「批量同步一组地址」，不能直接
+替换 `dev_mc_add`（单个添加），所以只能走运行时解析。
+
+修复后同样方法验证，全部 10 个模块 **0 缺失**：
+
+```
+devtmpfs_lkm   67 未定义 / 0 缺      macvlan        80 / 0
+droid_lkm_cpu  48 / 0               mali_nsfix     12 / 0
+droid_lkm_pids 45 / 0               uart_guard      7 / 0
+ip6table_nat   24 / 0               vkms          108 / 0
+lkm4ctr       206 / 0
+lkm4ctr-lite  186 / 0
+```
+
+这套分析固化成了 `scripts/verify_against_bootimg.py`，以后任何用户提供
+`boot.img` 都能一条命令验完：
+
+```bash
+python3 scripts/verify_against_bootimg.py --bootimg boot.img \
+    --kos out/ko-android14-6.1
+```
+
+脚本里的两个设计值得说明：
+
+**只认 `__ksymtab_strings`，不认 kallsyms。** 后者含**全部**符号（包括未导出
+的），拿它比对会误判「这个符号存在」。而 `kallsyms_names` 比
+`__ksymtab_strings` 更密，所以「取最密集窗口」会选错 —— 必须按密度逐个尝试，
+再用 sanity check 筛。
+
+**sanity check 不通过就拒绝输出。** `_printk` 必须在（注意不是 `printk` ——
+那是宏），`kallsyms_lookup_name` 必须不在。第一次实现时选的区域里有
+`kallsyms_lookup_name`，脚本直接报错而不是给出「全部模块都缺」的错误结论 ——
+**错误的结论比没有结论更糟**。
+
 ### 版本变体
 
 几个符号在 6.x 中间改过形态，不能一个名字走到底：
@@ -228,6 +310,15 @@ B 的缺失。改成同名转发函数，优先 `dev_forward_skb`，回退 `__de
 
 七个 KMI 全部构建通过，`[SYM]` 检查全部为 0；`MUST_NOT_APPEAR` 零回退。
 产物用 `nm -u` 逐项确认。
+
+更强的证据在上面「用真实内核验证」一节：拿 issue #2 报告者提供的 boot.img
+（Meizu 21 Pro / 6.1.25）提取导出表后，全部 10 个模块 **0 缺失** ——
+这是判定「能不能装上」的最终标准，不只是「编过了」。
+
+另外说明一处**判断修正**：v0.1.22 之后的几轮里，我一直把
+`capable_wrt_inode_uidgid` 的 `[SYM]` 告警当成假阳性（理由是源码注释写着
+「5.10 上它总是导出的」）。拿到真实导出表后证明那个判断是错的 ——
+5.10 成立不等于 6.1 的厂商内核成立。**注释里的断言也要验证，不能直接采信。**
 
 `lkm4ctr_lite`（不带 vendored overlayfs 的精简版）同样受益 —— 它排除 overlayfs
 但保留 `ipc/mqueue.o`、`glue/lkm4ctr_diagfs.c`、`fs/nsfs.o`，那些文件的 VFS 依赖
