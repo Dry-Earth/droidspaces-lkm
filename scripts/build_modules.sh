@@ -457,14 +457,23 @@ fi
   # ---------------------------------------------------------------------
   SYMFILE="$OUT/symcheck-$KMI.txt"
   : > "$SYMFILE"
+  # DDK 容器里是 clang 工具链，不一定有 binutils 的 nm；llvm-nm 通常有
+  NM=""
+  for c in nm llvm-nm "$CROSS_COMPILE"nm; do
+      if command -v "$c" >/dev/null 2>&1; then NM="$c"; break; fi
+  done
+  if [ -z "$NM" ]; then
+      echo "  [WARN] 找不到 nm/llvm-nm，符号依赖清单会是空的（装机时无法报出缺哪个符号）"
+  else
+      echo "  [OK] 符号提取工具: $NM"
+  fi
   for ko in "$OUT"/*-"$KMI".ko; do
       [ -f "$ko" ] || continue
       mod=$(basename "$ko" "-$KMI.ko")
-      if command -v nm >/dev/null 2>&1; then
-          nm -u "$ko" 2>/dev/null | awk '{print $2}' | \
-              grep -vE '^(__this_module|_GLOBAL_OFFSET_TABLE_)$' | \
-              while read -r s; do echo "$mod $s"; done >> "$SYMFILE"
-      fi
+      [ -n "$NM" ] || continue
+      "$NM" -u "$ko" 2>/dev/null | awk '{print $2}' | \
+          grep -vE '^(__this_module|_GLOBAL_OFFSET_TABLE_)$' | \
+          while read -r s; do echo "$mod $s"; done >> "$SYMFILE"
   done
   n_syms=$(wc -l < "$SYMFILE" 2>/dev/null || echo 0)
   echo "  [OK] 符号依赖清单: $(basename "$SYMFILE")（$n_syms 条）"

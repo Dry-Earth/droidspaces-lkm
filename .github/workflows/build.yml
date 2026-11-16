@@ -208,6 +208,9 @@ jobs:
           mkdir -p dist
           if [ -d ko-all ]; then
             find ko-all -name '*.ko' -exec cp -v {} dist/ \;
+            # 符号依赖清单（build_modules.sh 生成）也要进 dist，
+            # 否则装到模块包里就没有 —— 见 module/action.sh 的「内核导出检查」
+            find ko-all -name 'symcheck-*.txt' -exec cp -v {} dist/ \; || true
           else
             echo "::warning::没有下载到任何 ko"
           fi
@@ -246,10 +249,13 @@ jobs:
           rm -rf "$STAGE"; mkdir -p "$STAGE/ko"
 
           cp dist/*.ko "$STAGE/ko/"
+          # 符号清单随 ko 一起进包：action.sh 与 service.sh 用它查
+          # /proc/kallsyms 的 __ksymtab_，直接报出本内核缺哪些符号
+          cp dist/symcheck-*.txt "$STAGE/ko/" 2>/dev/null || echo "::warning::没有 symcheck 清单"
           cp module/module.prop module/customize.sh module/post-fs-data.sh module/service.sh \
           module/uninstall.sh module/action.sh module/boot-completed.sh "$STAGE/"
           chmod 755 "$STAGE"/*.sh
-          sed -i 's/\r$//' "$STAGE"/*.sh "$STAGE/module.prop"
+          sed -i 's/\r$//' "$STAGE"/*.sh "$STAGE/module.prop" "$STAGE"/ko/symcheck-*.txt 2>/dev/null || true
 
           # 全 KMI 合并包
           ( cd "$STAGE" && zip -qr1 "$GITHUB_WORKSPACE/dist/droidspaces-lkm-arm64.zip" . )
@@ -267,10 +273,11 @@ jobs:
             S="$RUNNER_TEMP/one-$kmi"
             rm -rf "$S"; mkdir -p "$S/ko"
             cp dist/*-"$kmi".ko "$S/ko/"
+            cp "dist/symcheck-$kmi.txt" "$S/ko/" 2>/dev/null || true
             cp module/module.prop module/customize.sh module/post-fs-data.sh module/service.sh \
             module/uninstall.sh module/action.sh module/boot-completed.sh "$S/"
             chmod 755 "$S"/*.sh
-            sed -i 's/\r$//' "$S"/*.sh "$S/module.prop"
+            sed -i 's/\r$//' "$S"/*.sh "$S/module.prop" "$S"/ko/symcheck-*.txt 2>/dev/null || true
             ( cd "$S" && zip -qr1 "$GITHUB_WORKSPACE/dist/droidspaces-lkm-$kmi-arm64.zip" . )
           done
 
