@@ -23,6 +23,11 @@ NPROC="$(nproc 2>/dev/null || echo 4)"
 mkdir -p "$OUT"
 FAILED=()
 
+# 构建期文案目录。i18n.sh 之后所有输出按 LKM4CTR_LANG / LANG 选语言，
+# 默认英文。里面的句子是 printf 格式串，变量在调用点替换。
+# $WS 在上面的 $3 已经赋值，直接用；从 $0 推路径在符号链接下会错。
+[ -f "$WS/scripts/i18n.sh" ] && . "$WS/scripts/i18n.sh"
+
 log() { echo ">>> $*"; }
 warn() { echo "::warning::$*"; FAILED+=("$*"); }
 
@@ -45,7 +50,7 @@ reloc_audit() {
     bad=$(comm -12 "$objf" "$callf" 2>/dev/null)
     rm -f "$objf" "$callf"
     if [ -n "$bad" ]; then
-        warn "RELO C: $(basename "$ko") 对数据符号发起了函数调用（声明类型写错）:"
+        warn "$(printf "$B_RELOC_C" "$(basename "$ko")")"
         printf '%s
 ' "$bad" | while read -r x; do warn "        $x"; done
         return 1
@@ -98,17 +103,17 @@ if [ -n "$CFG" ]; then
         GUARD_CFLAGS="-fno-stack-protector"
         GUARD_MODE="global->disabled"
     fi
-    log "栈保护: 树=$GUARD_MODE 额外参数=[${GUARD_CFLAGS:-无}]"
+    log "$(printf "$B_STACK_PROBE" "$GUARD_MODE" "${GUARD_CFLAGS:-$B_NONE}")"
 else
-    warn "找不到 $KDIR/.config，栈保护模式无法判定；构建后会再做符号校验"
+    warn "$(printf "$B_NO_CONFIG" "$KDIR")"
 fi
 
 if [ -n "$KSRC" ]; then
-    log "源码树=$KSRC"
-    log "  vkms:    $([ -d "$KSRC/drivers/gpu/drm/vkms" ] && echo 有 || echo 无)"
-    log "  macvlan: $([ -f "$KSRC/drivers/net/macvlan.c" ] && echo 有 || echo 无)"
+    log "$B_SRC_TREE=$KSRC"
+    log "  vkms:    $([ -d "$KSRC/drivers/gpu/drm/vkms" ] && echo "$B_HAVE" || echo "$B_ABSENT")"
+    log "  macvlan: $([ -f "$KSRC/drivers/net/macvlan.c" ] && echo "$B_HAVE" || echo "$B_ABSENT")"
 else
-    warn "找不到内核源码树, 将退回仓库内副本"
+    warn "$B_NO_KSRC"
 fi
 
 # 把一组 .c 编成 obj-m := <mod>.o 形式的 Makefile
@@ -165,13 +170,13 @@ if [ -n "$KSRC" ] && [ -d "$KSRC/drivers/gpu/drm/vkms" ]; then
     # 正则失效, 补丁静默没打上, 产物里的 vkms 只建 card 没有 render node。
     if ! grep -q 'DRIVER_RENDER' "$DST/vkms_drv.c" 2>/dev/null; then
         if ! python3 "$WS/scripts/patch_vkms_driver_features.py" "$DST/vkms_drv.c"; then
-            warn "vkms @ $KMI (DRIVER_RENDER 补丁失败)"
+            warn "$(printf "$B_VKMS_DR_PATCH" "$KMI")"
         fi
     fi
     # 二次确认: 没打上就不出货 —— 没有 DRIVER_RENDER 的 vkms 只能建 card,
     # 拿不到 render node, 对 Wayland 合成器完全没用
     if ! grep -q 'DRIVER_RENDER' "$DST/vkms_drv.c" 2>/dev/null; then
-        warn "vkms @ $KMI (driver_features 里没有 DRIVER_RENDER, 跳过出货)"
+        warn "$(printf "$B_VKMS_NO_DR" "$KMI")"
         SKIP_VKMS=1
     fi
 
@@ -181,14 +186,14 @@ if [ -n "$KSRC" ] && [ -d "$KSRC/drivers/gpu/drm/vkms" ]; then
     # "Unknown symbol" 装不上（实测 5.10.269-gki）。
     # 两处都是纯调试功能，去掉不影响 render node。
     if ! python3 "$WS/scripts/patch_vkms_debugfs.py" "$DST"; then
-        warn "vkms @ $KMI (DEBUG_FS 兼容补丁失败, 跳过出货)"
+        warn "$(printf "$B_VKMS_DEBUGFS" "$KMI")"
         SKIP_VKMS=1
     fi
 
     log "  driver_features: $(grep -h 'driver_features' "$DST/vkms_drv.c" 2>/dev/null | head -1 | tr -s ' ')"
 
     if [ "${SKIP_VKMS:-0}" = "1" ]; then
-        warn "vkms @ $KMI (补丁未生效, 不编译)"
+        warn "$(printf "$B_VKMS_PATCH_NOEFF" "$KMI")"
     else
         gen_makefile "$DST" vkms "-DCONFIG_DRM_VKMS=1"
         if make -C "$KDIR" M="$DST" KCFLAGS="$GUARD_CFLAGS" modules -j"$NPROC"; then
@@ -198,7 +203,7 @@ if [ -n "$KSRC" ] && [ -d "$KSRC/drivers/gpu/drm/vkms" ]; then
         fi
     fi
 else
-    warn "vkms @ $KMI (内核树无源码)"
+    warn "$(printf "$B_VKMS_NO_SRC" "$KMI")"
 fi
 
 # ---------------------------------------------------------------------------
@@ -219,7 +224,7 @@ if [ -n "$KSRC" ] && [ -f "$KSRC/drivers/net/macvlan.c" ]; then
     # 依据与取舍写在 scripts/patch_macvlan.py 的头注释里。
     if [ -f "$WS/scripts/patch_macvlan.py" ]; then
         python3 "$WS/scripts/patch_macvlan.py" "$DST/macvlan.c" || \
-            warn "macvlan @ $KMI (源码改写失败，将有符号依赖)"
+            warn "$(printf "$B_MACVLAN_REWRITE" "$KMI")"
     fi
     gen_makefile "$DST" macvlan "-DCONFIG_MACVLAN=1"
     if make -C "$KDIR" M="$DST" KCFLAGS="$GUARD_CFLAGS" modules -j"$NPROC"; then
@@ -228,7 +233,7 @@ if [ -n "$KSRC" ] && [ -f "$KSRC/drivers/net/macvlan.c" ]; then
         warn "macvlan @ $KMI"
     fi
 else
-    warn "macvlan @ $KMI (内核树无源码)"
+    warn "$(printf "$B_MACVLAN_NO_SRC" "$KMI")"
 fi
 
 # ---------------------------------------------------------------------------
@@ -277,13 +282,13 @@ for m in pids cpu; do
           # 符号类型自检：防止"函数指针变量被误声明成函数"这类
           # 符号名对得上、运行时语义全错的问题流出去
           if ! reloc_audit "$OUT/droid_lkm_$m-$KMI.ko"; then
-              warn "droid_lkm_$m @ $KMI 符号类型自检失败，已删除产物"
+              warn "$(printf "$B_DLM_AUDIT" "$m" "$KMI")"
               rm -f "$OUT/droid_lkm_$m-$KMI.ko"
               continue
           fi
             log "  [OK]"
         else
-            warn "droid_lkm_$m @ $KMI (没有产物)"
+            warn "$(printf "$B_DLM_NOPROD" "$m" "$KMI")"
         fi
     else
         warn "droid_lkm_$m @ $KMI"
@@ -314,7 +319,7 @@ if [ -d "$UG" ]; then
         if [ -f "$UG/uart_guard.ko" ]; then
             cp "$UG/uart_guard.ko" "$OUT/uart_guard-$KMI.ko" && log "  [OK]"
         else
-            warn "uart_guard @ $KMI (没有产物)"
+            warn "$(printf "$B_UART_NOPROD" "$KMI")"
         fi
     else
         warn "uart_guard @ $KMI"
@@ -324,7 +329,7 @@ if [ -d "$UG" ]; then
     find "$UG" -name '*.ko' -delete 2>/dev/null || true
     rm -f "$UG"/modules.order "$UG"/Module.symvers 2>/dev/null || true
 else
-    warn "uart_guard @ $KMI (缺少 extra/uart_guard)"
+    warn "$(printf "$B_UART_NOSRC" "$KMI")"
 fi
 
 # ---------------------------------------------------------------------------
@@ -349,17 +354,17 @@ if [ -d "$MN" ]; then
         if [ -f "$MN/mali_nsfix.ko" ]; then
             cp "$MN/mali_nsfix.ko" "$OUT/mali_nsfix-$KMI.ko" && log "  [OK]"
         else
-            warn "mali_nsfix @ $KMI (没有产物)"
+            warn "$(printf "$B_MALI_NOPROD" "$KMI")"
         fi
     else
-        warn "mali_nsfix @ $KMI (编译失败，实验模块，不阻断)"
+        warn "$(printf "$B_MALI_FAIL" "$KMI")"
     fi
     find "$MN" -name '*.o' -delete 2>/dev/null || true
     find "$MN" -name '.*.cmd' -delete 2>/dev/null || true
     find "$MN" -name '*.ko' -delete 2>/dev/null || true
     rm -f "$MN"/modules.order "$MN"/Module.symvers 2>/dev/null || true
 else
-    warn "mali_nsfix @ $KMI (缺少 extra/mali_nsfix)"
+    warn "$(printf "$B_MALI_NOSRC" "$KMI")"
 fi
 
 
@@ -391,7 +396,7 @@ fi
 #       编译用的内核树比目标内核老，这类符号永远不可能在目标上解析到。
 # ---------------------------------------------------------------------------
 echo
-echo "=== $KMI 符号自检 ==="
+echo "$(printf "$B_SYMCHECK_HEAD" "$KMI")"
 BAD_SYMS="__stack_chk_guard cgroup_rm_cftypes drm_crtc_add_crc_entry \
 file_remove_privs seq_escape_mem kill_pid path_put kern_path \
 ip_check_defrag __netif_rx ndo_dflt_fdb_dump"
@@ -401,7 +406,7 @@ for ko in "$OUT"/*-"$KMI".ko; do
     undef=$(nm -u "$ko" 2>/dev/null | awk '{print $2}')
     for sym in $BAD_SYMS; do
         if echo "$undef" | grep -qx "$sym"; then
-            echo "  [SYM] $(basename "$ko") 依赖 $sym —— 部分内核不导出"
+            echo "  [SYM] $(printf "$B_SYM_BAD" "$(basename "$ko")" "$sym")"
             bad=$((bad + 1))
         fi
     done
@@ -409,17 +414,17 @@ for ko in "$OUT"/*-"$KMI".ko; do
     [ -n "$vh" ] && { echo "  [SYM] $(basename "$ko") 依赖 vendor hook:"; echo "$vh" | sed 's/^/         /'; bad=$((bad + 1)); }
 done
 if [ "$bad" -eq 0 ]; then
-    echo "  [OK] 无已知不可移植符号"
+    echo "  [OK] $B_SYM_OK"
 else
-    echo "  [WARN] 共 $bad 处，装机前请确认目标内核的导出表"
+    echo "  [WARN] $(printf "$B_SYM_WARN" "$bad")"
 fi
 
 echo
-echo "=== $KMI 产物 ==="
+echo "$(printf "$B_PROD_HEAD" "$KMI")"
 ls -lh "$OUT" 2>/dev/null
 echo
 if [ ${#FAILED[@]} -gt 0 ]; then
-    echo "=== 本 KMI 失败项 (${#FAILED[@]}) ==="
+    echo "$(printf "$B_FAIL_HEAD" "${#FAILED[@]}")"
     printf '  - %s\n' "${FAILED[@]}"
 fi
 # 不返回非 0: 部分模块失败不应中断整条矩阵, 其余 KMI 还应继续产出。
@@ -438,11 +443,11 @@ fi
       [ -f "$OUT/$want-$KMI.ko" ] || missing="$missing $want"
   done
   if [ -n "$missing" ]; then
-      echo "  [FAIL] $KMI 缺少模块:$missing"
-      echo "         残缺的模块包不能发布"
+      echo "  $(printf "$B_MISSING" "$KMI" "$missing")"
+      echo "         $B_INCOMPLETE"
       exit 1
   fi
-  echo "  [OK] 8/8 模块齐全"
+  echo "  [OK] $B_ALL_PRESENT"
 
   # ---------------------------------------------------------------------
   # 内核导出依赖清单
@@ -463,9 +468,9 @@ fi
       if command -v "$c" >/dev/null 2>&1; then NM="$c"; break; fi
   done
   if [ -z "$NM" ]; then
-      echo "  [WARN] 找不到 nm/llvm-nm，符号依赖清单会是空的（装机时无法报出缺哪个符号）"
+      echo "  [WARN] $B_NO_NM"
   else
-      echo "  [OK] 符号提取工具: $NM"
+      echo "  [OK] $(printf "$B_NM_TOOL" "$NM")"
   fi
   for ko in "$OUT"/*-"$KMI".ko; do
       [ -f "$ko" ] || continue
@@ -476,6 +481,6 @@ fi
           while read -r s; do echo "$mod $s"; done >> "$SYMFILE"
   done
   n_syms=$(wc -l < "$SYMFILE" 2>/dev/null || echo 0)
-  echo "  [OK] 符号依赖清单: $(basename "$SYMFILE")（$n_syms 条）"
+  echo "  [OK] $(printf "$B_MANIFEST" "$(basename "$SYMFILE")" "$n_syms")"
 
 exit 0
