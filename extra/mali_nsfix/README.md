@@ -1,5 +1,7 @@
 # mali_nsfix
 
+[中文](README.zh-CN.md)
+
 Redirect `find_get_pid()` calls made by the Mali `kbase` driver so that GPU
 context creation works from inside a PID namespace, without rebuilding the
 vendor module.
