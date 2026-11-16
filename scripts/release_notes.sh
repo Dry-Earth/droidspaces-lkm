@@ -77,7 +77,7 @@ list_items() {
         /^---[[:space:]]*$/ { next }
         /^- / { sub(/^- /, "* "); print; next }
         { print }
-    ' "$_f" | cat -s
+    ' "$_f" | cat -s | sed '/./,$!d'
 }
 
 # 中文条目里的小节标题翻成英文，避免正文出现两套标题体系
