@@ -355,7 +355,7 @@ index e9e9549..06bd547 100644
  {
  #define VNS_OVL_VFSC_RESOLVE(name) \
 diff --git a/glue/vendor_kernel_ovl_vfs_compat.h b/glue/vendor_kernel_ovl_vfs_compat.h
-index f326a9a..ae87f90 100644
+index f326a9a..671aea4 100644
 --- a/glue/vendor_kernel_ovl_vfs_compat.h
 +++ b/glue/vendor_kernel_ovl_vfs_compat.h
 @@ -135,6 +135,18 @@ int vfs_path_lookup(struct dentry *dentry, struct vfsmount *mnt,
@@ -377,7 +377,7 @@ index f326a9a..ae87f90 100644
  /* backing_file_open() exists since 6.6 (in <linux/fs.h>); the full
   * backing_file_ctx-based API (backing_file_read_iter()/write_iter()/
   * splice_read()/splice_write()/mmap(), later moved to its own
-@@ -534,6 +546,39 @@ static inline void generic_fill_statx_attr(struct inode *inode, struct kstat *st
+@@ -534,11 +546,45 @@ static inline void generic_fill_statx_attr(struct inode *inode, struct kstat *st
  	X(security_file_ioctl) \
  	X(iterate_dir) \
  	X(vfs_setpos) \
@@ -394,7 +394,6 @@ index f326a9a..ae87f90 100644
 +	X(d_path) \
 +	X(d_splice_alias) \
 +	X(drop_nlink) \
-+	X(generic_encode_ino32_fh) \
 +	X(generic_permission) \
 +	X(iget5_locked) \
 +	X(ilookup5) \
@@ -417,7 +416,15 @@ index f326a9a..ae87f90 100644
  	VNS_OVL_VFSC_KFOPEN_ENTRY(X) \
  	VNS_OVL_VFSC_BFOPEN_ENTRY(X) \
  	VNS_OVL_VFSC_VPMSEP_ENTRY(X) \
-@@ -643,6 +688,40 @@ static inline void generic_fill_statx_attr(struct inode *inode, struct kstat *st
+ 	VNS_OVL_VFSC_VMASETFILE_ENTRY(X) \
+-	VNS_OVL_VFSC_DTMPFILE_ENTRY(X)
++	VNS_OVL_VFSC_DTMPFILE_ENTRY(X) \
++	X(ihold) \
++	X(generic_read_dir)
+ 
+ #if !VNS_OVL_NEED_BACKING_FILE_FALLBACK
+ #define VNS_OVL_VFS_COMPAT_LIST_BF(X) \
+@@ -643,6 +689,40 @@ static inline void generic_fill_statx_attr(struct inode *inode, struct kstat *st
  	X(security_file_ioctl) \
  	X(iterate_dir) \
  	X(vfs_setpos) \
@@ -458,7 +465,7 @@ index f326a9a..ae87f90 100644
  	X(lookup_positive_unlocked) \
  	VNS_OVL_VFSC_VMASETFILE_ENTRY(X) \
  	X(d_tmpfile)
-@@ -656,9 +735,16 @@ static inline void generic_fill_statx_attr(struct inode *inode, struct kstat *st
+@@ -656,9 +736,16 @@ static inline void generic_fill_statx_attr(struct inode *inode, struct kstat *st
  #endif /* MID */
  
  #if VNS_OVL_TIER_OLD
@@ -475,7 +482,7 @@ index f326a9a..ae87f90 100644
  	X(errseq_sample) \
  	X(mntput) \
  	X(__mnt_is_readonly) \
-@@ -743,8 +829,37 @@ static inline void generic_fill_statx_attr(struct inode *inode, struct kstat *st
+@@ -743,8 +830,37 @@ static inline void generic_fill_statx_attr(struct inode *inode, struct kstat *st
  	X(generic_fillattr) \
  	X(vfs_path_lookup) \
  	X(rw_verify_area) \
@@ -515,7 +522,7 @@ index f326a9a..ae87f90 100644
  #define VNS_OVL_VFS_COMPAT_LIST_BF(X)
  #endif /* OLD */
  
-@@ -903,6 +1018,41 @@ static inline void vns_ovl_revert_creds_compat(const struct cred *revert_cred)
+@@ -903,6 +1019,40 @@ static inline void vns_ovl_revert_creds_compat(const struct cred *revert_cred)
  #define vfs_iocb_iter_read (*vns_ovl_vfsc_vfs_iocb_iter_read)
  #define vfs_iocb_iter_write (*vns_ovl_vfsc_vfs_iocb_iter_write)
  #define iter_file_splice_write (*vns_ovl_vfsc_iter_file_splice_write)
@@ -534,7 +541,6 @@ index f326a9a..ae87f90 100644
 +#define d_path (*vns_ovl_vfsc_d_path)
 +#define d_splice_alias (*vns_ovl_vfsc_d_splice_alias)
 +#define drop_nlink (*vns_ovl_vfsc_drop_nlink)
-+#define generic_encode_ino32_fh (*vns_ovl_vfsc_generic_encode_ino32_fh)
 +#define generic_permission (*vns_ovl_vfsc_generic_permission)
 +#define iget5_locked (*vns_ovl_vfsc_iget5_locked)
 +#define ilookup5 (*vns_ovl_vfsc_ilookup5)
