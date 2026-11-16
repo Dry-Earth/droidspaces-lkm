@@ -13,6 +13,140 @@
 `10001`–`10003` 这种小数字；如果新版本还用 `100`，KernelSU 更新器会认为
 100 < 10003 而不推送更新。日期编码天然单调递增，不会再因为版本号重置而倒退。
 
+## v0.1.23 — 符号兼容层覆盖到全部七个 KMI
+
+`versionCode` 由构建时自动写入（`YYYYMMDDHHMM` 时间戳，见
+`.github/workflows/build.yml`），保证 KernelSU 更新器认为它比上一版新。
+
+v0.1.22 把符号兼容做到了「issue #2 报的八个符号不再出现」，但那只覆盖了两个
+KMI（5.15 / 6.1）。这一版把同一套机制铺到**全部七个**，并把缺口从「出问题再修」
+改成「构建期就能拦住」。
+
+### 起点
+
+v0.1.22 发布后，`nm -u` 实测每个 KMI 的 `lkm4ctr` 还有多少 VFS 类静态导入：
+
+| KMI | 层 | 静态导入 |
+|---|---|---|
+| android12-5.10 | OLD | 29 |
+| android13-5.10 | OLD | 29 |
+| android13-5.15 | MID | 29 |
+| android14-5.15 | MID | 29 |
+| android14-6.1 | MID | 6 |
+| android15-6.6 | NEW | 37 |
+| android16-6.12 | NEW | 40 |
+
+只有 MID 那一层是好的 —— 因为 v0.1.22 只修了 MID。OLD（5.10）和 NEW（6.6/6.12）
+的兼容清单里根本没有这些符号。
+
+### 收尾
+
+| KMI | 静态导入 | 降幅 |
+|---|---|---|
+| android12-5.10 | 2 | −93% |
+| android13-5.10 | 2 | −93% |
+| android13-5.15 | 2 | −93% |
+| android14-5.15 | 2 | −93% |
+| android14-6.1 | 3 | −50% |
+| android15-6.6 | 5 | −86% |
+| android16-6.12 | 8 | −80% |
+
+剩下的都是内核必然导出的基础设施（`percpu_counter_add_batch`、
+`__percpu_down_read` 之类），不是可裁的辅助函数。
+
+### 三种机制，对应三类失效
+
+调同一个符号，可能因为三种完全不同的原因让 `#define` 失效：
+
+**一、符号在 inline 体里被调用**
+
+`include/linux/fs.h` 的 `alloc_inode_sb()`、`<linux/percpu_counter.h>` 的
+`percpu_counter_init()` 都是 inline，函数体在头文件解析时就展开了，早于我们
+compat 头的 `#define`。对象式宏管不到。
+
+→ 用**同名函数**：模块内所有引用都链到我们自己的定义，不受宏展开顺序影响。
+
+**二、符号被取地址**
+
+`vendor/fs/overlayfs/readdir.c` 的 `.read = generic_read_dir` 是放进
+`struct file_operations` 的初始化器 —— `(*ptr)` 不是编译期常量，整个 `.ko`
+编译失败（`initializer element is not a compile-time constant`）。
+
+→ 同样用同名函数。这是 `generic_read_dir`、`kmem_cache_alloc_lru` 走同名函数
+而其余走 `#define` 的原因。
+
+**三、调用点不在兼容头的 include 链上**
+
+`glue/lkm4ctr_diagfs.c` 和 `glue/lkm4ctr_hotreload.c` 用的是轻量头
+`vns_vfs_shared_syms.h`，够不到 overlayfs 的兼容头；`vendor/fs/overlayfs/
+overlayfs.h` 里的 inline 又早于所有 `.c`。
+
+→ 轻量头补 extern，兼容层补同名函数。
+
+### 版本变体
+
+几个符号在 6.x 中间改过形态，不能一个名字走到底：
+
+| 符号 | 变化 |
+|---|---|
+| `kmem_cache_alloc_lru` | **6.10** 起变成宏，真符号叫 `_noprof` |
+| `__percpu_counter_init` | **6.10** 起变成 `_many`（多一个 `nr_counters` 参数）|
+| `d_tmpfile` | **6.7** 起改名 `d_mark_tmpfile` |
+| `d_parent_ino` | **6.12** 新增 |
+| `generic_encode_ino32_fh` | **6.9** 新增 |
+
+全部做成条件条目宏（`VNS_OVL_VFSC_*_ENTRY`），每个宏都有真分支和空分支，
+**并列**而不是嵌套 —— 嵌套会让外层条件为假时内层宏未定义。
+
+`generic_encode_ino32_fh` 有一点特殊：6.9 以下原代码把它降级成 `NULL`
+（那时默认编码器就是 NULL），6.9+ 改成运行时指针。两者版本互斥。
+
+### 构建期防护
+
+`scripts/build_modules.sh` 里原来有一个 `BAD_SYMS` 检查，但只 `[WARN]` 不失败，
+而且清单只有 12 条。这一版扩到 **53 条**，并新增一条硬检查：
+
+```
+MUST_NOT_APPEAR="get_next_ino cgroup_add_dfl_cftypes dev_forward_skb
+                 eth_header_cache eth_header_cache_update
+                 drmm_crtc_init_with_planes ..."
+```
+
+这 15 个是**已验证修好**的符号。一旦它们重新出现在某个 `.ko` 的 `nm -u` 里，
+`build_modules.sh` 直接 `exit 1` —— 宁可这一格 CI 变红，也不要发出一个用户装不上
+的包。
+
+区分两档的原因：`BAD_SYMS` 里还有历史包袱（部分符号在某些内核上本来就该静态
+引用），只能软告警；`MUST_NOT_APPEAR` 里的回退一定是缺陷。
+
+### 顺带修掉的
+
+**macvlan 的 `dev_forward_skb`**：v0.1.22 把 `__dev_forward_skb` 改写成
+`dev_forward_skb`，但 6.12 的厂商内核**两个都没导出** —— 等于把 A 的缺失换成
+B 的缺失。改成同名转发函数，优先 `dev_forward_skb`，回退 `__dev_forward_skb`，
+两个都没有时 `kfree_skb` + 返回 `-EINVAL`。
+
+**vkms 的 `drmm_crtc_init_with_planes`**：6.12 厂商只裁了较新的 `drmm_` 版本。
+换成 `drm_crtc_init_with_planes` —— 两者签名**完全相同**（都是 variadic），
+上游都 `EXPORT_SYMBOL`，是纯 drop-in。语义差异只有清理方式，而 vkms 的 CRTC
+挂在 `drm_mode_config` 的 `crtc_list` 上，`drm_mode_config_cleanup()` 会统一清理。
+
+**`droid_lkm_cpu` / `droid_lkm_pids` 的 `cgroup_add_dfl_cftypes`**：原来直接调用，
+而同一个模块里的 `cgroup_rm_cftypes` 早就走 `cpu_ksym()` 解析了。改成同样走指针。
+
+**崩溃现场自动采集**：`post-fs-data.sh` 启动时检查 `/sys/fs/pstore/`，有内容就
+说明上次是内核崩溃退出的，复制到 `/data/adb/droidspaces_lkm.d/pstore-<时间戳>.txt`
+并提示用户贴到 issue。和原有的「面包屑」（卡死但没 panic）互补。
+
+### 验证
+
+七个 KMI 全部构建通过，`[SYM]` 检查全部为 0；`MUST_NOT_APPEAR` 零回退。
+产物用 `nm -u` 逐项确认。
+
+`lkm4ctr_lite`（不带 vendored overlayfs 的精简版）同样受益 —— 它排除 overlayfs
+但保留 `ipc/mqueue.o`、`glue/lkm4ctr_diagfs.c`、`fs/nsfs.o`，那些文件的 VFS 依赖
+正是靠这一层的同名转发函数覆盖。
+
 ## v0.1.22 — 符号兼容性、日志诊断、国际化
 
 `versionCode` 2026111600。
