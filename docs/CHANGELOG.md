@@ -13,6 +13,90 @@
 `10001`–`10003` 这种小数字；如果新版本还用 `100`，KernelSU 更新器会认为
 100 < 10003 而不推送更新。日期编码天然单调递增，不会再因为版本号重置而倒退。
 
+## v0.1.22 — 符号兼容性、日志诊断、国际化
+
+`versionCode` 2026111600。
+
+这一版主要解决一件事：**模块在部分厂商内核上装不上，而用户报上来的日志里看不出
+缺哪个符号**。围绕这个问题改了三层，并顺带补上 Mali 命名空间修复和全仓国际化。
+
+### 符号兼容性
+
+起因是 issue #2：Meizu 21 Pro（6.1.25）上 `lkm4ctr` 和 `macvlan` 装不上，报
+`Unknown symbol`。用报告者提供的 `boot.img` 确认这些符号**在 kallsyms 里存在，
+只是没有 `EXPORT_SYMBOL`** —— 模块加载只查导出表，所以失败；而运行时按名查
+kallsyms 能拿到。
+
+| 模块 | 原静态导入 | 修法 |
+|---|---|---|
+| `droid_lkm_cpu` | `path_put`、`kern_path`、`memory_cgrp_subsys` | 运行时解析，双重回退 + shim 撞名保护 |
+| `lkm4ctr` | `file_remove_privs`、`seq_escape_mem`、`kill_pid` | 同名函数转发（参照上游 PR #13），内部调运行时解析 |
+| `macvlan` | `ip_check_defrag`、`__netif_rx`、`ndo_dflt_fdb_dump` | 构建期源码改写，见 `scripts/patch_macvlan.py` |
+
+`droid_lkm_cpu` 另补两处 `__nocfi`：改成间接调用后，`CONFIG_CFI_CLANG=y` 的内核
+会在调用点做类型校验，不标注会 panic。这个内核我们自己就有。
+
+`macvlan` 的三处替换里只有 `ip_check_defrag` 有语义损失（不再重组 IP 分片），
+另两处等价：`.ndo_fdb_dump = NULL` 时 `rtnl_fdb_dump()` 本来就会回退到
+`ndo_dflt_fdb_dump`；`__netif_rx` 与 `netif_rx` 是同一收包路径的两个入口。
+
+产物已用 `nm -u` 逐项验证，八个符号不再出现在任何 `.ko` 的未定义符号里。
+
+### 日志诊断
+
+`insmod` 失败只回一句 `unknown symbol in module`，具体符号在 `dmesg` 里。但
+issue #2 里两台设备，一台能读 `dmesg` 一台读不到 —— 后者提供的报告完全没有信息量。
+
+现在构建期用 `nm -u` 把每个 `.ko` 的未定义符号导成 `ko/symcheck-<kmi>.txt` 打进包；
+运行期（`action.sh`、`service.sh`）拿清单查 `/proc/kallsyms` 的 `__ksymtab_` 条目，
+直接报出本内核缺哪几个符号，不依赖 `dmesg`。
+
+第一版实现逐条 `grep` 整个 `/proc/kallsyms`，641 条依赖 × 二十多万行，在 KernelSU
+的「操作」按钮里表现为卡死。改成一次读取 + awk 单趟比对后 25 ms。
+
+### Mali 命名空间（首次发布）
+
+`mali_nsfix`：kprobe `find_get_pid()`，把 `mali_kbase` 调用者的查找重定向到
+`get_task_pid(current->group_leader, ...)`。`task_struct->tgid` 永远是初始命名空间
+的值，而原函数查的是调用者的活动命名空间，容器里两者不一致，`kbase_create_context()`
+因此失败并映射成 `-ENOMEM`。详见 `extra/mali_nsfix/README.md`。
+
+容器内已实测能创建 GPU context（5/5 成功）。
+
+### 国际化
+
+模块文案按系统语言显示（zh / ja / en，未翻译语言回退英文），英文为默认。
+覆盖安装期（`customize.sh`）、「操作」按钮（`action.sh`）、开机日志（`service.sh`）。
+
+**机器可读的部分不翻译**：`[OK]` / `[FAIL]` / `[MISS]` / `[SYM]` 标记、符号名、
+KMI 标签、内核版本串、路径。只翻译标记后面的人读描述 —— 这样用户贴出来的日志
+既能被人读懂，也能被 grep。
+
+顺带把两个中文标记改成语言中立的：`[缺]` / `[缺符号]` → `[SYM]`。
+
+构建脚本同样国际化：`scripts/i18n.sh`（shell）与 `scripts/i18n.py`（Python），
+判定规则一致。`release_notes.sh` 的输出直接成为 Release 正文，GitHub 不按用户语言
+分发正文，所以中英两段并列输出。
+
+### 其他
+
+- **包名带版本号**：`droidspaces-lkm-arm64-<ver>.zip`。之前所有版本都叫
+  `droidspaces-lkm-arm64.zip`，下多个版本后本地分不清哪个是哪个，Release 页面上
+  不同发布的资产名也完全相同。
+- **`module.prop` 的 version 之前从不更新**：仓库里写死 `v0.1.21`，所有测试构建
+  都报同一个号，用户贴日志时无法判断装的是哪一版。现在按 tag 写入。
+- **`action.sh` 的 KMI 推导缺回退**：只抄了 `service.sh` 的第一段模式，而那个模式
+  要求内核串里出现字面量 `-6.1`，实际串是 `6.1.157-android14-11-...`，永远匹配
+  不上。现在按 `androidNN` + `X.Y` 拼接，并从日志兜底读取。
+- **`extra/` 补中英文 README**，英文为默认。
+- `description` 从 195 字符压到 91，`virtual DRM render node` → `vkms`、
+  `cgroup CPU/PID limits` → `cgroup cpu.max/pids`。
+
+### 已知限制
+
+`macvlan` 在 source 模式下不再重组 IP 分片。分片流量在容器场景少见，而代价是整个
+模块装不上 —— 取舍偏向可用性。
+
 ## v0.1.21 — 升级 KallRecon 到上游最新
 
 `versionCode` 20261136。
