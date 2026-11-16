@@ -819,7 +819,18 @@ static struct ctl_table cpu_sched_sysctls[] = {
 
 static struct ctl_table_header *cpu_sysctl_hdr;
 
-static void cpu_sysctl_register(void)
+/*
+ * __nocfi 是必需的，不是保险：这个函数通过 p_kern_path/p_path_put 做间接调用，
+ * 而 CONFIG_CFI_CLANG=y 的内核会在每个间接调用点插检查，目标地址的
+ * 类型签名对不上就 panic。解析出来的内核函数指针不经过 kCFI 的类型登记，
+ * 所以凡是"调用解析指针"的函数都必须标 __nocfi —— 本文件里
+ * cpu_sig_cgroup / cpu_read_usage / cpu_layout_init / cpu_tick 都标了，
+ * 这两处是漏的。
+ *
+ * 参照：Dere3046/_patchHarmony 的 issue #12，MT6989 + CFI_CLANG 的内核上
+ * 就是这类间接调用触发的 panic。
+ */
+static void __nocfi cpu_sysctl_register(void)
 {
 	struct path p;
 
@@ -891,7 +902,9 @@ static int __init droid_lkm_cpu_init(void)
 	return 0;
 }
 
-static void __exit droid_lkm_cpu_exit(void)
+/* 同 cpu_sysctl_register：p_cgroup_rm_cftypes 是解析出来的指针，
+ * 间接调用必须绕开 CFI 检查，否则卸载模块时 panic。 */
+static void __exit __nocfi droid_lkm_cpu_exit(void)
 {
 	struct cpu_priv *p;
 	unsigned long idx;
