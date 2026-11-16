@@ -111,6 +111,153 @@ for old_name, new_name in (("dev_uc_add_excl(", "dev_uc_add("),
         s = s.replace(old_name, new_name)
         done.append(f"{old_name[:-1]} -> {new_name[:-1]} {n} 处")
 
+# ---------------------------------------------------------------------------
+# 6. 注入同名转发函数（只处理「A 换 B 也不可靠」的三个）
+#
+# issue #3（K90PM）/ #4（一加15）是 6.12.23-android16-5，这三台内核把
+# __dev_forward_skb 和 dev_forward_skb **都**裁掉了，所以第 4 步的
+# 「__dev_forward_skb → dev_forward_skb」在这类内核上等于没修。
+#
+# eth_header_cache / eth_header_cache_update 又是**取地址**用的
+# （.cache = eth_header_cache），#define 成 (*ptr) 不是编译期常量。
+#
+# 统一改成同名转发函数：
+#   * 模块内所有引用（调用 / 取地址）都链到这里，不产生静态导入
+#   * 函数体在运行时解析的指针上做二次兜底
+#   * 解析不到时：int 返回 -EINVAL、void 直接返回，调用点能安全退化
+# ---------------------------------------------------------------------------
+if "MACVLAN_SYMRES" not in s:
+    shim = r"""
+/* ---- MACVLAN_SYMRES begin ---------------------------------------------
+ *
+ * 部分厂商内核把下列 net 辅助函数裁掉了 EXPORT_SYMBOL（函数本体仍在
+ * kallsyms 里）。静态链接会让整个 macvlan 装不上：
+ *
+ *   Qualcomm SM7675 / 6.1.138   __dev_forward_skb dev_mc_add_excl dev_uc_add_excl
+ *   Meizu 6.1.25                同上 + eth_header_cache* 之外的一批
+ *   6.12.23-android16-5         上一批 + dev_forward_skb eth_header_cache
+ *                               eth_header_cache_update（issue #3 / #4）
+ *
+ * 这三个用**同名转发函数**而不是 #define：
+ *   - eth_header_cache / eth_header_cache_update 在 struct header_ops 初始化里
+ *     被取地址，(*ptr) 不是编译期常量；
+ *   - dev_forward_skb 在 macvlan_broadcast() 里是普通调用，但第 4 步的替换
+ *     会把 macvlan_forward_source_one() 也压到它上面，必须两种用法都支持。
+ *
+ * 模块内所有引用都链到这里，不产生静态导入；函数体转发到运行时解析的地址。
+ * 解析机制同 zram-lkm 的 extra/compat/zram_symres.h：kprobe 拿
+ * kallsyms_lookup_name，再查具体符号。
+ */
+#include <linux/kprobes.h>
+#include <linux/etherdevice.h>
+#include <linux/netdevice.h>
+
+#ifndef __nocfi
+#define __nocfi
+#endif
+
+static int  (*mv_p_dev_forward_skb)(struct net_device *, struct sk_buff *);
+static int  (*mv_p___dev_forward_skb)(struct net_device *, struct sk_buff *);
+static int  (*mv_p_eth_header_cache)(const struct neighbour *, struct hh_cache *,
+				     __be16);
+static void (*mv_p_eth_header_cache_update)(struct hh_cache *,
+					    const struct net_device *,
+					    const unsigned char *);
+
+static unsigned long mv_lookup(const char *name)
+{
+	static unsigned long (*kln)(const char *);
+	struct kprobe kp;
+	unsigned long addr;
+
+	if (!kln) {
+		memset(&kp, 0, sizeof(kp));
+		kp.symbol_name = "kallsyms_lookup_name";
+		if (!register_kprobe(&kp)) {
+			kln = (void *)kp.addr;
+			unregister_kprobe(&kp);
+		}
+	}
+	if (kln)
+		return kln(name);
+
+	memset(&kp, 0, sizeof(kp));
+	kp.symbol_name = name;
+	if (register_kprobe(&kp))
+		return 0;
+	addr = (unsigned long)kp.addr;
+	unregister_kprobe(&kp);
+	return addr;
+}
+
+static void mv_resolve_syms(void)
+{
+	mv_p_dev_forward_skb     = (void *)mv_lookup("dev_forward_skb");
+	mv_p___dev_forward_skb   = (void *)mv_lookup("__dev_forward_skb");
+	mv_p_eth_header_cache    = (void *)mv_lookup("eth_header_cache");
+	mv_p_eth_header_cache_update =
+		(void *)mv_lookup("eth_header_cache_update");
+}
+
+/*
+ * dev_forward_skb - 同名转发。
+ * 优先 dev_forward_skb（导出的那个，自带 rx 计数）；没有就退到
+ * __dev_forward_skb（语义等价，少一层计数）。
+ */
+int __nocfi dev_forward_skb(struct net_device *dev, struct sk_buff *skb)
+{
+	if (mv_p_dev_forward_skb)
+		return mv_p_dev_forward_skb(dev, skb);
+	if (mv_p___dev_forward_skb)
+		return mv_p___dev_forward_skb(dev, skb);
+	kfree_skb(skb);
+	return -EINVAL;
+}
+
+/* eth_header_cache - 同名转发（被 .cache = eth_header_cache 取地址）。 */
+int __nocfi eth_header_cache(const struct neighbour *neigh, struct hh_cache *hh,
+			     __be16 type)
+{
+	if (!mv_p_eth_header_cache)
+		return -EINVAL;
+	return mv_p_eth_header_cache(neigh, hh, type);
+}
+
+/* eth_header_cache_update - 同名转发（同上，被 .cache_update 取地址）。 */
+void __nocfi eth_header_cache_update(struct hh_cache *hh,
+				     const struct net_device *dev,
+				     const unsigned char *haddr)
+{
+	if (mv_p_eth_header_cache_update)
+		mv_p_eth_header_cache_update(hh, dev, haddr);
+}
+
+/* ---- MACVLAN_SYMRES end ----------------------------------------------- */
+"""
+    # 插在最后一个 #include 之后（与第 2 步的 helper 不冲突：那个用 inline）
+    last = 0
+    pos = 0
+    while True:
+        pos = s.find("#include", pos)
+        if pos < 0:
+            break
+        last = pos
+        pos += 1
+    eol = s.find("\n", last)
+    if eol < 0:
+        eol = len(s)
+    s = s[:eol + 1] + shim + s[eol + 1:]
+    done.append("注入 MACVLAN_SYMRES 同名转发 shim（3 个符号）")
+
+    # 在 module_init 里调用解析
+    import re as _re
+    m = _re.search(r"static int __init macvlan_init_module\(void\)\s*\{", s)
+    if m and "mv_resolve_syms();" not in s:
+        s = s.replace(m.group(0), m.group(0) + "\n\tmv_resolve_syms();", 1)
+        done.append("module_init 里调用 mv_resolve_syms()")
+    elif not m:
+        done.append("⚠ 找不到 macvlan_init_module")
+
 if s != orig:
     p.write_text(s, encoding="utf-8", errors="surrogateescape")
 
