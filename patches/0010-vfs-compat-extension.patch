@@ -1019,7 +1019,7 @@ index 0000000..6b476d6
 +#endif /* _VNS_VFS_SHARED_SYMS_H */
 \ No newline at end of file
 diff --git a/vendor/Makefile b/vendor/Makefile
-index e8e465e..709bb54 100644
+index e8e465e..1fa0ff2 100644
 --- a/vendor/Makefile
 +++ b/vendor/Makefile
 @@ -13,12 +13,27 @@
@@ -1069,20 +1069,18 @@ index e8e465e..709bb54 100644
  	kernel/cgroup/namespace.o \
  	kernel/time/namespace.o \
  	../glue/vendor_kernel_module.o \
-@@ -63,11 +67,31 @@ lkm4ctr-objs := \
- 	../glue/vendor_kernel_syscalls_userns.o \
- 	../glue/vendor_kernel_procfs.o \
- 	../glue/vendor_kernel_procfs_userns.o \
--	../glue/vendor_kernel_overlay.o \
- 	../glue/vendor_kernel_ovl_vfs_compat.o \
+@@ -68,6 +72,30 @@ lkm4ctr-objs := \
  	../glue/vendor_kernel_diag.o \
  	../glue/vendor_kernel_compat.o
  
 +# 只有 full 版才链接的部分
++#
++# 注意：vendor_kernel_overlay.o 必须在 BASE 里，不在这个列表。
++# 它虽然负责「把 vendored overlayfs 挂上去」，但 VNS_NO_OVERLAYFS 时正是它的
++# stub 分支提供 vns_overlay_init/exit/diag_snprintf —— 抽走会让 lite 版报
++# "Unknown symbol vns_overlay_init"（真机实测过）。
 +LKM4CTR_OVL_OBJS := \
-+	../glue/vendor_kernel_overlay.o \
-+	fs/overlayfs/super.o \
-+	fs/overlayfs/namei.o \
++	fs/overlayfs/super.o \	fs/overlayfs/namei.o \
 +	fs/overlayfs/util.o \
 +	fs/overlayfs/inode.o \
 +	fs/overlayfs/dir.o \
