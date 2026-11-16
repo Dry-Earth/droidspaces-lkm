@@ -232,6 +232,18 @@ jobs:
           bash ci/build-hummer-modules-host.sh
           ls -lh out
 
+      - name: Verify every payload targets this kernel
+        run: |
+          set -eux
+          for ko in out/*.ko; do
+            if ! strings "$ko" | grep -q "vermagic=$EXPECTED_RELEASE "; then
+              echo "::error::$ko does not target $EXPECTED_RELEASE"
+              strings "$ko" | grep -m1 'vermagic=' || true
+              exit 1
+            fi
+            echo "ok: $(basename "$ko")"
+          done
+
       - name: Package KernelSU module
         run: |
           set -eux
