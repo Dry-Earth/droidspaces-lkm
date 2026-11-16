@@ -135,6 +135,14 @@ def find_exports(img):
     sys.exit("  试了 %d 个候选区间都不满足 sanity check —— 拒绝给出可能错误的结论" % tried)
 
 
+
+def _kmi_of(name):
+    """从目录名里抠出 androidNN-X.Y。"""
+    import re as _re
+    m = _re.search(r"(android\d+-\d+\.\d+)", name)
+    return m.group(1) if m else None
+
+
 def nm_undefined(ko):
     for tool in ("nm", "llvm-nm"):
         try:
@@ -159,6 +167,9 @@ def main():
     ap.add_argument("--exports", type=Path)
     ap.add_argument("--dump", type=Path)
     ap.add_argument("--kos", type=Path, action="append")
+    ap.add_argument("--kmi", help="这台内核的 KMI，例如 android14-6.1；"
+                                  "给了就检查 .ko 目录是否匹配，不匹配会警告"
+                                  "（否则 5.10 的模块对 6.1 内核会报一堆假缺失）")
     args = ap.parse_args()
 
     if not args.bootimg and not args.exports:
@@ -179,11 +190,25 @@ def main():
     if not args.kos:
         return 0
 
+    kver_hint = args.kmi
+
+    # 模块文件名带 KMI（androidNN-X.Y）；如果和这台内核的 KMI 不一致，
+    # 得到的「缺失」全是假阳性 —— 5.10 的模块本来就不可能匹配 6.1 的内核。
+    # 这里从 bootimg 的 kernel 里推断不出 KMI，所以只在目录名带 KMI 时提示。
     total = 0
+    skipped = 0
     print()
     for d in args.kos:
         print("  === %s ===" % d.name)
         for ko in sorted(d.glob("*.ko")):
+            # 每个 .ko 的文件名带自己的 KMI。用别的 KMI 的模块去比对这台内核，
+            # 得到的「缺失」全是版本不匹配的假阳性 —— 必须跳过而不是误报。
+            ko_kmi = _kmi_of(ko.name)
+            if kver_hint and ko_kmi and ko_kmi != kver_hint:
+                skipped += 1
+                print("    --  %-46s （%s，和内核 %s 不匹配，跳过）" %
+                      (ko.name, ko_kmi, kver_hint))
+                continue
             und = [s for s in nm_undefined(ko) if not s.startswith("vns_")]
             missing = [s for s in und if s not in exported]
             total += len(missing)
@@ -193,10 +218,12 @@ def main():
                 print("         %s" % m)
 
     print()
+    if skipped:
+        print("  跳过 %d 个 KMI 不匹配的模块（比对它们只会得到假阳性）" % skipped)
     if total:
         print("  %d 个符号缺失 —— 这些模块在这台内核上装不上" % total)
         return 1
-    print("  OK 全部模块都能在这台内核上装上")
+    print("  OK 全部同 KMI 的模块都能在这台内核上装上")
     return 0
 
 
