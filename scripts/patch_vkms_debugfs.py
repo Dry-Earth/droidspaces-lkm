@@ -28,6 +28,11 @@ vkms 直接 "Unknown symbol" 装不上。GKI 的 CONFIG_DRM=y 是编进内核的
 打到 debugfs 里。容器要的是 /dev/dri/renderD128 这个 render node，和它们无关。
 """
 
+import sys as _sys
+from pathlib import Path as _Path
+_sys.path.insert(0, str(_Path(__file__).resolve().parent))
+from i18n import t  # noqa: E402
+
 import re
 import sys
 import pathlib
@@ -42,15 +47,15 @@ DBG_SYM = "drm_debugfs_create_files"
 def patch_composer(root: pathlib.Path) -> bool:
     p = root / COMPOSER
     if not p.exists():
-        print(f"  {COMPOSER}: 文件不存在，跳过")
+        print(t("file_missing", name=COMPOSER))
         return True
 
     s = p.read_text(encoding="utf-8", errors="replace")
     if "VKMS_CRC_DISABLED" in s:
-        print(f"  {COMPOSER}: 已打过补丁")
+        print(t("already_patched", name=COMPOSER))
         return True
     if CRC_SYM not in s:
-        print(f"  {COMPOSER}: 不使用 {CRC_SYM}，无需处理")
+        print(t("sym_unused", name=COMPOSER, sym=CRC_SYM))
         return True
 
     old = ("\twhile (frame_start <= frame_end)\n"
@@ -69,7 +74,7 @@ def patch_composer(root: pathlib.Path) -> bool:
         pat = re.compile(r"^(\s*)" + re.escape(CRC_SYM) + r"\(.*$", re.M)
         m = pat.search(s)
         if not m:
-            print(f"  {COMPOSER}: 引用了 {CRC_SYM} 但找不到调用点")
+            print(t("crc_no_callsite", name=COMPOSER, sym=CRC_SYM))
             return False
         s = pat.sub(
             lambda mm: (mm.group(1) + "/* [VKMS_CRC_DISABLED] 见 patch_vkms_debugfs.py */\n"
@@ -78,22 +83,22 @@ def patch_composer(root: pathlib.Path) -> bool:
         s = s.replace(old, new, 1)
 
     p.write_text(s, encoding="utf-8", newline="\n")
-    print(f"  {COMPOSER}: CRC 上报已移除")
+    print(t("crc_removed", name=COMPOSER))
     return True
 
 
 def patch_drv(root: pathlib.Path) -> bool:
     p = root / DRV
     if not p.exists():
-        print(f"  {DRV}: 文件不存在，跳过")
+        print(t("file_missing", name=DRV))
         return True
 
     s = p.read_text(encoding="utf-8", errors="replace")
     if "VKMS_DEBUGFS_DISABLED" in s:
-        print(f"  {DRV}: 已打过补丁")
+        print(t("already_patched", name=DRV))
         return True
     if DBG_SYM not in s:
-        print(f"  {DRV}: 不使用 {DBG_SYM}，无需处理")
+        print(t("sym_unused", name=DRV, sym=DBG_SYM))
         return True
 
     old = (f"\tdrm_debugfs_create_files(vkms_config_debugfs_list, ARRAY_SIZE(vkms_config_debugfs_list),\n"
@@ -110,19 +115,19 @@ def patch_drv(root: pathlib.Path) -> bool:
 	(void)vkms_config_debugfs_list;"""
 
     if old not in s:
-        print(f"  {DRV}: 引用了 {DBG_SYM} 但调用点形状不匹配")
+        print(t("dbg_shape_mismatch", name=DRV, sym=DBG_SYM))
         return False
 
     s = s.replace(old, new, 1)
     p.write_text(s, encoding="utf-8", newline="\n")
-    print(f"  {DRV}: debugfs 注册已移除")
+    print(t("dbg_removed", name=DRV))
     return True
 
 
 def main() -> int:
     root = pathlib.Path(sys.argv[1] if len(sys.argv) > 1 else ".")
     if not root.is_dir():
-        print(f"  目录不存在: {root}")
+        print(t("dir_missing", path=root))
         return 1
     ok1 = patch_composer(root)
     ok2 = patch_drv(root)

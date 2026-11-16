@@ -24,6 +24,9 @@
 import sys
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from i18n import t  # noqa: E402
+
 p = Path(sys.argv[1])
 s = p.read_text(encoding="utf-8", errors="surrogateescape")
 orig = s
@@ -82,8 +85,8 @@ static inline struct sk_buff *macvlan_skip_defrag(struct net *net,
 if s != orig:
     p.write_text(s, encoding="utf-8", errors="surrogateescape")
 
-print("  macvlan.c 改写：")
+print(t("macvlan_rewrites"))
 for d in done:
     print("    -", d)
 if not done:
-    print("    (无改动，可能已经改过)")
+    print(t("macvlan_no_change"))
