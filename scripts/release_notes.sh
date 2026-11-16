@@ -9,9 +9,56 @@ set -eu
 DIST="${1:-dist}"
 
 # ---------------------------------------------------------------------------
-# English
+# 版本号：从 zip 文件名里取（dist 里同时有多种命名，取第一个带 -vX.Y.Z 的）
+#
+# 为什么不从 git tag 取：这个脚本也被 ci.yml 调用（没有 tag），而 zip 名字
+# 一定带着版本号，是这里唯一可靠的来源。
 # ---------------------------------------------------------------------------
-echo '### Supported kernels'
+VER=""
+for z in "$DIST"/droidspaces-lkm-arm64-*.zip; do
+    [ -f "$z" ] || continue
+    VER=$(basename "$z" | grep -oE 'v[0-9]+\.[0-9]+\.[0-9]+' | head -1)
+    [ -n "$VER" ] && break
+done
+
+# ---------------------------------------------------------------------------
+# 从 CHANGELOG 里切出指定版本的条目（去掉 "## vX.Y.Z" 标题行本身）
+#   extract_entry <文件> <版本>
+# ---------------------------------------------------------------------------
+extract_entry() {
+    _f=$1; _v=$2
+    [ -f "$_f" ] || return 0
+    awk -v v="$_v" '
+        # 找到 "## vX.Y.Z"（后面可跟空格或行尾），跳过这一行
+        !started && $0 ~ "^## " v "([[:space:]]|$)" { started = 1; next }
+        started && /^## / { exit }
+        started
+    ' "$_f" | cat -s
+}
+
+# ---------------------------------------------------------------------------
+# 变更说明置于正文最前 —— GitHub Release 正文里这是用户最先看到的部分。
+# 之前只输出内核支持表，用户点进来不知道这一版改了什么。
+# ---------------------------------------------------------------------------
+if [ -n "$VER" ] && [ -f docs/CHANGELOG.en.md ]; then
+    echo "# Droidspaces LKM $VER (preview)"
+    echo ''
+    echo '## What'"'"'s new'
+    echo ''
+    extract_entry docs/CHANGELOG.en.md "$VER"
+    echo ''
+    echo '---'
+    echo ''
+    echo '## 本次更新'
+    echo ''
+    extract_entry docs/CHANGELOG.md "$VER"
+    echo ''
+    echo '---'
+    echo ''
+    echo '# Supported kernels'
+else
+    echo '### Supported kernels'
+fi
 echo ''
 echo '| File | Android / kernel |'
 echo '|---|---|'

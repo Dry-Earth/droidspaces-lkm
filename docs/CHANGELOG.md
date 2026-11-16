@@ -20,11 +20,11 @@
 
 ## v0.1.23
 
-`versionCode` 由构建时写入（`YYYYMMDDHHMM`，见 `.github/workflows/build.yml`）。
+`versionCode` 由构建时写入（`YYYYMMDDnn` = 日期×100 + 小时×4 + 分钟/15，
+见 `.github/workflows/build.yml`）。该值必须落在 int32 范围内。
 
 ### 修复
 
-### 修复
 
 **`versionCode` 超出 int32 范围，KernelSU 从未能解析。**
 

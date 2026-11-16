@@ -6,12 +6,11 @@ there as well.
 
 ## v0.1.23
 
-`versionCode` is written at build time (`YYYYMMDDHHMM`, see
-`.github/workflows/build.yml`).
+`versionCode` is written at build time (`YYYYMMDDnn` = date*100 + hour*4 + minute/15,
+see `.github/workflows/build.yml`). It must fit in int32.
 
 ### Fixed
 
-### Fixed
 
 **`versionCode` exceeded int32 range; KernelSU has never been able to parse it.**
 
