@@ -270,13 +270,26 @@ jobs:
           if [ -n "${{ inputs.version }}" ]; then
             v="${{ inputs.version }}"
             sed -i "s|^version=.*|version=$v|" "$STAGE/module.prop"
-            # versionCode 用时间戳，保证 KSU 认为它比上一版新。
+            # versionCode 必须落在 int32 范围内。
+            #
+            # KernelSU 的 Module.kt 把 versionCode 声明成 Int，Downloader.kt
+            # 用 .toInt() 解析；超过 Integer.MAX_VALUE (2147483647) 时 Kotlin
+            # 直接抛 NumberFormatException，更新检查整个失败 —— 表现为
+            # 「永远收不到更新」。
+            #
+            # 所以不能用 %Y%m%d%H%M（12 位，2026 亿，超了 94 倍）。
+            # 用 YYYYMMDD + 2 位当日序号：
+            #   seq = 小时*4 + 分钟/15  -> 00..95，4 槽/小时、96 槽/天
+            #   2026111700 .. 2026111795，最大 2,026,117,995 < 2,147,483,647
+            # 到 2147 年都不会溢出。
             #
             # 只算一次并落盘到 dist/version-code.txt：release.yml 要靠这个
-            # 文件把**完全相同的值**写进 update.json。手写过的两次都错了
-            # （写成 10 位的 2026111700，而包里是 12 位的 202611170004，
-            # 数值比较下 20 亿 < 2026 亿，KernelSU 永远判定已是最新）。
-            VC=$(date +%Y%m%d%H%M)
+            # 文件把完全相同的值写进 update.json。
+            VC=$(( $(date +%Y%m%d) * 100 + $(date +%H) * 4 + $(date +%M) / 15 ))
+            if [ "$VC" -gt 2147483647 ]; then
+              echo "::error::versionCode $VC 超出 int32，KernelSU 将无法解析"
+              exit 1
+            fi
             sed -i "s|^versionCode=.*|versionCode=$VC|" "$STAGE/module.prop"
             echo "$VC" > "$GITHUB_WORKSPACE/dist/version-code.txt"
             echo "$v"  > "$GITHUB_WORKSPACE/dist/version-name.txt"
@@ -324,7 +337,9 @@ jobs:
             if [ -n "${{ inputs.version }}" ]; then
               v="${{ inputs.version }}"
               sed -i "s|^version=.*|version=$v|" "$S/module.prop"
-              sed -i "s|^versionCode=.*|versionCode=$(date +%Y%m%d%H%M)|" "$S/module.prop"
+              # 和上面全 KMI 合并包用同一个值：从 dist/version-code.txt 读，
+              # 保证同一次发布里所有产物的 versionCode 完全一致
+              sed -i "s|^versionCode=.*|versionCode=$(cat "$GITHUB_WORKSPACE/dist/version-code.txt")|" "$S/module.prop"
             fi
             ( cd "$S" && zip -qr1 "$GITHUB_WORKSPACE/dist/droidspaces-lkm-$kmi-arm64${VERSUF}.zip" . )
           done

@@ -91,10 +91,20 @@ def main() -> int:
     if not re.fullmatch(r"\d{8,14}", raw):
         sys.exit(f"  {vc_file} 内容不是纯数字时间戳: {raw!r}")
     version_code = int(raw)
-    if len(raw) < 12:
-        sys.exit(f"  versionCode 只有 {len(raw)} 位（{raw}）。"
-                 f"build.yml 用的是 %Y%m%d%H%M，应为 12 位；"
-                 f"位数不足会让 KernelSU 的数值比较失真。")
+
+    # KernelSU 的 Module.kt 把 versionCode 声明成 Kotlin Int，Downloader.kt
+    # 用 .toInt() 解析。超过 Integer.MAX_VALUE 时 .toInt() 抛
+    # NumberFormatException，更新检查整个失败 —— 表现为「永远收不到更新」。
+    # zram-lkm 用 8 位（20261119）所以正常；本仓库曾用 12 位
+    # （202611170004）所以从来没工作过。
+    INT32_MAX = 2**31 - 1
+    if version_code > INT32_MAX:
+        sys.exit(f"  versionCode {raw} = {version_code:,} 超出 int32 "
+                 f"(Integer.MAX_VALUE = {INT32_MAX:,})。"
+                 f"KernelSU 的 .toInt() 会抛 NumberFormatException，"
+                 f"更新检查会完全失败。build.yml 应生成 YYYYMMDDnn 形式。")
+    if version_code <= 0:
+        sys.exit(f"  versionCode 必须为正数，实际 {version_code}")
 
     # ---- changelog：中英合并 ----
     zh = extract_entry(root / "docs" / "CHANGELOG.md", version)
