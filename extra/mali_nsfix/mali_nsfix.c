@@ -102,23 +102,55 @@ static struct pid *__nocfi nshf_get_pid(pid_t nr)
  * The RCU walk is safe in a kprobe pre_handler: no sleeping, and the module
  * list is only mutated under module_mutex which we never take here.
  */
-static bool nshf_caller_is_mali(unsigned long addr)
+/*
+ * The module that owns the probed call sites, resolved once.
+ *
+ * The first version of this walked the whole module list on every
+ * find_get_pid() call and ran a strncmp per entry. This device has 632 modules
+ * loaded and mali_kbase sits at position 230, so a single pass cost ~230
+ * strncmp calls - on a hot function that runs system-wide, inside a kprobe
+ * handler with interrupts off. That dominated whatever the breakpoint itself
+ * cost.
+ *
+ * Resolving once turns the steady-state test into two address comparisons.
+ * try_module_get() pins the module so the pointer cannot go stale under us;
+ * the reference is dropped in nshf_exit().
+ *
+ * mali_kbase may be loaded after this module, so resolution is also attempted
+ * lazily from the handler until it succeeds. Once found it is never looked up
+ * again.
+ */
+static struct module *nshf_mali_mod;
+
+static struct module *nshf_resolve_mali(void)
 {
-	struct module *mod;
-	bool hit = false;
+	struct module *mod, *found = NULL;
+	size_t plen = strlen(mali_prefix);
 
 	rcu_read_lock();
 	list_for_each_entry_rcu(mod, &THIS_MODULE->list, list) {
-		if (strncmp(mod->name, mali_prefix, strlen(mali_prefix)))
+		if (strncmp(mod->name, mali_prefix, plen))
 			continue;
-		if (within_module(addr, mod)) {
-			hit = true;
-			break;
-		}
+		if (try_module_get(mod))
+			found = mod;
+		break;
 	}
 	rcu_read_unlock();
 
-	return hit;
+	return found;
+}
+
+static bool nshf_caller_is_mali(unsigned long addr)
+{
+	if (unlikely(!nshf_mali_mod)) {
+		nshf_mali_mod = nshf_resolve_mali();
+		if (!nshf_mali_mod)
+			return false;   /* not loaded (yet); nothing to redirect */
+		pr_info("mali_nsfix: bound to %s at %px\n",
+			nshf_mali_mod->name, nshf_mali_mod);
+	}
+
+	return within_module(addr, nshf_mali_mod);
 }
 
 /*
@@ -167,16 +199,25 @@ static int __init nshf_init(void)
 		return ret;
 	}
 
-	pr_info("mali_nsfix: probing find_get_pid at %px, redirecting callers in '%s*'\n",
-		nshf_kp.addr, mali_prefix);
+	/* Resolve eagerly when the driver is already loaded (the usual case on a
+	 * booted device); the handler falls back to lazy resolution otherwise. */
+	nshf_mali_mod = nshf_resolve_mali();
+
+	pr_info("mali_nsfix: probing find_get_pid at %px, redirecting callers in '%s*'%s\n",
+		nshf_kp.addr, mali_prefix,
+		nshf_mali_mod ? " (driver already loaded)" : " (driver not loaded yet)");
 	return 0;
 }
 
 static void __exit nshf_exit(void)
 {
 	unregister_kprobe(&nshf_kp);
-	pr_info("mali_nsfix: removed (handler ran %lu time(s), redirected %lu)\n",
-		nshf_seen, nshf_hits);
+	if (nshf_mali_mod) {
+		module_put(nshf_mali_mod);
+		nshf_mali_mod = NULL;
+	}
+	pr_info("mali_nsfix: removed (handler ran %lu time(s), redirected %lu, %lu skipped before the driver appeared)\n",
+		nshf_seen, nshf_hits, nshf_seen - nshf_hits);
 }
 
 module_init(nshf_init);
