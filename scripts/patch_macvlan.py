@@ -163,6 +163,9 @@ static int  (*mv_p_eth_header_cache)(const struct neighbour *, struct hh_cache *
 static void (*mv_p_eth_header_cache_update)(struct hh_cache *,
 					    const struct net_device *,
 					    const unsigned char *);
+static int  (*mv_p_dev_mc_add)(struct net_device *, const unsigned char *);
+static int  (*mv_p_dev_mc_del)(struct net_device *, const unsigned char *);
+static bool (*mv_p_netdev_is_rx_handler_busy)(struct net_device *);
 
 static unsigned long mv_lookup(const char *name)
 {
@@ -197,6 +200,10 @@ static void mv_resolve_syms(void)
 	mv_p_eth_header_cache    = (void *)mv_lookup("eth_header_cache");
 	mv_p_eth_header_cache_update =
 		(void *)mv_lookup("eth_header_cache_update");
+	mv_p_dev_mc_add           = (void *)mv_lookup("dev_mc_add");
+	mv_p_dev_mc_del           = (void *)mv_lookup("dev_mc_del");
+	mv_p_netdev_is_rx_handler_busy =
+		(void *)mv_lookup("netdev_is_rx_handler_busy");
 }
 
 /*
@@ -230,6 +237,38 @@ void __nocfi eth_header_cache_update(struct hh_cache *hh,
 {
 	if (mv_p_eth_header_cache_update)
 		mv_p_eth_header_cache_update(hh, dev, haddr);
+}
+
+/*
+ * dev_mc_add / dev_mc_del —— 6.1.25 的 Meizu 内核连这两个都没导出
+ * （issue #2 的 boot.img 导出表实测），所以第 5 步的
+ * "dev_mc_add_excl -> dev_mc_add" 替换在它上面等于没修。
+ * 这里补同名转发，让替换后的调用点落到运行时解析上。
+ */
+int __nocfi dev_mc_add(struct net_device *dev, const unsigned char *addr)
+{
+	if (!mv_p_dev_mc_add)
+		return -EINVAL;
+	return mv_p_dev_mc_add(dev, addr);
+}
+
+int __nocfi dev_mc_del(struct net_device *dev, const unsigned char *addr)
+{
+	if (!mv_p_dev_mc_del)
+		return -EINVAL;
+	return mv_p_dev_mc_del(dev, addr);
+}
+
+/*
+ * netdev_is_rx_handler_busy —— macvlan 注册 rx_handler 前的检查。
+ * 没导出，同样走运行时解析。查不到时返回 false（视为不忙），
+ * 让注册流程继续 —— 最坏情况是 register_netdevice 自己拒绝。
+ */
+bool __nocfi netdev_is_rx_handler_busy(struct net_device *dev)
+{
+	if (!mv_p_netdev_is_rx_handler_busy)
+		return false;
+	return mv_p_netdev_is_rx_handler_busy(dev);
 }
 
 /* ---- MACVLAN_SYMRES end ----------------------------------------------- */
