@@ -142,8 +142,9 @@ gen_makefile() {
 # 1) lkm4ctr —— 上游已做跨版本适配, 直接用
 # ---------------------------------------------------------------------------
 log "=== lkm4ctr @ $KMI ==="
-if make -C "$KDIR" M=/tmp/lkm4ctr/vendor LKM4CTR_LOG_DMESG=y KCFLAGS="$GUARD_CFLAGS" modules -j"$NPROC"; then
-    cp /tmp/lkm4ctr/vendor/lkm4ctr.ko "$OUT/lkm4ctr-$KMI.ko" && log "  [OK]"
+LKM4CTR_DIR=${LKM4CTR_DIR:-/tmp/lkm4ctr}
+if make -C "$KDIR" M="$LKM4CTR_DIR/vendor" LKM4CTR_LOG_DMESG=y KCFLAGS="$GUARD_CFLAGS" modules -j"$NPROC"; then
+    cp "$LKM4CTR_DIR/vendor/lkm4ctr.ko" "$OUT/lkm4ctr-$KMI.ko" && log "  [OK]"
 else
     warn "lkm4ctr @ $KMI"
 fi

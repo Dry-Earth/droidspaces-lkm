@@ -1,0 +1,289 @@
+name: "[hummer] Build from manifest tools"
+
+# Fully manifest-pinned build:
+#   - kernel / modules / clang / build-tools / kernel-build-tools / mkbootimg
+#     all come from the OTA build-manifest.xml revisions
+#   - no DDK container, no Magisk boot image tools
+#   - KDIR and every .ko are compiled on the runner with that clang
+on:
+  workflow_dispatch:
+    inputs:
+      boot_img_url:
+        description: 'OTA boot.img URL'
+        required: true
+        type: string
+        default: 'https://mirrorbits.lineageos.org/full/hummer/20261113/boot.img'
+      manifest_url:
+        description: 'OTA build-manifest.xml URL'
+        required: true
+        type: string
+        default: 'https://mirrorbits.lineageos.org/full/hummer/20261113/build-manifest.xml'
+      publish_release:
+        description: '构建成功后发布 Release'
+        required: true
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+
+env:
+  KERNEL_REPO: LineageOS/android_kernel_oneplus_sm8750
+  MODULES_REPO: LineageOS/android_kernel_oneplus_sm8750-modules
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+
+    steps:
+      - name: Free disk space
+        run: |
+          set -eux
+          sudo rm -rf /usr/share/dotnet
+          sudo rm -rf /usr/local/lib/android
+          sudo rm -rf /opt/ghc
+          sudo rm -rf /usr/local/share/boost
+          sudo rm -rf /usr/share/swift
+          sudo rm -rf /opt/hostedtoolcache/CodeQL
+          sudo apt-get clean
+          df -h
+
+      - name: Checkout this repo
+        uses: actions/checkout@v4
+
+      - name: Download and parse build-manifest.xml
+        run: |
+          set -eux
+          curl -fL --retry 3 --retry-all-errors --connect-timeout 20 -A "Mozilla/5.0" \
+            -o manifest.xml "${{ inputs.manifest_url }}"
+          python3 ci/parse-manifest.py manifest.xml | tee metadata.env
+          cat metadata.env >> "$GITHUB_ENV"
+
+      - name: Install host packages required by the LineageOS build guide
+        run: |
+          set -eux
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            bc bison build-essential ccache curl flex git gnupg gperf kmod \
+            libdw-dev libelf-dev libgnutls28-dev libncurses-dev libssl-dev \
+            libxml2 libxml2-utils lz4 perl python3 rsync cpio squashfs-tools \
+            xxd zip unzip zlib1g-dev xz-utils zstd
+
+      - name: Download boot.img and unpack with AOSP mkbootimg
+        run: |
+          set -eux
+          mkdir -p bootwork
+          curl -fL --retry 3 --retry-all-errors --connect-timeout 20 -A "Mozilla/5.0" \
+            -o bootwork/stock-boot.img "${{ inputs.boot_img_url }}"
+          stat -c 'boot.img size=%s' bootwork/stock-boot.img
+          sha256sum bootwork/stock-boot.img | tee bootwork/boot.sha256
+
+      - name: Clone kernel and modules at manifest revisions
+        run: |
+          set -eux
+          for repo_sha in "kernel:${KERNEL_REPO}:${KERNEL_SHA}" "sm8750-modules:${MODULES_REPO}:${MODULES_SHA}"; do
+            dir=${repo_sha%%:*}
+            rest=${repo_sha#*:}
+            repo=${rest%%:*}
+            sha=${rest##*:}
+            mkdir -p "$dir"
+            cd "$dir"
+            git init -q
+            git remote add origin "https://github.com/${repo}.git"
+            if ! git fetch --depth 1 --no-tags origin "$sha"; then
+              git fetch --no-tags --depth 200 origin || true
+            fi
+            git checkout -q "$sha" 2>/dev/null || git checkout -q FETCH_HEAD
+            test "$(git rev-parse HEAD)" = "$sha"
+            cd ..
+          done
+          ln -sfn kernel sm8750
+
+      - name: Restore AOSP mkbootimg tool
+        uses: actions/cache@v4
+        id: mkboot-cache
+        with:
+          path: tools/mkbootimg
+          key: hummer-mkbootimg-${{ env.MKBOOTIMG_SHA }}-v1
+
+      - name: Fetch AOSP unpack_bootimg.py
+        if: ${{ steps.mkboot-cache.outputs.cache-hit != 'true' }}
+        run: |
+          set -eux
+          mkdir -p tools/mkbootimg
+          base=https://android.googlesource.com/platform/system/tools/mkbootimg/+/
+          curl -fL --retry 5 --retry-all-errors -o /tmp/unpack.b64 \
+            "${base}${MKBOOTIMG_SHA}/unpack_bootimg.py?format=TEXT"
+          base64 -d /tmp/unpack.b64 > tools/mkbootimg/unpack_bootimg.py
+          curl -fL --retry 5 --retry-all-errors -o /tmp/bootimg.b64 \
+            "${base}${MKBOOTIMG_SHA}/bootimg.py?format=TEXT" || true
+          [ -s /tmp/bootimg.b64 ] && base64 -d /tmp/bootimg.b64 > tools/mkbootimg/bootimg.py || true
+          test -s tools/mkbootimg/unpack_bootimg.py
+
+      - name: Extract boot image with AOSP tool
+        run: |
+          set -eux
+          mkdir -p bootwork/unpacked
+          PYTHONPATH=tools/mkbootimg python3 tools/mkbootimg/unpack_bootimg.py \
+            --boot_img bootwork/stock-boot.img --out bootwork/unpacked
+          ls -lh bootwork/unpacked
+          test -s bootwork/unpacked/kernel
+
+      - name: Extract config / release / compiler from boot.img
+        run: |
+          set -eux
+          mkdir -p build-config
+          sh kernel/scripts/extract-ikconfig bootwork/unpacked/kernel > build-config/stock.config
+          test "$(grep -c '^CONFIG_' build-config/stock.config)" -gt 1000
+          grep -q '^CONFIG_ARM64_4K_PAGES=y' build-config/stock.config
+          grep -q '^CONFIG_DEBUG_INFO_BTF=y' build-config/stock.config
+
+          rel=$(strings bootwork/unpacked/kernel | grep -m1 'Linux version ' | sed -n 's/.*Linux version \([^ ]*\).*/\1/p')
+          clang_raw=$(strings bootwork/unpacked/kernel | grep -m1 'based on r[0-9]' | sed -n 's/.*based on \(r[0-9]*\).*/\1/p')
+          test -n "$rel"
+          test -n "$clang_raw"
+          echo "EXPECTED_RELEASE=$rel" >> "$GITHUB_ENV"
+          echo "EXPECTED_CLANG=$clang_raw" >> "$GITHUB_ENV"
+          echo "CLANG_REV=clang-$clang_raw" >> "$GITHUB_ENV"
+          echo "release=$rel clang=$clang_raw"
+
+      - name: Restore manifest tools cache
+        id: tools-cache
+        uses: actions/cache@v4
+        with:
+          path: tools
+          key: hummer-manifest-tools-${{ hashFiles('metadata.env') }}-${{ env.CLANG_REV }}-v1
+
+      - name: Download clang / build-tools / kernel-build-tools
+        if: ${{ steps.tools-cache.outputs.cache-hit != 'true' }}
+        run: |
+          set -eux
+          bash ci/fetch-manifest-tools.sh
+          test -x tools/clang/bin/clang
+          test -x tools/build-tools/bin/make
+
+      - name: Ensure pahole is available
+        run: |
+          set -eux
+          if [ -x tools/kernel-build-tools/bin/pahole ]; then
+            tools/kernel-build-tools/bin/pahole --version
+          elif command -v pahole >/dev/null 2>&1; then
+            pahole --version
+          else
+            echo "::warning::manifest prebuilts have no pahole; installing dwarves from Ubuntu"
+            sudo apt-get install -y --no-install-recommends dwarves
+            pahole --version
+          fi
+
+      - name: Clone lkm4ctr and apply this repository's patches
+        run: |
+          set -eux
+          rm -rf lkm4ctr
+          if ! git clone --depth=1 --branch lkm4ctr https://github.com/cyanmint/lkm4ctr.git lkm4ctr 2>/dev/null; then
+            git clone --depth=1 https://github.com/cyanmint/lkm4ctr.git lkm4ctr
+          fi
+          echo ">>> lkm4ctr HEAD: $(git -C lkm4ctr rev-parse --short HEAD)"
+          for p in "$PWD"/patches/*.patch; do
+            [ -f "$p" ] || continue
+            echo ">>> apply $(basename "$p")"
+            git -C lkm4ctr apply -v "$p"
+          done
+
+      - name: Restore ccache
+        uses: actions/cache@v4
+        with:
+          path: .ccache
+          key: hummer-manifest-ccache-${{ hashFiles('metadata.env', 'build-config/stock.config') }}
+          restore-keys: |
+            hummer-manifest-ccache-
+
+      - name: Build exact KDIR on the runner
+        run: |
+          set -eux
+          mkdir -p .ccache
+          export CCACHE_DIR="$PWD/.ccache"
+          export CCACHE_BASEDIR="$PWD"
+          export CCACHE_COMPRESS=1
+          export CCACHE_MAXSIZE=5G
+          bash ci/build-kdir-host.sh
+
+      - name: Save ccache even if a later step fails
+        if: always()
+        continue-on-error: true
+        uses: actions/cache/save@v4
+        with:
+          path: .ccache
+          key: hummer-manifest-ccache-${{ hashFiles('metadata.env', 'build-config/stock.config') }}-${{ github.run_id }}
+
+      - name: Build modules against the exact KDIR
+        run: |
+          set -eux
+          export CCACHE_DIR="$PWD/.ccache"
+          export CCACHE_BASEDIR="$PWD"
+          bash ci/build-hummer-modules-host.sh
+          ls -lh out
+
+      - name: Package KernelSU module
+        run: |
+          set -eux
+          python3 ci/package-hummer.py \
+            --kos out \
+            --output dist \
+            --release "$EXPECTED_RELEASE" \
+            --kernel-sha "$KERNEL_SHA" \
+            --kmi android15-6.6
+          sha256sum dist/*
+
+      - name: Write build info
+        run: |
+          set -eux
+          {
+            echo "device:        OnePlus Ace 5 Pro (hummer)"
+            echo "manifest:      ${{ inputs.manifest_url }}"
+            echo "boot img:      ${{ inputs.boot_img_url }}"
+            echo "boot sha256:   $(awk '{print $1}' bootwork/boot.sha256)"
+            echo "kernel:        ${KERNEL_REPO} @ ${KERNEL_SHA}"
+            echo "modules:       ${MODULES_REPO} @ ${MODULES_SHA}"
+            echo "release:       ${EXPECTED_RELEASE}"
+            echo "clang project: ${CLANG_PROJECT_SHA}"
+            echo "build-tools:   ${BUILDTOOLS_SHA}"
+            echo "kernel-tools:  ${KERNEL_BUILDTOOLS_SHA:-none}"
+            echo "mkbootimg:     ${MKBOOTIMG_SHA}"
+            echo "clang:         $(tools/clang/bin/clang --version | head -n1)"
+            echo "make:          $(tools/build-tools/bin/make --version | head -n1 || true)"
+            echo "lkm4ctr:       $(git -C lkm4ctr rev-parse HEAD)"
+            echo
+            echo "payloads:"
+            for f in dist/*.zip out/*.ko; do [ -f "$f" ] && sha256sum "$f"; done
+          } > build-info-hummer.txt
+          cat build-info-hummer.txt
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: droidspaces-lkm-hummer-manifest-${{ github.run_id }}
+          if-no-files-found: error
+          path: |
+            dist/*.zip
+            dist/SHA256SUMS
+            out/*.ko
+            build-info-hummer.txt
+
+      - name: Publish release
+        if: ${{ inputs.publish_release }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -eux
+          tag="hummer-manifest-${GITHUB_RUN_ID}"
+          if gh release view "$tag" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$tag" dist/*.zip dist/SHA256SUMS build-info-hummer.txt \
+              -R "$GITHUB_REPOSITORY" --clobber
+          else
+            gh release create "$tag" dist/*.zip dist/SHA256SUMS build-info-hummer.txt \
+              -R "$GITHUB_REPOSITORY" \
+              --title "Droidspaces LKM hummer ${EXPECTED_RELEASE} (manifest tools, ${GITHUB_RUN_ID})" \
+              --notes-file build-info-hummer.txt
+          fi
+          gh release view "$tag" -R "$GITHUB_REPOSITORY" --json url -q .url
