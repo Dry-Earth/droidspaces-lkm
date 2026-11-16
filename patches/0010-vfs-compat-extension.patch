@@ -55,46 +55,36 @@ index 457baec..83112ab 100644
  	if (ret) {
  		LKM4CTR_ERR(LKM4CTR_TAG,
 diff --git a/glue/vendor_kernel_ipc_syscalls.c b/glue/vendor_kernel_ipc_syscalls.c
-index 0f951ba..3ef6633 100644
+index 0f951ba..e0c0aa0 100644
 --- a/glue/vendor_kernel_ipc_syscalls.c
 +++ b/glue/vendor_kernel_ipc_syscalls.c
-@@ -102,20 +102,29 @@ int vns_ipc_default_init(void)
+@@ -102,8 +102,9 @@ int vns_ipc_default_init(void)
  	vns_ipc_pin_ref(&vns_default_ipc_ns, 0x40000000);
  
  	err = vns_mqueue_fs_init();
 -	if (err)
 +	if (err) {
-+		pr_err("lkm4ctr[diag] vns_mqueue_fs_init -> %d", err);
  		return err;
 +	}
-+	pr_info("lkm4ctr[diag] mqueue fs ok");
  
  	if (!vns_setup_ipc_sysctls(&vns_default_ipc_ns)) {
-+		pr_err("lkm4ctr[diag] setup_ipc_sysctls returned false");
  		err = -ENOMEM;
- 		goto fail_mqueue;
+@@ -111,8 +112,9 @@ int vns_ipc_default_init(void)
  	}
-+	pr_info("lkm4ctr[diag] ipc sysctls ok");
  
  	err = vns_msg_init_ns(&vns_default_ipc_ns);
 -	if (err)
 +	if (err) {
-+		pr_err("lkm4ctr[diag] vns_msg_init_ns -> %d", err);
  		goto fail_ipc_sysctls;
 +	}
-+	pr_info("lkm4ctr[diag] msg init ok");
  
  	vns_sem_init_ns(&vns_default_ipc_ns);
  	vns_shm_init_ns(&vns_default_ipc_ns);
-+	pr_info("lkm4ctr[diag] sem/shm init ok");
- 
- 	/*
- 	 * Give the default namespace a real ns_common inode number too (same
 diff --git a/glue/vendor_kernel_ovl_vfs_compat.c b/glue/vendor_kernel_ovl_vfs_compat.c
-index e9e9549..bcde01d 100644
+index e9e9549..28a53c9 100644
 --- a/glue/vendor_kernel_ovl_vfs_compat.c
 +++ b/glue/vendor_kernel_ovl_vfs_compat.c
-@@ -59,6 +59,190 @@ VNS_OVL_VFS_COMPAT_LIST(VNS_OVL_VFSC_DEFINE)
+@@ -59,6 +59,187 @@ VNS_OVL_VFS_COMPAT_LIST(VNS_OVL_VFSC_DEFINE)
  VNS_OVL_VFS_COMPAT_LIST_BF(VNS_OVL_VFSC_DEFINE)
  #undef VNS_OVL_VFSC_DEFINE
  
@@ -103,8 +93,6 @@ index e9e9549..bcde01d 100644
 + * Declared there so call sites outside fs/overlayfs keep one spelling; defined
 + * here so the lockdep key argument is dropped once instead of at every use.
 + */
-+
-+
 +
 +/*
 + * The definitions below forward to pointers that exist only in the MID
@@ -257,7 +245,6 @@ index e9e9549..bcde01d 100644
 +		vns_ovl_vfsc_percpu_counter_destroy(fbc);
 +}
 +
-+
 +/*
 + * generic_read_dir - same-name forwarding definition, not a #define alias.
 + *
@@ -285,20 +272,6 @@ index e9e9549..bcde01d 100644
  int vns_ovl_vfs_compat_resolve(void)
  {
  #define VNS_OVL_VFSC_RESOLVE(name) \
-@@ -66,11 +250,13 @@ int vns_ovl_vfs_compat_resolve(void)
- 		vns_ovl_vfsc_##name = (typeof(vns_ovl_vfsc_##name)) \
- 			shadow_hook_resolve(#name); \
- 		if (!vns_ovl_vfsc_##name) { \
-+			pr_err("lkm4ctr[diag] unresolved: %s\n", #name); \
- 			LKM4CTR_ERR("vendor_kernel", \
- 				    "overlayfs: could not resolve VFS symbol '%s'; vendored overlayfs unavailable", \
- 				    #name); \
- 			return -ENOENT; \
- 		} \
-+		pr_info("lkm4ctr[diag] resolved: %s\n", #name); \
- 	} while (0);
- 	VNS_OVL_VFS_COMPAT_LIST(VNS_OVL_VFSC_RESOLVE)
- 	VNS_OVL_VFS_COMPAT_LIST_BF(VNS_OVL_VFSC_RESOLVE)
 diff --git a/glue/vendor_kernel_ovl_vfs_compat.h b/glue/vendor_kernel_ovl_vfs_compat.h
 index f326a9a..2b617d0 100644
 --- a/glue/vendor_kernel_ovl_vfs_compat.h
@@ -612,7 +585,7 @@ index 7cc1a34..5a58309 100644
  int ovl_get_write_access(struct dentry *dentry)
  {
 diff --git a/vendor/ipc/mqueue.c b/vendor/ipc/mqueue.c
-index 0473ef5..1b3129d 100644
+index 0473ef5..34ad13b 100644
 --- a/vendor/ipc/mqueue.c
 +++ b/vendor/ipc/mqueue.c
 @@ -75,6 +75,11 @@
@@ -627,36 +600,18 @@ index 0473ef5..1b3129d 100644
  #undef SYSCALL_METADATA
  #define SYSCALL_METADATA(sname, nb, ...)
  
-@@ -1903,17 +1908,21 @@ static int init_mqueue_fs(void)
- 				sizeof(struct mqueue_inode_info), 0,
- 				SLAB_HWCACHE_ALIGN|SLAB_ACCOUNT, init_once);
- 	if (mqueue_inode_cachep == NULL) {
-+		pr_err("lkm4ctr[diag] kmem_cache_create(mqueue_inode_cache) -> NULL\n");
- 		mutex_lock(&mqueue_lifecycle_lock);
- 		mqueue_lifecycle_stopping = true;
- 		mutex_unlock(&mqueue_lifecycle_lock);
- 		return -ENOMEM;
- 	}
-+	pr_info("lkm4ctr[diag] inode cache ok\n");
+@@ -923,7 +928,6 @@ static struct ext_wait_queue *wq_get_first_waiter(
+ 	return list_entry(ptr, struct ext_wait_queue, list);
+ }
  
- 	if (!setup_mq_sysctls(&init_ipc_ns)) {
-+		pr_err("lkm4ctr[diag] setup_mq_sysctls -> false\n");
- 		LKM4CTR_WARN("vendor_kernel", "mqueue sysctl registration failed");
- 		error = -ENOMEM;
- 		goto out_kmem;
- 	}
-+	pr_info("lkm4ctr[diag] mq sysctls ok\n");
- 
- 	error = register_filesystem(&mqueue_fs_type);
- 	if (!error) {
-@@ -1934,14 +1943,20 @@ static int init_mqueue_fs(void)
- 			"mqueue: filesystem type \"mqueue\" already registered (real kernel POSIX_MQUEUE?); "
- 			"userspace mount(\"mqueue\", ...) will use that real filesystem instead");
+-
+ static inline void set_cookie(struct sk_buff *skb, char code)
+ {
+ 	((char *)skb->data)[NOTIFY_COOKIE_LEN-1] = code;
+@@ -1936,12 +1940,14 @@ static int init_mqueue_fs(void)
  	} else {
-+		pr_err("lkm4ctr[diag] register_filesystem -> %d\n", error);
  		goto out_sysctl;
  	}
-+	pr_info("lkm4ctr[diag] register_filesystem ok (registered=%d)\n",
 +		mqueue_fs_type_registered);
  
  	spin_lock_init(&mq_lock);
@@ -664,10 +619,8 @@ index 0473ef5..1b3129d 100644
  	error = mq_init_ns(&init_ipc_ns);
 -	if (error)
 +	if (error) {
-+		pr_err("lkm4ctr[diag] mq_init_ns -> %d\n", error);
  		goto out_filesystem;
 +	}
-+	pr_info("lkm4ctr[diag] mq_init_ns ok\n");
  
  	return 0;
  
