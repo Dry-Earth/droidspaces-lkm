@@ -44,6 +44,14 @@ on:
         required: false
         type: boolean
         default: false
+      version:
+        # 写进 jar 里的 module.prop。不传就沿用仓库里的值（v0.1.21），
+        # 那样所有测试版报的版本号都一样，用户贴日志时分不清装的是哪个 ——
+        # issue #2 就因为这个把排查带偏过。
+        description: '写进模块包的版本号，例如 v0.1.22-test.10；留空则用 module.prop 里的'
+        required: false
+        type: string
+        default: ''
   workflow_dispatch:
     inputs:
       kmis:
@@ -256,6 +264,19 @@ jobs:
           module/uninstall.sh module/action.sh module/boot-completed.sh "$STAGE/"
           chmod 755 "$STAGE"/*.sh
           sed -i 's/\r$//' "$STAGE"/*.sh "$STAGE/module.prop" "$STAGE"/ko/symcheck-*.txt 2>/dev/null || true
+          # 把本次构建的版本号写进 module.prop。
+          # 不写的话所有测试版都报仓库里那个固定的 v0.1.21，用户贴日志时
+          # 分不清装的是哪个版本 —— issue #2 的排查就因为这个走偏过。
+          if [ -n "${{ inputs.version }}" ]; then
+            v="${{ inputs.version }}"
+            sed -i "s|^version=.*|version=$v|" "$STAGE/module.prop"
+            # versionCode 用时间戳，保证 KSU 认为它比上一版新
+            sed -i "s|^versionCode=.*|versionCode=$(date +%Y%m%d%H%M)|" "$STAGE/module.prop"
+            echo "=== module.prop ==="
+            cat "$STAGE/module.prop"
+          else
+            echo "::warning::没有传 version，模块包会沿用 module.prop 里的固定版本号"
+          fi
 
           # 全 KMI 合并包
           ( cd "$STAGE" && zip -qr1 "$GITHUB_WORKSPACE/dist/droidspaces-lkm-arm64.zip" . )
@@ -278,6 +299,11 @@ jobs:
             module/uninstall.sh module/action.sh module/boot-completed.sh "$S/"
             chmod 755 "$S"/*.sh
             sed -i 's/\r$//' "$S"/*.sh "$S/module.prop" "$S"/ko/symcheck-*.txt 2>/dev/null || true
+            if [ -n "${{ inputs.version }}" ]; then
+              v="${{ inputs.version }}"
+              sed -i "s|^version=.*|version=$v|" "$S/module.prop"
+              sed -i "s|^versionCode=.*|versionCode=$(date +%Y%m%d%H%M)|" "$S/module.prop"
+            fi
             ( cd "$S" && zip -qr1 "$GITHUB_WORKSPACE/dist/droidspaces-lkm-$kmi-arm64.zip" . )
           done
 

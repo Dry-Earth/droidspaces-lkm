@@ -56,12 +56,20 @@ echo "=== 内核导出检查 ==="
 # 这里拿清单查 /proc/kallsyms 的 __ksymtab_ 条目 —— 直接报出「本内核缺哪些」，
 # 不依赖能读 dmesg（有些厂商内核上读不到，用户只能看到笼统的 unknown symbol）。
 _kmi=""
-for _t in android12-5.10 android13-5.10 android13-5.15 android14-5.15 \
-          android14-6.1 android15-6.6 android16-6.12 android17-6.18; do
-    case "$(uname -r)" in
-        *"${_t%-*}"*"-${_t#*-}"*|*"-$_t"*) _kmi="$_t"; break ;;
-    esac
-done
+# 不能只抄 service.sh 第一段那个模式（*android14*-6.1*）：它要求内核串里
+# 出现字面量 "-6.1"，而实际串是 6.1.157-android14-11-o-g...，只有 "6.1.157-"。
+# service.sh 能得出正确 KMI 是靠后面的回退（androidNN + X.Y 拼），这里照做。
+_krel=$(uname -r)
+_kandroid=$(echo "$_krel" | grep -oE 'android[0-9]+' | head -1)
+_kmajor=$(echo "$_krel" | grep -oE '^[0-9]+[.][0-9]+' | head -1)
+if [ -n "$_kandroid" ] && [ -n "$_kmajor" ]; then
+    _kmi="${_kandroid}-${_kmajor}"
+fi
+# 兜底：service.sh 开机时已经把推导结果写进日志，直接读它
+if [ -z "$_kmi" ] && [ -f "$LOG" ]; then
+    _kmi=$(grep -a 'kmi:' "$LOG" 2>/dev/null | tail -1 | sed 's/.*kmi:[[:space:]]*//' | tr -d ' \r')
+    case "$_kmi" in android*) ;; *) _kmi="" ;; esac
+fi
 _sf="$MODDIR/ko/symcheck-${_kmi}.txt"
 if [ -z "$_kmi" ]; then
     echo "  [--]   无法从内核版本推导 KMI，跳过"
