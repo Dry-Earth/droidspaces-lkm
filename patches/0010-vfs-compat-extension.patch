@@ -271,10 +271,10 @@ index f326a9a..2b617d0 100644
  #define lookup_positive_unlocked (*vns_ovl_vfsc_lookup_positive_unlocked)
 diff --git a/glue/vns_vfs_shared_syms.h b/glue/vns_vfs_shared_syms.h
 new file mode 100644
-index 0000000..77ae65e
+index 0000000..df75ca7
 --- /dev/null
 +++ b/glue/vns_vfs_shared_syms.h
-@@ -0,0 +1,94 @@
+@@ -0,0 +1,103 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +/*
 + * vns_vfs_shared_syms.h - VFS helpers needed outside fs/overlayfs
@@ -314,6 +314,15 @@ index 0000000..77ae65e
 +#include <linux/dcache.h>
 +#include <linux/capability.h>
 +
++/*
++ * Signatures here must match vendor_kernel_ovl_vfs_compat.c exactly: that file
++ * defines these pointers with `typeof(&name)`, so a differing declaration in
++ * this header is a type conflict on the same object, not a harmless redeclare.
++ *
++ * Two were wrong and are fixed below:
++ *   ihold()          returns void, not struct inode *
++ *   current_umask()  returns int,  not umode_t
++ */
 +#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 12, 0) && \
 +	LINUX_VERSION_CODE < KERNEL_VERSION(6, 3, 0)
 +
@@ -331,9 +340,9 @@ index 0000000..77ae65e
 +extern void (*vns_ovl_vfsc_set_nlink)(struct inode *, unsigned int);
 +extern void (*vns_ovl_vfsc_truncate_inode_pages_final)(struct address_space *);
 +extern void (*vns_ovl_vfsc_d_instantiate)(struct dentry *, struct inode *);
-+extern struct inode *(*vns_ovl_vfsc_ihold)(struct inode *);
++extern void (*vns_ovl_vfsc_ihold)(struct inode *);
 +extern void (*vns_ovl_vfsc_inode_init_once)(struct inode *);
-+extern umode_t (*vns_ovl_vfsc_current_umask)(void);
++extern int (*vns_ovl_vfsc_current_umask)(void);
 +extern int (*vns_ovl_vfsc_in_group_p)(kgid_t);
 +
 +#define clear_inode			(*vns_ovl_vfsc_clear_inode)
