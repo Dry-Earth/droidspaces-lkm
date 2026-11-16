@@ -3,5 +3,5 @@ name=Droidspaces LKM
 version=v0.1.21
 versionCode=20261136
 author=misaka5202
-description=Container support for stock GKI kernels: PID/IPC/UTS user namespaces, devtmpfs, macvlan, IPv6 NAT, virtual DRM render node, cgroup CPU/PID limits. Seven loadable modules, selected by KMI at boot.
+description=Stock GKI: PID/IPC/UTS/user ns, devtmpfs, macvlan, IPv6 NAT, vkms, cgroup cpu.max/pids emu.
 updateJson=https://raw.githubusercontent.com/misaka5202/droidspaces-lkm/master/update.json

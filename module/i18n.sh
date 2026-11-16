@@ -55,7 +55,7 @@ M_RUNTIME_LOG="Runtime log"
 M_HANG_REPORT="Hang report"
 M_STATUS_QUERY="Status: the Action button on the KernelSU module page"
 M_REBOOT_AFTER="Reboot the device after installation"
-M_DESC="Container capabilities for stock GKI kernels: PID/IPC/UTS/user namespaces, devtmpfs, macvlan, IPv6 NAT, virtual DRM render node, cgroup CPU/PID limits. Seven loadable modules, selected by KMI at boot."
+M_DESC="Stock GKI: PID/IPC/UTS/user ns, devtmpfs, macvlan, IPv6 NAT, vkms, cgroup cpu.max/pids emu."
 M_SEC_STATE="Boot State"
 M_SEC_LOAD="Load State"
 M_SEC_EXPORT="Kernel Export Check"
@@ -120,7 +120,7 @@ zh)
     M_HANG_REPORT="卡死现场"
     M_STATUS_QUERY="状态查询: KernelSU 模块页的「操作」按钮"
     M_REBOOT_AFTER="安装完成后请重启设备"
-    M_DESC="在原生 GKI 内核上补齐容器能力：PID/IPC/UTS/用户命名空间、devtmpfs、macvlan、IPv6 NAT、虚拟 DRM 渲染节点、cgroup CPU/PID 限制。七个可加载模块，开机按 KMI 自动选择。"
+    M_DESC="原生 GKI 容器支持：PID/IPC/UTS/user ns、devtmpfs、macvlan、IPv6 NAT、vkms、cgroup cpu.max/pids 仿真。"
 
     # --- action.sh 段标题 ---
     M_SEC_STATE="开机状态"
@@ -193,7 +193,7 @@ ja)
     M_HANG_REPORT="ハング情報"
     M_STATUS_QUERY="状態確認: KernelSU モジュール画面の「操作」ボタン"
     M_REBOOT_AFTER="インストール後に再起動してください"
-    M_DESC="素の GKI カーネルにコンテナ機能を追加: PID/IPC/UTS/ユーザー名前空間、devtmpfs、macvlan、IPv6 NAT、仮想 DRM レンダーノード、cgroup CPU/PID 制限。7 つのロード可能モジュールを KMI に応じて起動時に選択。"
+    M_DESC="素の GKI にコンテナ機能: PID/IPC/UTS/user ns、devtmpfs、macvlan、IPv6 NAT、vkms、cgroup cpu.max/pids エミュ。"
 
     M_SEC_STATE="起動状態"
     M_SEC_LOAD="読み込み状態"
