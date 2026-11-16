@@ -18,10 +18,10 @@ index d5f5f48..29c05d9 100644
  #define LKM4CTR_DIAGFS_TAG	"diagfs"
  
 diff --git a/glue/vendor_kernel_ovl_vfs_compat.c b/glue/vendor_kernel_ovl_vfs_compat.c
-index e9e9549..07842f9 100644
+index e9e9549..c580d4d 100644
 --- a/glue/vendor_kernel_ovl_vfs_compat.c
 +++ b/glue/vendor_kernel_ovl_vfs_compat.c
-@@ -59,6 +59,83 @@ VNS_OVL_VFS_COMPAT_LIST(VNS_OVL_VFSC_DEFINE)
+@@ -59,6 +59,74 @@ VNS_OVL_VFS_COMPAT_LIST(VNS_OVL_VFSC_DEFINE)
  VNS_OVL_VFS_COMPAT_LIST_BF(VNS_OVL_VFSC_DEFINE)
  #undef VNS_OVL_VFSC_DEFINE
  
@@ -68,15 +68,6 @@ index e9e9549..07842f9 100644
 +}
 +#endif /* VNS_OVL_HAVE_KMEM_CACHE_ALLOC_LRU */
 +
-+#if VNS_OVL_HAVE_KMEM_CACHE_ALLOC_LRU
-+int vns_percpu_counter_init(struct percpu_counter *fbc, s64 amount,
-+			    gfp_t gfp, struct lock_class_key *key)
-+{
-+	if (!vns_ovl_vfsc___percpu_counter_init)
-+		return -ENOENT;
-+	return vns_ovl_vfsc___percpu_counter_init(fbc, amount, gfp, key);
-+}
-+#endif /* VNS_OVL_HAVE_KMEM_CACHE_ALLOC_LRU */
 +
 +/*
 + * generic_read_dir - same-name forwarding definition, not a #define alias.
@@ -106,7 +97,7 @@ index e9e9549..07842f9 100644
  {
  #define VNS_OVL_VFSC_RESOLVE(name) \
 diff --git a/glue/vendor_kernel_ovl_vfs_compat.h b/glue/vendor_kernel_ovl_vfs_compat.h
-index f326a9a..79302b5 100644
+index f326a9a..2b617d0 100644
 --- a/glue/vendor_kernel_ovl_vfs_compat.h
 +++ b/glue/vendor_kernel_ovl_vfs_compat.h
 @@ -135,6 +135,18 @@ int vfs_path_lookup(struct dentry *dentry, struct vfsmount *mnt,
@@ -160,10 +151,10 @@ index f326a9a..79302b5 100644
 +	X(unlock_new_inode) \
 +	X(vfs_fsync) \
 +	X(current_umask) \
-+	X(__percpu_counter_init) \
-+	X(percpu_counter_destroy) \
 +	X(generic_read_dir) \
 +	X(truncate_inode_pages_final) \
++	X(percpu_counter_destroy) \
++	X(__percpu_counter_init) \
 +	VNS_OVL_VFSC_KMLRU_ENTRY(X) \
  	X(lookup_positive_unlocked) \
  	VNS_OVL_VFSC_VMASETFILE_ENTRY(X) \
@@ -207,10 +198,10 @@ index f326a9a..79302b5 100644
  #define lookup_positive_unlocked (*vns_ovl_vfsc_lookup_positive_unlocked)
 diff --git a/glue/vns_vfs_shared_syms.h b/glue/vns_vfs_shared_syms.h
 new file mode 100644
-index 0000000..968d57d
+index 0000000..77ae65e
 --- /dev/null
 +++ b/glue/vns_vfs_shared_syms.h
-@@ -0,0 +1,95 @@
+@@ -0,0 +1,94 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +/*
 + * vns_vfs_shared_syms.h - VFS helpers needed outside fs/overlayfs
@@ -248,7 +239,6 @@ index 0000000..968d57d
 +#include <linux/types.h>
 +#include <linux/fs.h>
 +#include <linux/dcache.h>
-+#include <linux/percpu_counter.h>
 +#include <linux/capability.h>
 +
 +#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 12, 0) && \
@@ -272,9 +262,6 @@ index 0000000..968d57d
 +extern void (*vns_ovl_vfsc_inode_init_once)(struct inode *);
 +extern umode_t (*vns_ovl_vfsc_current_umask)(void);
 +extern int (*vns_ovl_vfsc_in_group_p)(kgid_t);
-+extern int (*vns_ovl_vfsc___percpu_counter_init)(struct percpu_counter *, s64,
-+						 gfp_t, struct lock_class_key *);
-+extern void (*vns_ovl_vfsc_percpu_counter_destroy)(struct percpu_counter *);
 +
 +#define clear_inode			(*vns_ovl_vfsc_clear_inode)
 +#define drop_nlink			(*vns_ovl_vfsc_drop_nlink)
@@ -286,23 +273,26 @@ index 0000000..968d57d
 +#define inode_init_once			(*vns_ovl_vfsc_inode_init_once)
 +#define current_umask			(*vns_ovl_vfsc_current_umask)
 +#define in_group_p			(*vns_ovl_vfsc_in_group_p)
-+/*
-+ * __percpu_counter_init is called through this wrapper rather than a bare
-+ * macro: it takes a lockdep key, and on configurations without lockdep the
-+ * call site's expression must still typecheck. The wrapper keeps one spelling.
-+ */
-+int vns_percpu_counter_init(struct percpu_counter *fbc, s64 amount,
-+			    gfp_t gfp, struct lock_class_key *key);
-+/*
-+ * The key argument must be forwarded, not dropped: the kernel's
-+ * percpu_counter_init() declares a static lock_class_key and passes its
-+ * address here, so discarding it leaves the variable unused and -Werror
-+ * (unused-variable) fires at every call site.
-+ */
-+#define __percpu_counter_init(f, a, g, k) \
-+	vns_percpu_counter_init((f), (a), (g), (k))
-+#define percpu_counter_destroy		(*vns_ovl_vfsc_percpu_counter_destroy)
 +
++/*
++ * percpu_counter_init() / percpu_counter_destroy() are NOT macro-redirected.
++ *
++ * A #define here is wrong for these two. On a !CONFIG_LOCKDEP kernel
++ * percpu_counter_init() is a static inline in <linux/percpu_counter.h> whose
++ * body was parsed long before this header, so a later #define never reaches
++ * it -- it just leaves __percpu_counter_init as a static import anyway. When
++ * the define *did* take effect it produced a call the kernel rejected:
++ *
++ *   lkm4ctr: vendor_kernel: failed to init default ipc namespace (-12)
++ *
++ * (Qualcomm SM7675 / 6.1.138, vns_msg_accounting_init -> percpu_counter_init.)
++ *
++ * Both are handled as same-name forwarding definitions in
++ * vendor_kernel_ovl_vfs_compat.c instead: a real function with the kernel's
++ * own name is reachable from already-parsed inline bodies AND from direct
++ * calls, and it emits no static import. Needed on vendor kernels that trim
++ * these exports (the Meizu 6.1.25 case), harmless where they are exported.
++ */
 +#endif /* MID tier */
 +
 +#endif /* _VNS_VFS_SHARED_SYMS_H */
