@@ -81,10 +81,10 @@ index 0f951ba..e0c0aa0 100644
  	vns_sem_init_ns(&vns_default_ipc_ns);
  	vns_shm_init_ns(&vns_default_ipc_ns);
 diff --git a/glue/vendor_kernel_ovl_vfs_compat.c b/glue/vendor_kernel_ovl_vfs_compat.c
-index e9e9549..2e477f6 100644
+index e9e9549..d4a31b1 100644
 --- a/glue/vendor_kernel_ovl_vfs_compat.c
 +++ b/glue/vendor_kernel_ovl_vfs_compat.c
-@@ -59,6 +59,328 @@ VNS_OVL_VFS_COMPAT_LIST(VNS_OVL_VFSC_DEFINE)
+@@ -59,6 +59,334 @@ VNS_OVL_VFS_COMPAT_LIST(VNS_OVL_VFSC_DEFINE)
  VNS_OVL_VFS_COMPAT_LIST_BF(VNS_OVL_VFSC_DEFINE)
  #undef VNS_OVL_VFSC_DEFINE
  
@@ -148,30 +148,23 @@ index e9e9549..2e477f6 100644
 +#endif /* !VNS_OVL_HAVE_BACKING_FILE_USER_PATH && >= 6.12 */
 +
 +/*
-+ * kmem_cache_alloc_lru 只在 MID 层提供。
++ * kmem_cache_alloc_lru —— 6.0+ 的分配辅助，按版本分两种形态。
 + *
-+ * 6.12 上它是宏：
-+ *   #define kmem_cache_alloc_lru(...) alloc_hooks(kmem_cache_alloc_lru_noprof(...))
-+ * 函数形式的定义会被这个宏展开成语法错误，所以 NEW 层不能有同名函数 ——
-+ * 那边的调用会走 alloc_hooks 展开后的 kmem_cache_alloc_lru_noprof，
-+ * 需要单独在 NEW 清单里处理（待办）。
++ *   [6.0, 6.10)  void *kmem_cache_alloc_lru(struct kmem_cache *, struct list_lru *, gfp_t)
++ *   [6.10, ...)  void *kmem_cache_alloc_lru_noprof(...)  + 宏 kmem_cache_alloc_lru
++ *
++ * 为什么必须用同名函数而不是对象式 #define：
++ * include/linux/fs.h 里的 alloc_inode_sb() 是个 inline，它的函数体在头文件
++ * 解析时就展开了，早于我们 compat 头的 #define。所以 6.6 上加的对象式 define
++ * 根本管不到那处调用，符号照样被静态导入（CI #122 实测）。
++ *
++ * 6.10+ 那边内核自己也把 kmem_cache_alloc_lru 定义成宏，我们不能再定义同名
++ * 函数（会被宏展开成语法错误），只能用 _noprof 这个名字。
 + */
-+#if VNS_OVL_TIER_MID
 +#if VNS_OVL_HAVE_KMEM_CACHE_ALLOC_LRU
-+/*
-+ * kmem_cache_alloc_lru - same-name forwarding definition.
-+ *
-+ * alloc_inode_sb() in <linux/fs.h> is a static inline that calls this by name,
-+ * and that header is pulled in long before this module's compat header, so a
-+ * #define here would never reach the already-parsed inline body. A definition
-+ * with the kernel function's own name does: every reference inside this module
-+ * links to it, so no static import is emitted, and it forwards to the address
-+ * resolved at load time.
-+ *
-+ * Same reason seq_escape_mem is handled this way rather than by a macro.
-+ * __nocfi: the body makes an indirect call, and CONFIG_CFI_CLANG kernels check
-+ * those at the call site.
-+ */
++
++#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 10, 0)
++
 +void *__nocfi kmem_cache_alloc_lru(struct kmem_cache *s, struct list_lru *lru,
 +				   gfp_t gfp)
 +{
@@ -179,9 +172,22 @@ index e9e9549..2e477f6 100644
 +		return NULL;
 +	return vns_ovl_vfsc_kmem_cache_alloc_lru(s, lru, gfp);
 +}
++
++#else /* >= 6.10 */
++
++void *__nocfi kmem_cache_alloc_lru_noprof(struct kmem_cache *s,
++					  struct list_lru *lru, gfp_t gfp)
++{
++	if (!vns_ovl_vfsc_kmem_cache_alloc_lru_noprof)
++		return NULL;
++	return vns_ovl_vfsc_kmem_cache_alloc_lru_noprof(s, lru, gfp);
++}
++
++#endif /* < 6.10 */
++
 +#endif /* VNS_OVL_HAVE_KMEM_CACHE_ALLOC_LRU */
 +
-+#endif /* VNS_OVL_TIER_MID —— 只有 kmem_cache_alloc_lru 需要 */
++
 +
 +/*
 + * 下面这批 VFS 同名转发函数三层都编译：OLD/MID/NEW 的清单里现在都有
@@ -414,10 +420,10 @@ index e9e9549..2e477f6 100644
  {
  #define VNS_OVL_VFSC_RESOLVE(name) \
 diff --git a/glue/vendor_kernel_ovl_vfs_compat.h b/glue/vendor_kernel_ovl_vfs_compat.h
-index f326a9a..087fb1c 100644
+index f326a9a..1753f7e 100644
 --- a/glue/vendor_kernel_ovl_vfs_compat.h
 +++ b/glue/vendor_kernel_ovl_vfs_compat.h
-@@ -135,6 +135,32 @@ int vfs_path_lookup(struct dentry *dentry, struct vfsmount *mnt,
+@@ -135,6 +135,37 @@ int vfs_path_lookup(struct dentry *dentry, struct vfsmount *mnt,
  #define VNS_OVL_VFSC_DTMPFILE_ENTRY(X) X(d_tmpfile)
  #endif
  
@@ -440,6 +446,11 @@ index f326a9a..087fb1c 100644
 +#if VNS_OVL_HAVE_KMEM_CACHE_ALLOC_LRU && \
 +	LINUX_VERSION_CODE < KERNEL_VERSION(6, 12, 0)
 +#define VNS_OVL_VFSC_KMLRU_NO_PROF_ENTRY(X) X(kmem_cache_alloc_lru)
++#if VNS_OVL_HAVE_KMEM_CACHE_ALLOC_LRU && \n	LINUX_VERSION_CODE >= KERNEL_VERSION(6, 10, 0)
++#define VNS_OVL_VFSC_KMLRU_PROF_ENTRY(X) X(kmem_cache_alloc_lru_noprof)
++#else
++#define VNS_OVL_VFSC_KMLRU_PROF_ENTRY(X)
++#endif
 +#else
 +#define VNS_OVL_VFSC_KMLRU_NO_PROF_ENTRY(X)
 +#endif
@@ -450,16 +461,17 @@ index f326a9a..087fb1c 100644
  /* backing_file_open() exists since 6.6 (in <linux/fs.h>); the full
   * backing_file_ctx-based API (backing_file_read_iter()/write_iter()/
   * splice_read()/splice_write()/mmap(), later moved to its own
-@@ -465,6 +491,8 @@ static inline void generic_fill_statx_attr(struct inode *inode, struct kstat *st
+@@ -465,6 +496,9 @@ static inline void generic_fill_statx_attr(struct inode *inode, struct kstat *st
  	X(override_creds)
  #endif
  #define VNS_OVL_VFS_COMPAT_LIST(X) \
 +	VNS_OVL_VFSC_KMLRU_NO_PROF_ENTRY(X) \
++	VNS_OVL_VFSC_KMLRU_PROF_ENTRY(X) \
 +	X(finish_open) \
  	X(prepare_creds) \
  	X(errseq_sample) \
  	X(mntput) \
-@@ -534,11 +562,46 @@ static inline void generic_fill_statx_attr(struct inode *inode, struct kstat *st
+@@ -534,11 +568,46 @@ static inline void generic_fill_statx_attr(struct inode *inode, struct kstat *st
  	X(security_file_ioctl) \
  	X(iterate_dir) \
  	X(vfs_setpos) \
@@ -507,7 +519,7 @@ index f326a9a..087fb1c 100644
  
  #if !VNS_OVL_NEED_BACKING_FILE_FALLBACK
  #define VNS_OVL_VFS_COMPAT_LIST_BF(X) \
-@@ -643,9 +706,48 @@ static inline void generic_fill_statx_attr(struct inode *inode, struct kstat *st
+@@ -643,9 +712,48 @@ static inline void generic_fill_statx_attr(struct inode *inode, struct kstat *st
  	X(security_file_ioctl) \
  	X(iterate_dir) \
  	X(vfs_setpos) \
@@ -557,7 +569,7 @@ index f326a9a..087fb1c 100644
  
  #define VNS_OVL_VFS_COMPAT_LIST_BF(X) \
  	X(vfs_iter_read) \
-@@ -656,9 +758,16 @@ static inline void generic_fill_statx_attr(struct inode *inode, struct kstat *st
+@@ -656,9 +764,16 @@ static inline void generic_fill_statx_attr(struct inode *inode, struct kstat *st
  #endif /* MID */
  
  #if VNS_OVL_TIER_OLD
@@ -574,7 +586,7 @@ index f326a9a..087fb1c 100644
  	X(errseq_sample) \
  	X(mntput) \
  	X(__mnt_is_readonly) \
-@@ -743,8 +852,38 @@ static inline void generic_fill_statx_attr(struct inode *inode, struct kstat *st
+@@ -743,8 +858,38 @@ static inline void generic_fill_statx_attr(struct inode *inode, struct kstat *st
  	X(generic_fillattr) \
  	X(vfs_path_lookup) \
  	X(rw_verify_area) \
@@ -615,7 +627,7 @@ index f326a9a..087fb1c 100644
  #define VNS_OVL_VFS_COMPAT_LIST_BF(X)
  #endif /* OLD */
  
-@@ -848,6 +987,17 @@ VNS_OVL_VFS_COMPAT_LIST_BF(VNS_OVL_VFSC_DECLARE)
+@@ -848,6 +993,17 @@ VNS_OVL_VFS_COMPAT_LIST_BF(VNS_OVL_VFSC_DECLARE)
   */
  #define down_write_killable (*vns_ovl_vfsc_down_write_killable)
  #define d_invalidate (*vns_ovl_vfsc_d_invalidate)
@@ -633,7 +645,7 @@ index f326a9a..087fb1c 100644
  #if LINUX_VERSION_CODE < KERNEL_VERSION(6, 18, 0)
  #define revert_creds (*vns_ovl_vfsc_revert_creds)
  #define override_creds (*vns_ovl_vfsc_override_creds)
-@@ -891,6 +1041,35 @@ static inline void vns_ovl_revert_creds_compat(const struct cred *revert_cred)
+@@ -891,6 +1047,35 @@ static inline void vns_ovl_revert_creds_compat(const struct cred *revert_cred)
  #define vma_set_file (*vns_ovl_vfsc_vma_set_file)
  #endif
  
@@ -669,7 +681,7 @@ index f326a9a..087fb1c 100644
  #if !VNS_OVL_NEED_BACKING_FILE_FALLBACK
  #define backing_file_read_iter (*vns_ovl_vfsc_backing_file_read_iter)
  #define backing_file_write_iter (*vns_ovl_vfsc_backing_file_write_iter)
-@@ -992,6 +1171,35 @@ static inline void vns_ovl_revert_creds_compat(const struct cred *revert_cred)
+@@ -992,6 +1177,35 @@ static inline void vns_ovl_revert_creds_compat(const struct cred *revert_cred)
  #define security_file_ioctl (*vns_ovl_vfsc_security_file_ioctl)
  #define iterate_dir (*vns_ovl_vfsc_iterate_dir)
  #define vfs_setpos (*vns_ovl_vfsc_vfs_setpos)
@@ -705,7 +717,7 @@ index f326a9a..087fb1c 100644
  #define d_tmpfile (*vns_ovl_vfsc_d_tmpfile)
  #define errseq_check (*vns_ovl_vfsc_errseq_check)
  #define lookup_positive_unlocked (*vns_ovl_vfsc_lookup_positive_unlocked)
-@@ -1004,6 +1212,9 @@ static inline void vns_ovl_revert_creds_compat(const struct cred *revert_cred)
+@@ -1004,6 +1218,9 @@ static inline void vns_ovl_revert_creds_compat(const struct cred *revert_cred)
  #endif /* MID */
  
  #if VNS_OVL_TIER_OLD
@@ -715,7 +727,7 @@ index f326a9a..087fb1c 100644
  #define mount_nodev (*vns_ovl_vfsc_mount_nodev)
  #define prepare_creds (*vns_ovl_vfsc_prepare_creds)
  #define errseq_sample (*vns_ovl_vfsc_errseq_sample)
-@@ -1109,7 +1320,6 @@ static inline void vns_ovl_revert_creds_compat(const struct cred *revert_cred)
+@@ -1109,7 +1326,6 @@ static inline void vns_ovl_revert_creds_compat(const struct cred *revert_cred)
  #define vfs_iocb_iter_write (*vns_ovl_vfsc_vfs_iocb_iter_write)
  #define vfs_iter_write (*vns_ovl_vfsc_vfs_iter_write)
  #define iter_file_splice_write (*vns_ovl_vfsc_iter_file_splice_write)
@@ -723,7 +735,7 @@ index f326a9a..087fb1c 100644
  #define vfs_fallocate (*vns_ovl_vfsc_vfs_fallocate)
  #define dentry_open (*vns_ovl_vfsc_dentry_open)
  #define open_with_fake_path (*vns_ovl_vfsc_open_with_fake_path)
-@@ -1146,11 +1356,11 @@ static inline void vns_ovl_revert_creds_compat(const struct cred *revert_cred)
+@@ -1146,11 +1362,11 @@ static inline void vns_ovl_revert_creds_compat(const struct cred *revert_cred)
   * this forwards straight to the real symbol.
   */
  #define setattr_prepare(idmap, dentry, attr) \
@@ -737,7 +749,7 @@ index f326a9a..087fb1c 100644
  #define security_file_ioctl (*vns_ovl_vfsc_security_file_ioctl)
  #define vfs_fadvise (*vns_ovl_vfsc_vfs_fadvise)
  #define vfs_ioctl (*vns_ovl_vfsc_vfs_ioctl)
-@@ -1160,6 +1370,31 @@ static inline void vns_ovl_revert_creds_compat(const struct cred *revert_cred)
+@@ -1160,6 +1376,31 @@ static inline void vns_ovl_revert_creds_compat(const struct cred *revert_cred)
  #define vfs_path_lookup (*vns_ovl_vfsc_vfs_path_lookup)
  #define rw_verify_area (*vns_ovl_vfsc_rw_verify_area)
  #define d_tmpfile (*vns_ovl_vfsc_d_tmpfile)
