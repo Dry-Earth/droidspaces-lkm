@@ -4,16 +4,22 @@ This is the English changelog. Entries before v0.1.23 exist only in Chinese;
 see [CHANGELOG.md](CHANGELOG.md). Version numbering rationale is documented
 there as well.
 
-## v0.1.24
+## v0.1.23
+
+`versionCode` is written at build time (`YYYYMMDDHHMM`, see
+`.github/workflows/build.yml`).
+
+### Fixed
 
 ### Fixed
 
 **`versionCode` exceeded int32 range; KernelSU has never been able to parse it.**
 
 KernelSU declares `versionCode` as `Int` in `Module.kt` and parses it with
-`.toInt()` in `Downloader.kt`. `build.yml` generated `%Y%m%d%H%M` (12 digits);
-v0.1.23 produced `202611170004`, which exceeds `Integer.MAX_VALUE` (2147483647)
-by a factor of 94, causing `NumberFormatException` and aborting the update check.
+`.toInt()` in `Downloader.kt`. `build.yml` previously generated `%Y%m%d%H%M`
+(12 digits); this release would have produced `202611170004`, which exceeds
+`Integer.MAX_VALUE` (2147483647) by a factor of 94, causing
+`NumberFormatException` and aborting the update check.
 
 v0.1.22 (`202611161425`) was equally out of range, so this has been broken since
 the scheme was introduced.
@@ -24,25 +30,11 @@ Changed to `YYYYMMDDnn`:
 versionCode = YYYYMMDD * 100 + hour * 4 + minute / 15
 ```
 
-Range `2026111700`–`2026111795`, maximum 2,026,117,995 < 2,147,483,647.
-96 slots per day. The build fails if the value would overflow.
-
-Per-KMI packages now read `dist/version-code.txt` instead of computing their own
-timestamp, so all artifacts of one release share the same value.
-
+Range `2026111700`–`2026111795`, maximum 2,026,117,995 < 2,147,483,647, 96 slots
+per day. The build fails if the value would overflow. Per-KMI packages now read
+`dist/version-code.txt` instead of computing their own timestamp.
 `scripts/gen_release_meta.py` now rejects a versionCode above int32.
 
-### Changed
-
-No functional changes. This release only corrects the update check and metadata
-synchronisation.
-
-## v0.1.23
-
-`versionCode` is written at build time (`YYYYMMDDHHMM`, see
-`.github/workflows/build.yml`).
-
-### Fixed
 
 **Symbol compatibility extended to all seven KMIs.** v0.1.22 covered only the
 MID tier (5.15 / 6.1); the compat lists for OLD (5.10) and NEW (6.6 / 6.12) were
