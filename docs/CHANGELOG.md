@@ -129,10 +129,16 @@ v0.1.22 发布后，`nm -u` 实测每个 KMI 的 `lkm4ctr` 还有多少 VFS 类�
 | android15-6.6 | 2 | −95% |
 | android16-6.12 | 2 | −95% |
 
-这组数字来自 `nm -u` 实测：android12-5.10 / android14-6.1 / android16-6.12
-三个 KMI 逐一核对过（CI #153 的产物）。5.15 和 6.6 两列是按同样的修改推算的
-（`capable_wrt_inode_uidgid` 的 MID 修复覆盖 5.15，`_many` 的 6.10+ 修复覆盖
-6.6，各自只减掉对应那一项），发版前的全量构建会复核。
+这组数字**全部来自 `nm -u` 实测**，七个 KMI 逐一核对过（CI #155 和 #157）。
+
+这里踩过一个版本边界的坑，值得记下来：`_many` 变体的引入版本我一开始写的
+是 6.10，实际是 **6.6**（查上游 `include/linux/percpu_counter.h`：v5.15~v6.5
+没有，v6.6 起有）。陷阱在于 `kmem_cache_alloc_lru` 的 `_noprof` 变体确实是
+6.10 —— 我把两个混了。结果 android15-6.6 的 `_many` 两个符号一直漏在
+静态导入里（条件条目宏展开为空、同名函数不编译），实测才发现它比推算多 2 个。
+
+教训：同属一个内核子系统的符号，版本边界也必须逐个查头文件，不能沿用
+相邻符号的版本号。
 
 剩下的 1~2 个是 `__percpu_down_read`（lib/percpu-rwsem.c 的锁原语）和
 `percpu_counter_add_batch`（lib/percpu_counter.c 里 percpu_counter_add 的
@@ -272,7 +278,7 @@ android12-5.10 和 android16-6.12 的 `.ko` 去比对 Meizu 6.1.25 的导出表�
 | 符号 | 变化 |
 |---|---|
 | `kmem_cache_alloc_lru` | **6.10** 起变成宏，真符号叫 `_noprof` |
-| `__percpu_counter_init` | **6.10** 起变成 `_many`（多一个 `nr_counters` 参数）|
+| `__percpu_counter_init` | **6.6** 起变成 `_many`（多一个 `nr_counters` 参数）|
 | `d_tmpfile` | **6.7** 起改名 `d_mark_tmpfile` |
 | `d_parent_ino` | **6.12** 新增 |
 | `generic_encode_ino32_fh` | **6.9** 新增 |
