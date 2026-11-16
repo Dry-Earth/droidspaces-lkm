@@ -262,6 +262,27 @@ ko_has_param() {
 ko_load_error() {
     local mod="$1"
     dmesg 2>/dev/null | grep -E "Unknown symbol|unknown parameter|disagrees about version"         | tail -3 | while read -r _l; do dlog "  [kernel] $_l"; done
+
+    # 上面的 dmesg 抓取不是所有设备都能用：issue #2 里 Meizu 那台抓到了具体符号，
+    # 另一台 6.1.75 的设备一条都没抓到，用户只能看到笼统的 "unknown symbol in module"。
+    #
+    # 所以构建期已经把每个 .ko 的未定义符号导成 ko/symcheck-<kmi>.txt 打进包里，
+    # 这里拿清单逐条查 /proc/kallsyms 的 __ksymtab_ 条目 —— 不依赖 dmesg，
+    # 也不依赖设备上有 nm。查不到的就是这个内核没导出的符号。
+    local f="$MODDIR/ko/symcheck-${KMI:-}.txt"
+    if [ ! -f "$f" ]; then
+        return 0
+    fi
+    local miss="" m sym
+    while read -r m sym; do
+        [ "$m" = "$mod" ] || continue
+        [ -n "$sym" ] || continue
+        grep -qE "__ksymtab_${sym}\$" /proc/kallsyms 2>/dev/null || miss="$miss $sym"
+    done < "$f"
+    if [ -n "$miss" ]; then
+        dlog "  [缺符号] $mod 需要但本内核未导出:$miss"
+        dlog "           （这是厂商内核的导出表差异，不是模块包损坏）"
+    fi
 }
 
 load_mod() {

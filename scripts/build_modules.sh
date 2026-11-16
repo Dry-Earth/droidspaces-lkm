@@ -444,4 +444,29 @@ fi
   fi
   echo "  [OK] 8/8 模块齐全"
 
+  # ---------------------------------------------------------------------
+  # 内核导出依赖清单
+  #
+  # 装机失败最常见的原因是「这个内核没导出某个符号」，而 insmod 只回一句
+  # "unknown symbol in module"，具体是哪个符号只在 dmesg 里，很多设备上
+  # dmesg 还读不到（issue 里两台设备，一台能抓一台抓不到）。
+  #
+  # 所以在构建期把每个 .ko 的**未定义符号**固化成一个清单打进模块包，
+  # 装机时拿清单逐条查 /proc/kallsyms 的 __ksymtab_，直接报出缺哪几个。
+  # 不依赖 dmesg，也不依赖设备上有 nm。
+  # ---------------------------------------------------------------------
+  SYMFILE="$OUT/symcheck-$KMI.txt"
+  : > "$SYMFILE"
+  for ko in "$OUT"/*-"$KMI".ko; do
+      [ -f "$ko" ] || continue
+      mod=$(basename "$ko" "-$KMI.ko")
+      if command -v nm >/dev/null 2>&1; then
+          nm -u "$ko" 2>/dev/null | awk '{print $2}' | \
+              grep -vE '^(__this_module|_GLOBAL_OFFSET_TABLE_)$' | \
+              while read -r s; do echo "$mod $s"; done >> "$SYMFILE"
+      fi
+  done
+  n_syms=$(wc -l < "$SYMFILE" 2>/dev/null || echo 0)
+  echo "  [OK] 符号依赖清单: $(basename "$SYMFILE")（$n_syms 条）"
+
 exit 0

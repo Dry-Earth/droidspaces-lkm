@@ -51,6 +51,40 @@ else
 fi
 echo
 
+echo "=== 内核导出检查 ==="
+# 构建期把每个 .ko 的未定义符号导成 ko/symcheck-<kmi>.txt。
+# 这里拿清单查 /proc/kallsyms 的 __ksymtab_ 条目 —— 直接报出「本内核缺哪些」，
+# 不依赖能读 dmesg（有些厂商内核上读不到，用户只能看到笼统的 unknown symbol）。
+_kmi=""
+for _t in android12-5.10 android13-5.10 android13-5.15 android14-5.15 \
+          android14-6.1 android15-6.6 android16-6.12 android17-6.18; do
+    case "$(uname -r)" in
+        *"${_t%-*}"*"-${_t#*-}"*|*"-$_t"*) _kmi="$_t"; break ;;
+    esac
+done
+_sf="$MODDIR/ko/symcheck-${_kmi}.txt"
+if [ -z "$_kmi" ]; then
+    echo "  [--]   无法从内核版本推导 KMI，跳过"
+elif [ ! -f "$_sf" ]; then
+    echo "  [--]   没有符号清单 ko/symcheck-${_kmi}.txt（旧版模块包？）"
+else
+    _miss=0
+    while read -r _mod _sym; do
+        [ -n "$_sym" ] || continue
+        if ! grep -qE "__ksymtab_${_sym}\$" /proc/kallsyms 2>/dev/null; then
+            echo "  [缺]   $_mod 需要 $_sym —— 本内核未导出"
+            _miss=$((_miss + 1))
+        fi
+    done < "$_sf"
+    if [ "$_miss" -eq 0 ]; then
+        echo "  [OK]   本内核导出了清单里全部符号"
+    else
+        echo "         共 $_miss 条缺失。这是厂商内核的导出表差异，"
+        echo "         不是模块包损坏 —— 报 issue 时请把这整段贴上去。"
+    fi
+fi
+echo
+
 echo "=== 能力验证 ==="
 userns=$(unshare -U readlink /proc/self/ns/user 2>/dev/null)
 hostns=$(readlink /proc/self/ns/user 2>/dev/null)
