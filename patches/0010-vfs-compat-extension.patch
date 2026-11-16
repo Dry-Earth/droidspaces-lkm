@@ -18,10 +18,10 @@ index d5f5f48..29c05d9 100644
  #define LKM4CTR_DIAGFS_TAG	"diagfs"
  
 diff --git a/glue/vendor_kernel_ovl_vfs_compat.c b/glue/vendor_kernel_ovl_vfs_compat.c
-index e9e9549..3f7cb60 100644
+index e9e9549..d6f9f9b 100644
 --- a/glue/vendor_kernel_ovl_vfs_compat.c
 +++ b/glue/vendor_kernel_ovl_vfs_compat.c
-@@ -59,6 +59,60 @@ VNS_OVL_VFS_COMPAT_LIST(VNS_OVL_VFSC_DEFINE)
+@@ -59,6 +59,63 @@ VNS_OVL_VFS_COMPAT_LIST(VNS_OVL_VFSC_DEFINE)
  VNS_OVL_VFS_COMPAT_LIST_BF(VNS_OVL_VFSC_DEFINE)
  #undef VNS_OVL_VFSC_DEFINE
  
@@ -61,14 +61,17 @@ index e9e9549..3f7cb60 100644
 + * compile-time constant there. A real function with the kernel's own name is
 + * addressable and callable both ways.
 + *
-+ * Signature matches the kernel's: int generic_read_dir(struct file *,
-+ * struct dir_context *).
++ * Signature matches the kernel's (fs.h):
++ *   ssize_t generic_read_dir(struct file *, char __user *, size_t, loff_t *);
++ * It is the legacy read() entry that always returns -EISDIR, not the
++ * iterate_shared() form -- getting that wrong is what CI #47 caught.
 + */
-+int __nocfi generic_read_dir(struct file *file, struct dir_context *ctx)
++ssize_t __nocfi generic_read_dir(struct file *filp, char __user *buf,
++				 size_t count, loff_t *ppos)
 +{
 +	if (!vns_ovl_vfsc_generic_read_dir)
 +		return -EIO;
-+	return vns_ovl_vfsc_generic_read_dir(file, ctx);
++	return vns_ovl_vfsc_generic_read_dir(filp, buf, count, ppos);
 +}
 +
 +int vns_percpu_counter_init(struct percpu_counter *fbc, s64 amount,
