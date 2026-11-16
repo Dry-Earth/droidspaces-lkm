@@ -1,8 +1,10 @@
 # hummer 精确内核构建（OnePlus Ace 5 Pro / LineageOS 24）
 
 这是 [misaka5202/droidspaces-lkm](https://github.com/misaka5202/droidspaces-lkm) 的
-fork，增加了两条**按设备精确内核**构建的通道。上游已同步到 `42897af`
+fork，增加了**按设备精确内核**构建的通道。上游已同步到 `42897af`
 （v0.1.21 + 5 个纯文档提交），合并提交为 `ddf7c81`。
+
+构建只使用 OTA `build-manifest.xml` 钉住的工具，不再包含 DDK 容器路径。
 
 ## 已验证结果
 
@@ -15,18 +17,13 @@ fork，增加了两条**按设备精确内核**构建的通道。上游已同步
 | `droidspaces check` | **全部 ✓**（PID / IPC / userns / CPU limit / Process limit） |
 | 模块加载 | 8/8，`boot-completed` 正常，无卡死报告 |
 
-两次成功构建：
+发布：
 
-| Release | 工具来源 | ZIP sha256 |
-|---|---|---|
-| `hummer-manifest-43875314497`（推荐） | 全部来自 OTA manifest | `74cc0089958e594498264c9b7d85ff5b6a7ee8b84e2f462f66f45b6877693575` |
-| `hummer-43771876793` | DDK 容器（回退用） | `eb386a9bf1e738eab62d9f5bce2ce95a6c6755c1489c95bc0c96a7c6ebe66586` |
+| Release | ZIP sha256 |
+|---|---|
+| `hummer-manifest-43875314497` | `74cc0089958e594498264c9b7d85ff5b6a7ee8b84e2f462f66f45b6877693575` |
 
-## 两条工作流
-
-### 1. `[hummer] Build from manifest tools`（推荐）
-
-所有工具都取自 `build-manifest.xml` 钉住的 revision：
+## 工具来源（全部来自 manifest）
 
 | 工具 | manifest 项目 | revision |
 |---|---|---|
@@ -36,35 +33,11 @@ fork，增加了两条**按设备精确内核**构建的通道。上游已同步
 | boot.img 解包 | `platform/system/tools/mkbootimg` | `4a27dd13…` |
 | 内核 / modules | `LineageOS/android_kernel_oneplus_sm8750{,-modules}` | `01ee9757…` / `e05c031c…` |
 
-不再使用 DDK 容器，也不再用 Magisk 的 `magiskboot`；KDIR 和 8 个 `.ko` 都在
-runner 上用上面的 clang 原生编译。
-
 宿主只安装 LineageOS 构建文档要求的系统包（`build-essential`、`libssl-dev`、
-`python3`、`perl`、`rsync` 等），它们不是内核工具链的一部分。
+`python3`、`perl`、`rsync` 等）；KDIR 和 8 个 `.ko` 都用 manifest 里的 clang
+在 runner 上原生编译。
 
-第一次运行会下载约 1 GB 的预编译包，之后走 Actions cache。
-
-### 2. `[hummer] Build exact-KDIR modules`（回退）
-
-原来的 DDK 版：用 `ghcr.io/ylarod/ddk-min:android15-6.6-*` 容器 + 官方 clang +
-官方内核源码。manifest 版出问题时可以退回这条。
-
-## 相对上游的改动
-
-| 文件 | 作用 |
-|---|---|
-| `ci/build-kdir.sh` / `ci/build-kdir-host.sh` | DDK / runner 原生两种 KDIR 构建 |
-| `ci/build-hummer-modules.sh` / `ci/build-hummer-modules-host.sh` | 对应两种模块构建入口 |
-| `ci/fetch-manifest-tools.sh` | 按 manifest revision 下载 clang / build-tools / kernel-build-tools / mkbootimg |
-| `ci/parse-manifest.py` | 解析 kernel / modules / clang / build-tools / mkbootimg |
-| `ci/adapt-lkm4ctr.py` | 适配厂商内核的 `backing_file_open(const struct file *, …)` |
-| `ci/package-hummer.py` | 打包 KernelSU ZIP，删除 `updateJson` |
-| `scripts/build_modules.sh` | 支持 `KSRC_OVERRIDE` / `LKM4CTR_DIR` |
-| `extra/cgrouplimits/cpu_mod.c` | 补 `MODULE_IMPORT_NS(VFS_internal_…)` |
-| `.github/workflows/build-hummer-manifest.yml` | manifest-only 构建 |
-| `.github/workflows/build-hummer-exact.yml` | DDK 回退构建 |
-
-## 构建
+## 工作流
 
 GitHub → Actions → **`[hummer] Build from manifest tools`** → Run workflow：
 
@@ -74,8 +47,22 @@ GitHub → Actions → **`[hummer] Build from manifest tools`** → Run workflow
 | `manifest_url` | 同一 OTA 的 `build-manifest.xml` |
 | `publish_release` | 成功后发 Release |
 
-首次冷缓存约 30 分钟；`tools/` 和 `ccache` 都会缓存，后续重跑明显更快。
+首次冷缓存约 30 分钟；`tools/`（约 1.2 GiB）和 `ccache` 都会缓存，后续重跑明显更快。
 OTA 后只要内核 commit 变了（`uname -r` 的 `g...` 变化），就换两个 URL 重跑。
+
+## 相对上游的改动
+
+| 文件 | 作用 |
+|---|---|
+| `ci/build-kdir-host.sh` | 用 manifest clang 在 runner 上编精确 KDIR |
+| `ci/build-hummer-modules-host.sh` | 用精确 KDIR 编 8 个模块 |
+| `ci/fetch-manifest-tools.sh` | 按 manifest revision 下载 clang / build-tools / kernel-build-tools / mkbootimg |
+| `ci/parse-manifest.py` | 解析 kernel / modules / clang / build-tools / mkbootimg |
+| `ci/adapt-lkm4ctr.py` | 适配厂商内核的 `backing_file_open(const struct file *, …)` |
+| `ci/package-hummer.py` | 打包 KernelSU ZIP，删除 `updateJson` |
+| `scripts/build_modules.sh` | 支持 `KSRC_OVERRIDE` / `LKM4CTR_DIR` |
+| `extra/cgrouplimits/cpu_mod.c` | 补 `MODULE_IMPORT_NS(VFS_internal_…)` |
+| `.github/workflows/build-hummer-manifest.yml` | 构建入口 |
 
 ## 安装
 
