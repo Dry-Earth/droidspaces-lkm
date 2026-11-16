@@ -294,6 +294,15 @@ MUST_NOT_APPEAR="get_next_ino cgroup_add_dfl_cftypes dev_forward_skb
 B 的缺失。改成同名转发函数，优先 `dev_forward_skb`，回退 `__dev_forward_skb`，
 两个都没有时 `kfree_skb` + 返回 `-EINVAL`。
 
+**同一类错误犯了第二次**（上一段写完才发现）：`dev_mc_add_excl` 被改写成
+`dev_mc_add`，而 Meizu 6.1.25 上**这两个也都不导出**，同批还有 `dev_mc_del` 和
+`netdev_is_rx_handler_busy`。三个都补进 `MACVLAN_SYMRES`。详见上面「用真实内核
+验证」一节。
+
+教训写在明处：**任何「A 换成 B」的替换，必须先确认 B 在目标内核的导出表里。**
+这条前后踩了两次，都是因为没有可查的导出表 —— 现在
+`scripts/verify_against_bootimg.py` 可以提前查。
+
 **vkms 的 `drmm_crtc_init_with_planes`**：6.12 厂商只裁了较新的 `drmm_` 版本。
 换成 `drm_crtc_init_with_planes` —— 两者签名**完全相同**（都是 variadic），
 上游都 `EXPORT_SYMBOL`，是纯 drop-in。语义差异只有清理方式，而 vkms 的 CRTC
