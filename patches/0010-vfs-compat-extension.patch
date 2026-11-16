@@ -81,10 +81,10 @@ index 0f951ba..e0c0aa0 100644
  	vns_sem_init_ns(&vns_default_ipc_ns);
  	vns_shm_init_ns(&vns_default_ipc_ns);
 diff --git a/glue/vendor_kernel_ovl_vfs_compat.c b/glue/vendor_kernel_ovl_vfs_compat.c
-index e9e9549..7006e6f 100644
+index e9e9549..4ca1db0 100644
 --- a/glue/vendor_kernel_ovl_vfs_compat.c
 +++ b/glue/vendor_kernel_ovl_vfs_compat.c
-@@ -59,6 +59,241 @@ VNS_OVL_VFS_COMPAT_LIST(VNS_OVL_VFSC_DEFINE)
+@@ -59,6 +59,250 @@ VNS_OVL_VFS_COMPAT_LIST(VNS_OVL_VFSC_DEFINE)
  VNS_OVL_VFS_COMPAT_LIST_BF(VNS_OVL_VFSC_DEFINE)
  #undef VNS_OVL_VFSC_DEFINE
  
@@ -263,6 +263,14 @@ index e9e9549..7006e6f 100644
 +#endif /* VNS_OVL_HAVE_KMEM_CACHE_ALLOC_LRU */
 +
 +/*
++ * 下面两个只在 MID/NEW 层提供：__percpu_counter_init 和
++ * percpu_counter_destroy 只进了 MID/NEW 的兼容清单，5.10 上
++ * 它们本来就是导出的（实测 5.10 的静态导入清单里没有它们），
++ * 不需要重定向。守卫必须和清单条目一致，否则 OLD 层会引用
++ * 未声明的 vns_ovl_vfsc_* 指针。
++ */
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 12, 0)
++/*
 + * __percpu_counter_init / percpu_counter_destroy - same-name forwarding
 + * definitions, deliberately not #define aliases.
 + *
@@ -298,6 +306,7 @@ index e9e9549..7006e6f 100644
 +	if (vns_ovl_vfsc_percpu_counter_destroy)
 +		vns_ovl_vfsc_percpu_counter_destroy(fbc);
 +}
++#endif /* >= 5.12: percpu 同名函数只在 MID/NEW 提供 */
 +
 +/*
 + * generic_read_dir - same-name forwarding definition, not a #define alias.
