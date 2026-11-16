@@ -18,10 +18,10 @@ index d5f5f48..29c05d9 100644
  #define LKM4CTR_DIAGFS_TAG	"diagfs"
  
 diff --git a/glue/vendor_kernel_ovl_vfs_compat.c b/glue/vendor_kernel_ovl_vfs_compat.c
-index e9e9549..d6f9f9b 100644
+index e9e9549..07842f9 100644
 --- a/glue/vendor_kernel_ovl_vfs_compat.c
 +++ b/glue/vendor_kernel_ovl_vfs_compat.c
-@@ -59,6 +59,63 @@ VNS_OVL_VFS_COMPAT_LIST(VNS_OVL_VFSC_DEFINE)
+@@ -59,6 +59,83 @@ VNS_OVL_VFS_COMPAT_LIST(VNS_OVL_VFSC_DEFINE)
  VNS_OVL_VFS_COMPAT_LIST_BF(VNS_OVL_VFSC_DEFINE)
  #undef VNS_OVL_VFSC_DEFINE
  
@@ -30,6 +30,21 @@ index e9e9549..d6f9f9b 100644
 + * Declared there so call sites outside fs/overlayfs keep one spelling; defined
 + * here so the lockdep key argument is dropped once instead of at every use.
 + */
++
++
++
++/*
++ * The definitions below forward to pointers that exist only in the MID
++ * tier's compat list, so each is guarded exactly like that list is.
++ * Without the guard, OLD/NEW reference an undeclared vns_ovl_vfsc_* and
++ * the module fails to link -- CI #51 showed this on 5.10/5.15/6.6/6.12.
++ *
++ * The extra >= 6.0 guards mirror VNS_OVL_HAVE_KMEM_CACHE_ALLOC_LRU: those
++ * three names only entered the MID list for 6.0-and-later kernels.
++ */
++#if VNS_OVL_TIER_MID
++
++#if VNS_OVL_HAVE_KMEM_CACHE_ALLOC_LRU
 +/*
 + * kmem_cache_alloc_lru - same-name forwarding definition.
 + *
@@ -51,6 +66,17 @@ index e9e9549..d6f9f9b 100644
 +		return NULL;
 +	return vns_ovl_vfsc_kmem_cache_alloc_lru(s, lru, gfp);
 +}
++#endif /* VNS_OVL_HAVE_KMEM_CACHE_ALLOC_LRU */
++
++#if VNS_OVL_HAVE_KMEM_CACHE_ALLOC_LRU
++int vns_percpu_counter_init(struct percpu_counter *fbc, s64 amount,
++			    gfp_t gfp, struct lock_class_key *key)
++{
++	if (!vns_ovl_vfsc___percpu_counter_init)
++		return -ENOENT;
++	return vns_ovl_vfsc___percpu_counter_init(fbc, amount, gfp, key);
++}
++#endif /* VNS_OVL_HAVE_KMEM_CACHE_ALLOC_LRU */
 +
 +/*
 + * generic_read_dir - same-name forwarding definition, not a #define alias.
@@ -74,22 +100,35 @@ index e9e9549..d6f9f9b 100644
 +	return vns_ovl_vfsc_generic_read_dir(filp, buf, count, ppos);
 +}
 +
-+int vns_percpu_counter_init(struct percpu_counter *fbc, s64 amount,
-+			    gfp_t gfp, struct lock_class_key *key)
-+{
-+	if (!vns_ovl_vfsc___percpu_counter_init)
-+		return -ENOENT;
-+	return vns_ovl_vfsc___percpu_counter_init(fbc, amount, gfp, key);
-+}
++#endif /* VNS_OVL_TIER_MID */
 +
  int vns_ovl_vfs_compat_resolve(void)
  {
  #define VNS_OVL_VFSC_RESOLVE(name) \
 diff --git a/glue/vendor_kernel_ovl_vfs_compat.h b/glue/vendor_kernel_ovl_vfs_compat.h
-index f326a9a..8d92296 100644
+index f326a9a..c76fe98 100644
 --- a/glue/vendor_kernel_ovl_vfs_compat.h
 +++ b/glue/vendor_kernel_ovl_vfs_compat.h
-@@ -643,6 +643,38 @@ static inline void generic_fill_statx_attr(struct inode *inode, struct kstat *st
+@@ -135,6 +135,18 @@ int vfs_path_lookup(struct dentry *dentry, struct vfsmount *mnt,
+ #define VNS_OVL_VFSC_DTMPFILE_ENTRY(X) X(d_tmpfile)
+ #endif
+ 
++/* kmem_cache_alloc_lru() was introduced at 6.0 (<linux/slab.h>). The MID tier
++ * spans [5.12, 6.3), so 5.15-shaped kernels have no such function at all --
++ * and listing a helper the tier's kernel lacks makes pass 1's typeof() fail
++ * with "use of undeclared identifier". It therefore needs a conditional entry
++ * rather than a plain X(...), same rule as d_tmpfile above. */
++#define VNS_OVL_HAVE_KMEM_CACHE_ALLOC_LRU (LINUX_VERSION_CODE >= KERNEL_VERSION(6, 0, 0))
++#if VNS_OVL_HAVE_KMEM_CACHE_ALLOC_LRU
++#define VNS_OVL_VFSC_KMLRU_ENTRY(X) X(kmem_cache_alloc_lru)
++#else
++#define VNS_OVL_VFSC_KMLRU_ENTRY(X)
++#endif
++
+ /* backing_file_open() exists since 6.6 (in <linux/fs.h>); the full
+  * backing_file_ctx-based API (backing_file_read_iter()/write_iter()/
+  * splice_read()/splice_write()/mmap(), later moved to its own
+@@ -643,6 +655,38 @@ static inline void generic_fill_statx_attr(struct inode *inode, struct kstat *st
  	X(security_file_ioctl) \
  	X(iterate_dir) \
  	X(vfs_setpos) \
@@ -124,11 +163,11 @@ index f326a9a..8d92296 100644
 +	X(__percpu_counter_init) \
 +	X(percpu_counter_destroy) \
 +	X(generic_read_dir) \
-+	X(kmem_cache_alloc_lru) \
++	VNS_OVL_VFSC_KMLRU_ENTRY(X) \
  	X(lookup_positive_unlocked) \
  	VNS_OVL_VFSC_VMASETFILE_ENTRY(X) \
  	X(d_tmpfile)
-@@ -992,6 +1024,36 @@ static inline void vns_ovl_revert_creds_compat(const struct cred *revert_cred)
+@@ -992,6 +1036,36 @@ static inline void vns_ovl_revert_creds_compat(const struct cred *revert_cred)
  #define security_file_ioctl (*vns_ovl_vfsc_security_file_ioctl)
  #define iterate_dir (*vns_ovl_vfsc_iterate_dir)
  #define vfs_setpos (*vns_ovl_vfsc_vfs_setpos)
