@@ -10,10 +10,15 @@
 
 SKIPUNZIP=0
 
+# 文案语言目录。安装期就按系统语言显示，国际用户不用看中文猜。
+# shellcheck source=i18n.sh
+[ -f "${MODPATH:-.}/i18n.sh" ] && . "${MODPATH:-.}/i18n.sh"
+[ -f "${0%/*}/i18n.sh" ] && . "${0%/*}/i18n.sh"
+
 ui_print " "
 ui_print "*********************************"
 ui_print "  Droidspaces LKM"
-ui_print "  在原始 GKI 内核上补齐容器能力"
+ui_print "  ${M_INSTALL_TAGLINE}"
 ui_print "*********************************"
 ui_print " "
 
@@ -21,32 +26,44 @@ ui_print " "
 case "$(uname -m)" in
     aarch64|arm64) ;;
     *)
-        ui_print "! 本模块只支持 arm64，当前架构：$(uname -m)"
-        abort "  安装已中止"
+        ui_print "! ${M_ARCH_UNSUPPORTED}$(uname -m)"
+        abort "  ${M_INSTALL_ABORTED}"
         ;;
 esac
 
 KREL=$(uname -r)
-ui_print "- 内核版本: $KREL"
+ui_print "- ${M_KERNEL}: $KREL"
 
 # 提前告诉用户会选中哪个 KMI，装错包时一眼能看出来（见 issues/1）
 major=$(echo "$KREL" | grep -oE '^[0-9]+[.][0-9]+')
 case "$major" in
-    5.10) ui_print "- 内核主线: 5.10（Android 12 / 13）" ;;
-    5.15) ui_print "- 内核主线: 5.15（Android 13 / 14）" ;;
-    6.1)  ui_print "- 内核主线: 6.1（Android 14）" ;;
-    6.6)  ui_print "- 内核主线: 6.6（Android 15）" ;;
-    6.12) ui_print "- 内核主线: 6.12（Android 16）" ;;
-    *)    ui_print "! 未在支持列表中的内核主线：${major:-未知}" ;;
+    5.10) ui_print "- ${M_KERNEL_LINE}: 5.10 (Android 12 / 13)" ;;
+    5.15) ui_print "- ${M_KERNEL_LINE}: 5.15 (Android 13 / 14)" ;;
+    6.1)  ui_print "- ${M_KERNEL_LINE}: 6.1 (Android 14)" ;;
+    6.6)  ui_print "- ${M_KERNEL_LINE}: 6.6 (Android 15)" ;;
+    6.12) ui_print "- ${M_KERNEL_LINE}: 6.12 (Android 16)" ;;
+    *)    ui_print "! ${M_KERNEL_UNSUPPORTED}: ${major:-?}" ;;
 esac
 
-ui_print "- 组件: lkm4ctr / devtmpfs_lkm / macvlan / ip6table_nat / vkms"
-ui_print "-        droid_lkm_pids / droid_lkm_cpu"
-ui_print "- 加载阶段: late_start（service.sh），不阻塞开机"
+ui_print "- ${M_COMPONENTS}: lkm4ctr / devtmpfs_lkm / macvlan / ip6table_nat / vkms"
+ui_print "-                droid_lkm_pids / droid_lkm_cpu"
+ui_print "- ${M_LOAD_STAGE}"
 ui_print " "
-ui_print "- 运行日志: /data/adb/droidspaces_lkm.log"
-ui_print "- 卡死现场: /data/adb/droidspaces_lkm.d/hang-report.txt"
-ui_print "- 状态查询: KernelSU 模块页的「操作」按钮"
+ui_print "- ${M_RUNTIME_LOG}: /data/adb/droidspaces_lkm.log"
+ui_print "- ${M_HANG_REPORT}: /data/adb/droidspaces_lkm.d/hang-report.txt"
+ui_print "- ${M_STATUS_QUERY}"
 ui_print " "
-ui_print "安装完成后请重启设备"
+
+# 把本地化描述写进 module.prop。
+#
+# KernelSU 模块列表显示的就是这里的 description；仓库里那份是固定的英文，
+# 安装时按系统语言改写一次，之后一直生效。拿不到 M_DESC 就不动它。
+if [ -n "$M_DESC" ] && [ -f "${MODPATH:-.}/module.prop" ]; then
+    # 用 | 作分隔符，描述里可能有 / 和空格
+    if sed -i "s|^description=.*|description=$M_DESC|" "${MODPATH:-.}/module.prop" 2>/dev/null; then
+        ui_print "- description -> ${LANG_CODE}"
+    fi
+fi
+
+ui_print "${M_REBOOT_AFTER}"
 ui_print " "

@@ -83,7 +83,7 @@ dlog() {
     return 0
 }
 
-dlog "=== Droidspaces LKM 启动 ==="
+dlog "=== Droidspaces LKM ==="
 dlog "kernel: $(uname -r)"
 dlog "moddir: $MODDIR"
 
@@ -169,7 +169,7 @@ if [ -z "$KMI" ]; then
     fi
     [ -n "$android" ] && [ -n "$major" ] && KMI="$android-$major"
 fi
-dlog "kmi:     ${KMI:-未识别}"
+dlog "kmi:     ${KMI:-unknown}"
 
 # 选 ko: 优先精确 KMI, 否则退回目录里唯一的一组
 # 读 .ko 的 vermagic，和 uname -r 比"主版本.次版本"。只在无法确定 KMI
@@ -206,7 +206,7 @@ find_sibling_ko() {
     n="$MODDIR/ko/$base-$sib.ko"
     [ -f "$n" ] || return 1
     ko_vermagic_ok "$n" || return 1
-    dlog "[KMI] $base: $cur 的 vermagic 不符，改用 $sib"
+    dlog "[KMI] $base: vermagic mismatch on $cur, using $sib"
     echo "$n"
 }
 
@@ -221,7 +221,7 @@ find_ko() {
         if f2=$(find_sibling_ko "$base" "$KMI"); then
             echo "$f2"; return 0
         fi
-        dlog "[MISS] $base: $KMI 的 vermagic 与 $(uname -r) 不符，且没有能对上的同代 ko"
+        dlog "[MISS] $base: ${M_LOG_VERMAGIC} $(uname -r) ${M_LOG_VERMAGIC_TAIL}"
         return 1
     fi
     # 不再"随便挑一个 KMI 的 ko"。之前 KMI 没识别出来时，ls | head -1 会
@@ -233,11 +233,11 @@ find_ko() {
     all=$(ls "$MODDIR/ko/$base"-*.ko 2>/dev/null)
     [ -z "$all" ] && return 1
     if [ "$(echo "$all" | wc -l)" -ne 1 ]; then
-        dlog "[MISS] $base: KMI=${KMI:-未识别}，目录里有多份候选，拒绝猜"
+        dlog "[MISS] $base: $(msg "$M_LOG_KMI_AMBIG" "${KMI:-?}")"
         return 1
     fi
     if ! ko_vermagic_ok "$all"; then
-        dlog "[MISS] $base: KMI=${KMI:-未识别}，$(basename "$all") 的 vermagic 与 $(uname -r) 不符"
+        dlog "[MISS] $base: $(basename "$all") ${M_LOG_VERMAGIC} != $(uname -r)"
         return 1
     fi
     echo "$all"
@@ -289,8 +289,8 @@ ko_load_error() {
         rm -f "$have"
     fi
     if [ -n "$miss" ]; then
-        dlog "  [缺符号] $mod 需要但本内核未导出:$miss"
-        dlog "           （这是厂商内核的导出表差异，不是模块包损坏）"
+        dlog "  [SYM] $mod ${M_LOG_MISSING_SYM}$miss"
+        dlog "           ${M_LOG_MISSING_SYM_TAIL}"
     fi
 }
 
@@ -309,7 +309,7 @@ load_mod() {
     if ! ko_vermagic_ok "$ko"; then
         local vm
         vm=$(grep -ao 'vermagic=[^ ]*' "$ko" 2>/dev/null | head -1 | sed 's/^vermagic=//')
-        dlog "[FAIL] $base: $(basename "$ko") 的 vermagic (${vm:-未知}) 与内核 $(uname -r) 不匹配，跳过"
+        dlog "[FAIL] $base: $(basename "$ko") ${M_LOG_VERMAGIC} (${vm:-?}) != $(uname -r), skipped"
         return 1
     fi
 
@@ -321,7 +321,7 @@ load_mod() {
             if ko_has_param "$ko" "$pname"; then
                 kept="$kept $p"
             else
-                dlog "[WARN] $base 不支持参数 $pname，已忽略"
+                dlog "[WARN] $base: unsupported param $pname ignored"
             fi
         done
         params=${kept# }
@@ -329,14 +329,14 @@ load_mod() {
 
     # 判断是否已加载: 用模块名而不是文件名, 因为文件名带 KMI 后缀
     if grep -q "^${base} " /proc/modules 2>/dev/null; then
-        dlog "[SKIP] $base 已加载"
+        dlog "[SKIP] $base already loaded"
         return 0
     fi
 
     # 黑名单：上一次开机死在加载这个模块上，就不再试。
     # 宁可少一个功能，也不要让设备再卡一次开机。
     if [ -f "$STATE_DIR/blacklist" ] && grep -qx "$base" "$STATE_DIR/blacklist" 2>/dev/null; then
-        dlog "[SKIP] $base 在上次开机的黑名单里（加载它会卡死），跳过"
+        dlog "[SKIP] $base is blacklisted from last boot (it hung), skipped"
         return 1
     fi
 
@@ -378,10 +378,10 @@ load_mod() {
 
     if [ -n "$_sib" ] && [ -f "$MODDIR/ko/$base-$_sib.ko" ]; then
         _tryko="$MODDIR/ko/$base-$_sib.ko"
-        dlog "[TRY] $base: $(basename "$ko") 失败，换 $_sib 再试"
+        dlog "[TRY] $base: $(basename "$ko") failed, retry with $_sib"
         if _try_load "$_tryko"; then
             rm -f "$STATE_DIR/loading" 2>/dev/null
-            dlog "[KMI] $base: ${KMI} 不符，实际用的是 $(basename "$_tryko")"
+            dlog "[KMI] $base: ${KMI} mismatch, actually used $(basename "$_tryko")"
             dlog "[OK]   $base  ($(basename "$_tryko"))${params:+ $params}"
             return 0
         fi
@@ -392,7 +392,7 @@ load_mod() {
     return 1
 }
 
-dlog "--- 加载 ---"
+dlog "${M_LOG_LOADING}"
 load_mod lkm4ctr ""
 load_mod devtmpfs_lkm "devtmpfs_probe=2"
 load_mod ip6table_nat ""
@@ -417,6 +417,9 @@ fi
 # 放最后，失败不挡前面五个模块。
 # 想临时关掉：在模块目录放 disable_pids / disable_cpu。
 MODDIR="/data/adb/modules/droidspaces_lkm"
+# 文案语言目录（开机日志里人读的部分按系统语言显示；
+# [OK]/[FAIL]/[MISS] 这类标记与符号名不翻译）
+[ -f "$MODDIR/i18n.sh" ] && . "$MODDIR/i18n.sh"
 [ -f "$MODDIR/disable_pids" ] || load_mod droid_lkm_pids ""
 [ -f "$MODDIR/disable_cpu" ] || load_mod droid_lkm_cpu ""
 
@@ -433,7 +436,7 @@ MODDIR="/data/adb/modules/droidspaces_lkm"
 dlog "--- lsmod ---"
 lsmod 2>/dev/null | grep -E '^(lkm4ctr|devtmpfs_lkm|ip6table_nat|macvlan|vkms|droid_lkm_pids|droid_lkm_cpu|uart_guard)' | while read -r _l; do dlog "  $_l"; done
 
-dlog "--- 能力验证 ---"
+dlog "${M_LOG_CAPS}"
 unshare -pf true 2>/dev/null \
     && dlog "[OK] PID namespace" \
     || dlog "[FAIL] PID namespace"
@@ -442,19 +445,19 @@ unshare -i true 2>/dev/null \
     || dlog "[FAIL] IPC namespace"
 grep -q devtmpfs /proc/filesystems 2>/dev/null \
     && dlog "[OK] devtmpfs" \
-    || dlog "[--] devtmpfs 未注册"
+    || dlog "[--] ${M_CAP_DEVTMPFS_NO}"
 grep -q "^droid_lkm_pids " /proc/modules 2>/dev/null \
-    && dlog "[OK] pids 控制器仿真" \
-    || dlog "[--] pids 控制器仿真未加载"
+    && dlog "[OK] pids controller emulation" \
+    || dlog "[--] pids controller emulation not loaded"
 grep -q "^droid_lkm_cpu " /proc/modules 2>/dev/null \
-    && dlog "[OK] cpu.max 仿真" \
-    || dlog "[--] cpu.max 仿真未加载"
+    && dlog "[OK] cpu.max emulation" \
+    || dlog "[--] cpu.max emulation not loaded"
 
 # vkms 提供的 render node: anland / wayland 合成器的前提
 if [ -e /dev/dri/renderD128 ]; then
     dlog "[OK] /dev/dri/renderD128 (vkms)"
 else
-    dlog "[--] /dev/dri/renderD128 缺失 (anland 桌面不可用)"
+    dlog "[--] /dev/dri/renderD128 ${M_CAP_VKMS_NO}"
 fi
 
 # ---------------------------------------------------------------------------
@@ -510,5 +513,5 @@ snapshot_watchdog() {
 # 立刻做一份"加载完成时"的快照（在后台跑，不挡退出）
 ( snapshot_watchdog ) >/dev/null 2>&1 &
 
-dlog "=== 完成 ===（快照守卫已启动，10 分钟内每 15 秒落盘一次）"
+dlog "${M_LOG_DONE}${M_LOG_DONE_HINT}"
 exit 0

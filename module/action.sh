@@ -3,55 +3,61 @@
 #
 # 用途：给出"当前到底能用什么"的一屏结论。用户报 issue 时贴这一段就够定位
 # 大部分问题（模块有没有加载、KMI 选得对不对、能力是否真的可用）。
+#
+# 国际化：文案来自 i18n.sh，按系统语言显示。
+# 但 [OK] / [FAIL] / [--] / [缺] 这些标记、符号名、KMI 标签一律不翻译 ——
+# 它们是机器可读的，翻译了日志就没法 grep 也没法跨语言比对了。
 
 MODDIR=${0%/*}
 [ "$MODDIR" = "$0" ] && MODDIR=.
 LOG=/data/adb/droidspaces_lkm.log
 STATE_DIR=/data/adb/droidspaces_lkm.d
 
+# shellcheck source=i18n.sh
+[ -f "$MODDIR/i18n.sh" ] && . "$MODDIR/i18n.sh"
+
 echo "=== Droidspaces LKM ==="
-echo "内核    : $(uname -r)"
-echo "模块版本: $(grep -m1 '^version=' "$MODDIR/module.prop" 2>/dev/null | cut -d= -f2)"
-echo "架构    : $(uname -m)"
+echo "${M_KERNEL}: $(uname -r)"
+echo "${M_MODULE_VER}: $(grep -m1 '^version=' "$MODDIR/module.prop" 2>/dev/null | cut -d= -f2)"
+echo "${M_ARCH}: $(uname -m)"
 echo
 
-echo "=== 开机状态 ==="
+echo "=== ${M_SEC_STATE} ==="
 count=$(cat /data/adb/droidspaces_lkm.bootcount 2>/dev/null)
-echo "开机计数: ${count:-无}（>3 会自禁用）"
+echo "${M_BOOTCOUNT}: ${count:-$M_NONE}${M_BOOTCOUNT_HINT}"
 if [ -f "$MODDIR/disable" ]; then
-    echo "disable : 存在 —— 本模块已被开机保护自动禁用"
+    echo "${M_DISABLE}: ${M_DISABLE_YES}"
 else
-    echo "disable : 无"
+    echo "${M_DISABLE}: ${M_DISABLE_NO}"
 fi
 if [ -f "$STATE_DIR/hang-report.txt" ]; then
-    echo "卡死报告: 有 ($(wc -c < "$STATE_DIR/hang-report.txt" 2>/dev/null || echo 0) 字节)"
+    echo "${M_HANG_REPORT}: ${M_HANGREPORT_HAS} ($(wc -c < "$STATE_DIR/hang-report.txt" 2>/dev/null || echo 0) bytes)"
     echo "          /data/adb/droidspaces_lkm.d/hang-report.txt"
 else
-    echo "卡死报告: 无"
+    echo "${M_HANG_REPORT}: ${M_NONE}"
 fi
 snap_age=""
 if [ -f "$STATE_DIR/snapshot.txt" ]; then
     snap_age=$(wc -c < "$STATE_DIR/snapshot.txt" 2>/dev/null)
 fi
-echo "状态快照: ${snap_age:-无} 字节"
+echo "${M_SNAPSHOT}: ${snap_age:-$M_NONE} bytes"
 if [ -f "$STATE_DIR/crash-module.txt" ]; then
-    echo "上次卡死: $(cat "$STATE_DIR/crash-module.txt" 2>/dev/null) ← 是在加载它时死的"
+    echo "${M_LASTCRASH}: $(cat "$STATE_DIR/crash-module.txt" 2>/dev/null) ${M_LASTCRASH_HINT}"
 fi
 if [ -f "$STATE_DIR/blacklist" ]; then
-    echo "黑名单  : $(tr '
-' ' ' < "$STATE_DIR/blacklist" 2>/dev/null)"
+    echo "${M_BLACKLIST}: $(tr '\n' ' ' < "$STATE_DIR/blacklist" 2>/dev/null)"
 fi
 echo
 
-echo "=== 加载状态 ==="
+echo "=== ${M_SEC_LOAD} ==="
 if lsmod | grep -qE '^(lkm4ctr|devtmpfs_lkm)'; then
     lsmod | grep -E '^(lkm4ctr|devtmpfs_lkm|ip6table_nat|macvlan|vkms|droid_lkm_pids|droid_lkm_cpu|uart_guard)'
 else
-    echo "未加载"
+    echo "${M_NOT_LOADED}"
 fi
 echo
 
-echo "=== 内核导出检查 ==="
+echo "=== ${M_SEC_EXPORT} ==="
 # 构建期把每个 .ko 的未定义符号导成 ko/symcheck-<kmi>.txt。
 # 这里拿清单查 /proc/kallsyms 的 __ksymtab_ 条目 —— 直接报出「本内核缺哪些」，
 # 不依赖能读 dmesg（有些厂商内核上读不到，用户只能看到笼统的 unknown symbol）。
@@ -72,9 +78,9 @@ if [ -z "$_kmi" ] && [ -f "$LOG" ]; then
 fi
 _sf="$MODDIR/ko/symcheck-${_kmi}.txt"
 if [ -z "$_kmi" ]; then
-    echo "  [--]   无法从内核版本推导 KMI，跳过"
+    echo "  [--]   ${M_EXPORT_NONE}"
 elif [ ! -f "$_sf" ]; then
-    echo "  [--]   没有符号清单 ko/symcheck-${_kmi}.txt（旧版模块包？）"
+    echo "  [--]   $(msg "$M_EXPORT_NOFILE" "$_kmi")"
 else
     # /proc/kallsyms 只读一次。
     #
@@ -96,38 +102,39 @@ else
     _miss=${_miss:-0}
 
     if [ "$_miss" -eq 0 ]; then
-        echo "  [OK]   本内核导出了清单里全部符号"
+        echo "  [OK]   ${M_EXPORT_ALL_OK}"
     else
-        awk '
+        # 标记 [缺] 不翻译；后面的描述由 i18n 给
+        awk -v fmt="$M_EXPORT_MISS_ONE" '
             FNR == NR { have[$1] = 1; next }
-            NF >= 2 && !($2 in have) { print "  [缺]   " $1 " 需要 " $2 " —— 本内核未导出" }
+            NF >= 2 && !($2 in have) { printf "  [SYM]  "; printf fmt "\n", $1, $2 }
         ' "$_have" "$_sf" 2>/dev/null
-        echo "         共 $_miss 条缺失。这是厂商内核的导出表差异，"
-        echo "         不是模块包损坏 —— 报 issue 时请把这整段贴上去。"
+        echo "         $(msg "$M_EXPORT_MISS_HEAD" "$_miss")"
+        echo "         ${M_EXPORT_MISS_TAIL}"
     fi
     rm -f "$_have"
 fi
 echo
 
-echo "=== 能力验证 ==="
+echo "=== ${M_SEC_CAPS} ==="
 userns=$(unshare -U readlink /proc/self/ns/user 2>/dev/null)
 hostns=$(readlink /proc/self/ns/user 2>/dev/null)
 if [ -n "$userns" ] && [ "$userns" != "$hostns" ]; then
-    echo "  [OK]   user namespace ($userns)"
+    echo "  [OK]   ${M_CAP_USERNS} ($userns)"
 else
-    echo "  [FAIL] user namespace"
+    echo "  [FAIL] ${M_CAP_USERNS}"
 fi
 
 if unshare -Urmpf true 2>/dev/null; then
-    echo "  [OK]   PID + mount + user namespace 组合"
+    echo "  [OK]   ${M_CAP_PIDMNT}"
 else
-    echo "  [FAIL] PID + mount + user namespace 组合"
+    echo "  [FAIL] ${M_CAP_PIDMNT}"
 fi
 
 if unshare -Urmpf sh -c 'mount -t proc proc /proc' 2>/dev/null; then
-    echo "  [OK]   容器内挂载 /proc"
+    echo "  [OK]   ${M_CAP_PROC}"
 else
-    echo "  [FAIL] 容器内挂载 /proc"
+    echo "  [FAIL] ${M_CAP_PROC}"
 fi
 
 # /proc/filesystems 的格式是 "nodev<TAB>devtmpfs"：第一列是 nodev，
@@ -143,15 +150,15 @@ if awk '{print $NF}' /proc/filesystems 2>/dev/null | grep -qx devtmpfs; then
         umount /mnt/.dsp_devtest 2>/dev/null
     fi
     rmdir /mnt/.dsp_devtest 2>/dev/null
-    echo "  [OK]   devtmpfs（已注册，挂载后 $n 个节点）"
+    echo "  [OK]   $(msg "$M_CAP_DEVTMPFS" "$n")"
 else
-    echo "  [--]   devtmpfs 未注册"
+    echo "  [--]   ${M_CAP_DEVTMPFS_NO}"
 fi
 
 [ -e /dev/dri/renderD128 ] \
-    && echo "  [OK]   /dev/dri/renderD128 (vkms)" \
-    || echo "  [--]   /dev/dri/renderD128 不存在"
+    && echo "  [OK]   ${M_CAP_VKMS}" \
+    || echo "  [--]   ${M_CAP_VKMS_NO}"
 echo
 
-echo "=== 日志（末尾 30 行）==="
-tail -30 "$LOG" 2>/dev/null || echo "(无日志)"
+echo "=== ${M_SEC_LOG} ==="
+tail -30 "$LOG" 2>/dev/null || echo "(no log)"

@@ -261,7 +261,7 @@ jobs:
           # /proc/kallsyms 的 __ksymtab_，直接报出本内核缺哪些符号
           cp dist/symcheck-*.txt "$STAGE/ko/" 2>/dev/null || echo "::warning::没有 symcheck 清单"
           cp module/module.prop module/customize.sh module/post-fs-data.sh module/service.sh \
-          module/uninstall.sh module/action.sh module/boot-completed.sh "$STAGE/"
+          module/uninstall.sh module/action.sh module/boot-completed.sh module/i18n.sh "$STAGE/"
           chmod 755 "$STAGE"/*.sh
           sed -i 's/\r$//' "$STAGE"/*.sh "$STAGE/module.prop" "$STAGE"/ko/symcheck-*.txt 2>/dev/null || true
           # 把本次构建的版本号写进 module.prop。
@@ -296,7 +296,7 @@ jobs:
             cp dist/*-"$kmi".ko "$S/ko/"
             cp "dist/symcheck-$kmi.txt" "$S/ko/" 2>/dev/null || true
             cp module/module.prop module/customize.sh module/post-fs-data.sh module/service.sh \
-            module/uninstall.sh module/action.sh module/boot-completed.sh "$S/"
+            module/uninstall.sh module/action.sh module/boot-completed.sh module/i18n.sh "$S/"
             chmod 755 "$S"/*.sh
             sed -i 's/\r$//' "$S"/*.sh "$S/module.prop" "$S"/ko/symcheck-*.txt 2>/dev/null || true
             if [ -n "${{ inputs.version }}" ]; then
