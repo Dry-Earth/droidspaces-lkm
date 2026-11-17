@@ -34,6 +34,7 @@
 | `droid_lkm_pids` / `droid_lkm_cpu` | `extra/cgrouplimits/`（含共用布局探测 `common.c`） |
 | `uart_guard` | `extra/uart_guard/`（kprobe，不依赖内核版本差异） |
 | `mali_nsfix` | `extra/mali_nsfix/`（kprobe，不依赖内核版本差异；仅 Mali 平台自动加载） |
+| `vkms` | 内核树源码 + 补丁；**默认不加载**，需在模块目录放 `enable_vkms` |
 
 ## vkms 的 DRIVER_RENDER 补丁
 

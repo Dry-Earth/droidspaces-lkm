@@ -98,13 +98,23 @@ cgroup 控制器。多数厂商内核为了通过 GKI ABI 检查把这些都编�
 
 ### 按平台条件加载的模块
 
-`vkms` 和 `mali_nsfix` 是为 Mali 平台准备的。高通上两者都没有意义，会被跳过 ——
-判断依据是设备实际报告的状态，不是厂商名列表。
+`mali_nsfix` 在 Mali 平台上自动加载，其余平台跳过。判断依据是设备实际报告的
+状态，不是厂商名列表。
+
+`vkms` 默认完全不加载。它提供的 `/dev/dri/renderD128` 背后没有 GPU，Mesa 只能
+落回 llvmpipe，也就是 CPU 软件渲染。本机实测（OPPO PHZ110 / MT6989 / 6.1.157）：
+卸掉 `vkms` 后 GL 客户端照常渲染、画面照常上屏，而合成器映射的是
+`libGLES_mali.so`、打开的是 `/dev/mali0`，`/dev/dri/renderD128` 的 fd 数是 0。
+anland 在 Mali 平台上不需要它。确有别的程序需要时，显式开启：
+
+```sh
+touch /data/adb/modules/droidspaces_lkm/enable_vkms
+```
 
 | 模块 | 什么时候加载 | 什么时候跳过 |
 | --- | --- | --- |
-| `vkms.ko` | 还没有 `/dev/dri/renderD128` | 已有 render node（高通多数由 kgsl 原生提供） |
 | `mali_nsfix.ko` | 存在 `/dev/mali0`，或已加载 `mali_kbase` | 设备没有 Mali GPU |
+| `vkms.ko` | 模块目录下存在 `enable_vkms` | 其余情况一律不加载 |
 
 `mali_nsfix` 不是 MTK 专用的：它补的是 `mali_kbase` 的一处假设，任何 Mali 设备
 都适用。不加载时，容器内进程创建 GPU context 会得到 `eglInitialize()` 返回

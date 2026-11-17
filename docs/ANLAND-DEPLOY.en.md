@@ -146,6 +146,23 @@ The boot log lives at **`/data/adb/droidspaces_lkm.log`** (not the old
 [OK] /dev/dri/renderD128 (vkms)
 ```
 
+> **Read this before deploying (changed 2026-11)**
+>
+> `vkms` in this module no longer loads by default. The reason is that anland
+> **6.x**'s `waylandbridge` drives `/dev/mali0` directly on Mali and needs no
+> render node; keeping `vkms` in the default load list only adds a GPU-less
+> virtual device.
+>
+> **This document covers 5.x with Hyprland/KWin**, which still requires a render
+> node. On 5.x you must enable it explicitly first:
+>
+> ```sh
+> touch /data/adb/modules/droidspaces_lkm/enable_vkms
+> ```
+>
+> Then reboot (or restart the container). Without it `/dev/dri/renderD128` does
+> not exist and Hyprland's check below kills the session immediately.
+
 **`vkms` is the critical one.** Vendor kernels do not enable
 `CONFIG_DRM_VKMS`, so there is only `card0` (the display controller) and no
 render node. Hyprland / KWin Wayland backends hard-require a read-write DRM

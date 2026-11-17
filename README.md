@@ -105,14 +105,25 @@ guard. To install but not load one, drop a `disable_pids` / `disable_cpu` /
 
 ### Platform-dependent modules
 
-`vkms` and `mali_nsfix` exist for Mali platforms. Neither is useful on Qualcomm,
-and both are skipped there — the decision is made from what the device reports,
-not from a list of vendor names.
+`mali_nsfix` loads automatically on Mali platforms and is skipped elsewhere. The
+decision is made from what the device reports, not from a list of vendor names.
+
+`vkms` is not loaded by default at all. It provides `/dev/dri/renderD128` backed
+by no GPU — Mesa can only fall back to llvmpipe, i.e. CPU software rendering.
+Measured on this device (OPPO PHZ110 / MT6989 / 6.1.157): with `vkms` removed,
+the GL client still rendered and the frame still reached the screen, while the
+compositor mapped `libGLES_mali.so` and opened `/dev/mali0` — the
+`/dev/dri/renderD128` file descriptor count was zero. Anland does not need it on
+Mali. Enable it explicitly if something else does:
+
+```sh
+touch /data/adb/modules/droidspaces_lkm/enable_vkms
+```
 
 | Module | Loaded when | Skipped when |
 |---|---|---|
-| `vkms.ko` | `/dev/dri/renderD128` does not exist yet | a render node already exists (most Qualcomm kernels provide one through kgsl) |
 | `mali_nsfix.ko` | `/dev/mali0` exists or `mali_kbase` is loaded | no Mali GPU present |
+| `vkms.ko` | `enable_vkms` exists in the module directory | always, otherwise |
 
 `mali_nsfix` is not MTK-specific: it patches a `mali_kbase` assumption, so any
 Mali device benefits. Without it, a containerised process that tries to create a

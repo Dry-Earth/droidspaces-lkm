@@ -38,6 +38,8 @@ Every KMI is compiled against **its own kernel tree** (the DDK image's
 | `ip6table_nat` | implemented here (three signature branches: 5.10 / 5.15 / 6.1+) |
 | `droid_lkm_pids` / `droid_lkm_cpu` | `extra/cgrouplimits/` (shares the layout probe in `common.c`) |
 | `uart_guard` | `extra/uart_guard/` (kprobes, no version-dependent code) |
+| `mali_nsfix` | `extra/mali_nsfix/` (kprobe, no version-dependent code; auto-loads on Mali only) |
+| `vkms` | kernel-tree source + patch; **not loaded by default**, needs `enable_vkms` |
 
 ## The vkms `DRIVER_RENDER` patch
 

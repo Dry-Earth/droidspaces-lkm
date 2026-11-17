@@ -136,6 +136,22 @@ getprop ro.board.first_api_level    # 出厂 API level，OTA 不会改它
 [OK] /dev/dri/renderD128 (vkms)
 ```
 
+> **动手前必读（2026-11 变更）**
+>
+> 本模块里的 `vkms` 已经改成**默认不加载**。原因是 anland **6.x** 的
+> `waylandbridge` 在 Mali 上直接用 `/dev/mali0`，不需要 render node；把它留在
+> 默认加载列表里只会多一个没有 GPU 的虚拟设备。
+>
+> 但**本文档讲的是 5.x + Hyprland/KWin**，那条路仍然硬性要求 render node。
+> 所以在 5.x 上部署时，必须先显式开启：
+>
+> ```sh
+> touch /data/adb/modules/droidspaces_lkm/enable_vkms
+> ```
+>
+> 然后重启设备（或重启容器）。不开启的话 `/dev/dri/renderD128` 不存在，
+> 下面 Hyprland 的那个检查会直接把会话打死。
+
 **`vkms` 是关键。** 厂商内核没开 `CONFIG_DRM_VKMS`，只有 `card0`
 （显示控制器）而没有 render node。Hyprland / KWin 的 Wayland 后端
 硬性要求一个可读写的 DRM render node：

@@ -27,6 +27,10 @@
  * is the msm node exposed at /dev/dri/renderD128.
 ```
 
+> 补充（2026-11）：`vkms` 现在是**默认不加载**的，需要时在模块目录放一个
+> `enable_vkms` 才装。所以高通上连「会不会被自动跳过」这个问题都不存在了 ——
+> 它根本不会被尝试。下面的分析解释的是**为什么高通从来不需要它**，仍然成立。
+
 ## 为什么高通不需要 vkms
 
 `vkms.ko` 存在的唯一理由是：厂商内核只开了 `CONFIG_DRM_MALI_DISPLAY`
