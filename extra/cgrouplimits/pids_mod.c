@@ -468,6 +468,19 @@ static void pids_reap_fn(struct work_struct *w)
 		if (!atomic_read(&p->dead))
 			continue;
 		mutex_lock(&pids_lock);
+		/*
+		 * 锁外的 dead 快检只是筛子，不能据此直接摘除：读到 1 到拿
+		 * 锁之间，条目状态可能被改动——复用方（pids_max_write 全程
+		 * 持 pids_lock）会把同一个条目的 dead 复位，另一条路径也可能
+		 * 先摘掉它。所以拿锁后必须重验"idx 上仍是这个 p、且 dead 仍
+		 * 为 1"才动手。与 droid_lkm_cpu 的 tick 回收（cpu_mod.c
+		 * 拿锁后 xa_load(...)==p 才 erase）同一写法。
+		 */
+		if (xa_load(&pids_xa, idx) != p ||
+		    !atomic_read(&p->dead)) {
+			mutex_unlock(&pids_lock);
+			continue;
+		}
 		victim = xa_erase(&pids_xa, idx);
 		mutex_unlock(&pids_lock);
 		if (victim)

@@ -628,7 +628,17 @@ static void __nocfi cpu_tick(struct work_struct *w)
 			bool removed = false;
 
 			mutex_lock(&cpu_lock);
-			if (xa_load(&cpu_xa, idx) == p) {
+			/*
+			 * 锁外那个条件只是筛子。读到"该摘"到拿到锁之间，
+			 * 写 cpu.max 的一方（cpu_max_write 全程持 cpu_lock）
+			 * 可能把同一条目重新激活——复用走的就是同一个指针
+			 * （cpu_find 命中就跳过新建，只把 dead 复位），所以
+			 * xa_load==p 挡不住这种复用。拿锁后必须重验条件仍成立
+			 * 才动手，否则会误摘刚设好配额的活条目。
+			 */
+			if (xa_load(&cpu_xa, idx) == p &&
+			    (atomic_read(&p->dead) ||
+			     !ctl_cgrp_alive(cgrp))) {
 				xa_erase(&cpu_xa, idx);
 				removed = true;
 			}
