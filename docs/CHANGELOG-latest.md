@@ -1,271 +1,207 @@
-## v0.1.23
-
-`versionCode` 由构建时写入（`YYYYMMDDHHMM`，见 `.github/workflows/build.yml`）。
+## v0.1.24
 
 ### 修复
 
-### 修复
+**`get_fs_type("overlay")` 劫持改为默认关闭。**
 
-**`versionCode` 超出 int32 范围，KernelSU 从未能解析。**
+该 hook 把全局的 `get_fs_type("overlay")` 全部重定向到模块自带的 overlayfs。
+运行内核已有 `CONFIG_OVERLAY_FS` 时这不是必要功能，却会和其它在 VFS 层动手脚
+的模块争用同一块状态 —— 典型是 NoMount（`nomount.ko`，劫持 `s_d_op` / `d_op` /
+`d_revalidate`，见 `nm_hijack_dentry_ops`）。
 
-KernelSU 的 `Module.kt` 将 `versionCode` 声明为 `Int`，`Downloader.kt` 用
-`.toInt()` 解析。此前 `build.yml` 生成的值为 `%Y%m%d%H%M`（12 位），
-本应为 `202611170004`，超出 `Integer.MAX_VALUE` (2147483647) 94 倍，
-`.toInt()` 抛出 `NumberFormatException`，更新检查失败。
-
-v0.1.22（`202611161425`）同样超出范围，因此该问题自引入以来一直存在。
-
-改为 `YYYYMMDDnn`：
+两者叠加会产生 `d_op` 与 `d_fsdata` 不配对的 dentry。实测崩溃：
 
 ```
-versionCode = YYYYMMDD * 100 + 小时 * 4 + 分钟 / 15
+Unable to handle kernel NULL pointer dereference at virtual address 0x10
+pc : ovl_dentry_revalidate_common+0x38/0xac
+Call trace:
+  ovl_dentry_revalidate_common
+  ovl_dentry_revalidate
+  path_openat
+  __arm64_sys_openat
+  vendor_kernel_hook_openat [lkm4ctr]
 ```
 
-取值范围 `2026111700`–`2026111795`，上限 2,026,117,995 < 2,147,483,647，
-每日 96 个槽位。超出范围时构建直接失败。分 KMI 包改为读取
-`dist/version-code.txt`，与全 KMI 包使用同一个值。
-`scripts/gen_release_meta.py` 增加 int32 上限校验。
+即一次普通 `openat` 访问 overlayfs 上的文件时，`dentry->d_fsdata` 为空。
 
+改为模块参数 `overlay_override`（bool，默认 `N`）。需要在没有 overlayfs 的内核上
+使用自带实现时：
 
-**符号兼容层扩展到全部七个 KMI。** v0.1.22 仅覆盖 MID 层（5.15 / 6.1），
-OLD（5.10）与 NEW（6.6 / 6.12）的兼容清单缺少相应条目。
+```sh
+insmod lkm4ctr.ko overlay_override=Y
+```
 
-`lkm4ctr` 的 VFS 类静态导入（`nm -u` 实测）：
+未启用时 `vns_ovl_init()` 不执行（不创建 `ovl_inode` slab），`vns_ovl_exit()` 有
+`vns_ovl_ready` 保护。诊断输出会报告当前状态：
 
-| KMI | 层 | v0.1.22 | v0.1.23 | 降幅 |
-|---|---|---|---|---|
-| android12-5.10 | OLD | 29 | 1 | −97% |
-| android13-5.10 | OLD | 29 | 1 | −97% |
-| android13-5.15 | MID | 29 | 1 | −97% |
-| android14-5.15 | MID | 29 | 1 | −97% |
-| android14-6.1 | MID | 6 | 2 | −67% |
-| android15-6.6 | NEW | 37 | 2 | −95% |
-| android16-6.12 | NEW | 40 | 2 | −95% |
-
-统计范围为 VFS 辅助函数类（`d_` / `i_` / `inode` / `clear_` / `vfs_` / `iget` /
-`percpu_` 等前缀），不含全部未定义符号。残余项为 `__percpu_down_read` 与
-`percpu_counter_add_batch`，属内核内置原语，无裁剪先例。
-
-新增覆盖的符号（均经 `nm -u` 确认不再静态导入）：`d_instantiate`、`d_obtain_alias`、
-`d_splice_alias`、`d_add`、`d_make_root`、`d_path`、`ihold`、`clear_inode`、
-`clear_nlink`、`drop_nlink`、`inc_nlink`、`set_nlink`、`inode_init_once`、
-`unlock_new_inode`、`iget5_locked`、`ilookup5`、`init_special_inode`、
-`inode_set_flags`、`inode_init_owner`、`setattr_prepare`、`touch_atime`、
-`sync_filesystem`、`vfs_fsync`、`vfs_fsync_range`、`truncate_inode_pages_final`、
-`current_umask`、`in_group_p`、`capable_wrt_inode_uidgid`、`notify_change`、
-`finish_open`、`generic_read_dir`、`backing_file_user_path`、`get_next_ino`、
-`__insert_inode_hash`。
-
-**`capable_wrt_inode_uidgid`（issue #2 根因）。** 由 `vendor/fs/overlayfs/inode.c`
-调用。经 Meizu 21 Pro（6.1.25）boot.img 提取的 `__ksymtab_strings`（6594 项）确认：
-该内核导出 `lkm4ctr` 需要的 207 个符号中的 206 个，唯一缺失项即为本符号。
-已为 OLD / MID / NEW 三层分别配置重定向。
-
-**macvlan。** `dev_mc_add`、`dev_mc_del`、`netdev_is_rx_handler_busy`、
-`dev_forward_skb`、`eth_header_cache`、`eth_header_cache_update` 改为同名转发
-函数 + 运行时解析。v0.1.22 将 `dev_mc_add_excl` 改写为 `dev_mc_add`，但后者在
-部分内核同样未导出，未解决问题。
-
-**vkms。** `drmm_crtc_init_with_planes` 替换为 `drm_crtc_init_with_planes`。
-两者签名一致（均为 variadic），上游均 `EXPORT_SYMBOL`。CRTC 由
-`drm_mode_config_cleanup()` 统一释放。
-
-**droid_lkm_cpu / droid_lkm_pids。** `cgroup_add_dfl_cftypes` 改为运行时解析
-（`cpu_ksym()` / `kallrecon_klp()`），与同模块内已有的 `cgroup_rm_cftypes`
-处理方式一致。
-
-### 新增
-
-**`scripts/gen_vfs_compat.py`。** 从内核 BTF 提取函数原型，生成指针声明、
-同名转发函数与解析表。用于新增符号，避免手工书写签名错误。
-
-**`scripts/verify_against_bootimg.py`。** 从 `boot.img` 提取 `__ksymtab_strings`，
-与 `.ko` 的未定义符号表比对，输出每个模块的缺失项。
-
-**`lkm4ctr_lite`。** 不含 vendored overlayfs 的变体（`VNS_LITE=1`）。`service.sh`
-优先加载完整版，失败时回退。适用于裁掉 overlayfs 独占符号的内核。
-
-**崩溃现场采集。** `post-fs-data.sh` 检测 `/sys/fs/pstore/`，非空时复制到
-`/data/adb/droidspaces_lkm.d/pstore-<timestamp>.txt`。
+```
+overlay_override: off (running kernel's overlayfs in use)
+```
 
 ### 变更
 
-**构建期符号检查。** `scripts/build_modules.sh` 的 `BAD_SYMS` 清单由 12 项扩至
-53 项；新增 `MUST_NOT_APPEAR` 15 项硬性检查，命中即 `exit 1`。
+`vns_ovl_exit()` 的 `kmem_cache_destroy()` 增加 NULL 保护并清空指针。
 
-**`zram-lkm`。** 增加构建期导出检查（见该仓库 `2ba41c3`）。
+### 安全性审计修复
 
-### 版本变体
+全仓库审计带来的一批加固。这些都不是回归修复，而是堵上「可达但尚未被触发」
+的路径。
 
-| 符号 | 变化 | 处理 |
-|---|---|---|
-| `kmem_cache_alloc_lru` | 6.10 起为宏，符号名 `_noprof` | 条件条目宏 + 同名函数 |
-| `__percpu_counter_init` | 6.6 起为 `_many`（多 `nr_counters`） | 条件条目宏 + 同名函数 |
-| `d_tmpfile` | 6.7 起更名 `d_mark_tmpfile` | 条件条目宏 |
-| `d_parent_ino` | 6.12 新增 | 条件条目宏 + 同名函数 |
-| `generic_encode_ino32_fh` | 6.9 新增 | 条件条目宏 |
+**符号解析失败时拒绝接管 overlayfs。**
+`vns_ovl_vfs_compat_resolve()` 刻意对单个符号失败继续执行（精简版依赖这一点：
+提前返回会让 `mq_init_ns` 以 `-ENOMEM` 失败）。但在 `overlay_override=Y` 下，
+宏形式 `(*vns_ovl_vfsc_notify_change)(...)` 在指针未解析时就是**对 NULL 的调用**，
+同名转发函数还会把 vendored overlayfs 依赖的权限/属性操作静默变成空操作。
+解析本身仍然非致命；现在只拒绝「接管」这一步，退回运行内核自带的 overlayfs。
+新增访问器 `vns_ovl_vfs_compat_resolve_failed()` 位于
+`glue/vendor_kernel_ovl_vfs_compat.c`（属 `LKM4CTR_BASE_OBJS`，full/lite 都能链接）。
 
-符号由内核头文件的 `static inline` 调用时，`#define` 无法覆盖（内联体在
-compat 头之前解析），须使用同名转发函数。`generic_read_dir`、`kmem_cache_alloc_lru`、
-`__percpu_counter_init_many`、`percpu_counter_destroy_many`、`d_parent_ino` 属此类。
+**没有真正等到宽限期就不释放 trampoline。**
+`hk_wait_tasks_rcu()` 原本返回 `void`，`synchronize_rcu_tasks` 解析不到时只警告，
+调用方照样释放——已跑进 trampoline 的 CPU 随即 use-after-free。现在它返回
+是否真的等到了宽限期，三处释放点（`hk_inline_unhook`、`hk_inline_exit`、
+`shadow_inline_remove`）改为保留该页；pending 条目同时会挡住 `rmmod`，所以结果
+是有界泄漏 + 拒绝卸载，绝不会留下悬空可执行页。`shadow_inline_remove()` 原来
+用普通 `synchronize_rcu()`，等不到已取跳板、还没被调度走的 CPU，现改用与引擎
+其余部分一致的 tasks-RCU helper。两份引擎副本（`extra/devtmpfs/hk/` 与
+0005 里的 `glue/hk/`）都改了。`hk_binder.c` 未动——它是死代码，不在任何 obj 列表里。
+
+**GPL 源码快照把本地补丁打到了错误路径。**
+`git -C /tmp/src/lkm4ctr apply "PWD/$p"` 少了 `$`（字面量 `PWD`），末尾的
+`2>/dev/null || true` 又吞掉全部失败——源码包实际**没带** 0001–0010 补丁，而
+`.ko` 来自打过补丁的源码，且毫无报错。现改为解析 `"$PWD"/patches/*.patch`，
+失败即中断任务。
+
+**root 脚本经由全局可写路径写入。**
+`action.sh` 的 `/proc` 挂载探针用 `/data/local/tmp/.dsp_proctest`，任何用户都能
+预置符号链接，让 root 的 `mount` 跟到攻击者选定的目标上。已移到 `/mnt`
+（root 独有）并加 `-L` 兜底检查，`rm -rf` 换成 `mkdir`/`rmdir`。
+
+**回收 cgroup 条目前用了过期判断。**
+`pids_reap_fn()` 与 `cpu_tick()` 的「该回收」判断都在 mutex 之外，而写方
+（`pids_max_write` / `cpu_max_write`，全程持同一把 mutex）可以把同一条目重新激活
+——复用沿用同一个指针、只清 `dead`，原有的 `xa_load(...) == p` 复校验挡不住它。
+现在改为拿锁后重算条件再 erase。
+
+**`msg()` 拒绝 `%n`。** 模板是仓库内静态字符串，`%n` 进不了格式位；这道守卫属于
+纵深防御，防将来有人塞入带 `%n` 的模板或误传外部值。
 
 ### 验证
 
-- 七个 KMI 构建通过；`BAD_SYMS` 检查结果全部为 0。
-- Meizu 21 Pro（6.1.25）：10 个模块，缺失 0。数据源为报告者提供的 `boot.img`。
-- PHZ110（MediaTek mt6989 / 6.1.157）：10 个模块，缺失 0。数据源为
-  `/proc/kallsyms` 的 `__ksymtab_` 条目（22081 项）。
-- PHZ110 实机加载：`macvlan` 模块 `insmod` 成功（`rc=0`），
-  `ip link add ... type macvlan` 成功；容器能力检查 8/8 通过，`Unknown symbol` 计数 0。
-
-### 已知问题
-
-- issue #1（Redmi Note 12 Turbo / 5.10.269）报告的无限重启未复现确认。
-  该设备 `/sys/fs/pstore` 为空，表明为挂起而非 panic；需报告者后续反馈。
-- issue #3 / #4（6.12.23-android16-5）报告的符号已修复，但缺少对应设备内核，
-  未做同类验证。
+全 KMI 矩阵（7 个）全部编译通过，含聚合模块与精简变体，证明新访问器在两种构建下
+都能链接。真机冒烟（PHZ110 / MT6989 / `6.1.157`）：PID/IPC/UTS/user/net/cgroup
+命名空间、容器内挂 `/proc`（214 节点）、devtmpfs、`/dev/dri/renderD128`、veth 创建、
+binder 节点、仿真 `pids.max`/`cpu.max`、导出符号检查（781 行中缺失 0）全部通过，
+`dmesg` 无内核异常。
 
 ---
 
-## v0.1.23
-
-`versionCode` is written at build time (`YYYYMMDDHHMM`, see
-`.github/workflows/build.yml`).
+## v0.1.24
 
 ### Fixed
 
-### Fixed
+**The `get_fs_type("overlay")` override is now disabled by default.**
 
-**`versionCode` exceeded int32 range; KernelSU has never been able to parse it.**
+That hook redirected every global `get_fs_type("overlay")` lookup to the module's
+own overlayfs. When the running kernel already has `CONFIG_OVERLAY_FS` this is not
+needed, but it does contend for the same VFS state as other modules that operate at
+that layer — notably NoMount (`nomount.ko`, which hijacks `s_d_op` / `d_op` /
+`d_revalidate`; see `nm_hijack_dentry_ops`).
 
-KernelSU declares `versionCode` as `Int` in `Module.kt` and parses it with
-`.toInt()` in `Downloader.kt`. `build.yml` previously generated `%Y%m%d%H%M`
-(12 digits); this release would have produced `202611170004`, which exceeds
-`Integer.MAX_VALUE` (2147483647) by a factor of 94, causing
-`NumberFormatException` and aborting the update check.
-
-v0.1.22 (`202611161425`) was equally out of range, so this has been broken since
-the scheme was introduced.
-
-Changed to `YYYYMMDDnn`:
+The two together produce dentries whose `d_op` and `d_fsdata` disagree. Observed
+panic:
 
 ```
-versionCode = YYYYMMDD * 100 + hour * 4 + minute / 15
+Unable to handle kernel NULL pointer dereference at virtual address 0x10
+pc : ovl_dentry_revalidate_common+0x38/0xac
+Call trace:
+  ovl_dentry_revalidate_common
+  ovl_dentry_revalidate
+  path_openat
+  __arm64_sys_openat
+  vendor_kernel_hook_openat [lkm4ctr]
 ```
 
-Range `2026111700`–`2026111795`, maximum 2,026,117,995 < 2,147,483,647, 96 slots
-per day. The build fails if the value would overflow. Per-KMI packages now read
-`dist/version-code.txt` instead of computing their own timestamp.
-`scripts/gen_release_meta.py` now rejects a versionCode above int32.
+i.e. a plain `openat` on an overlayfs file finds `dentry->d_fsdata` NULL.
 
+Controlled by the `overlay_override` module parameter (bool, default `N`). To use
+the vendored implementation on a kernel without overlayfs:
 
-**Symbol compatibility extended to all seven KMIs.** v0.1.22 covered only the
-MID tier (5.15 / 6.1); the compat lists for OLD (5.10) and NEW (6.6 / 6.12) were
-missing the corresponding entries.
+```sh
+insmod lkm4ctr.ko overlay_override=Y
+```
 
-VFS-class static imports of `lkm4ctr` (`nm -u`):
+When disabled, `vns_ovl_init()` is skipped entirely (no `ovl_inode` slab is
+created) and `vns_ovl_exit()` is guarded by `vns_ovl_ready`. Diagnostics report the
+current state:
 
-| KMI | Tier | v0.1.22 | v0.1.23 | Change |
-|---|---|---|---|---|
-| android12-5.10 | OLD | 29 | 1 | −97% |
-| android13-5.10 | OLD | 29 | 1 | −97% |
-| android13-5.15 | MID | 29 | 1 | −97% |
-| android14-5.15 | MID | 29 | 1 | −97% |
-| android14-6.1 | MID | 6 | 2 | −67% |
-| android15-6.6 | NEW | 37 | 2 | −95% |
-| android16-6.12 | NEW | 40 | 2 | −95% |
-
-Scope is VFS helper functions (`d_`, `i_`, `inode`, `clear_`, `vfs_`, `iget_`,
-`percpu_` prefixes), not all undefined symbols. The remaining entries are
-`__percpu_down_read` and `percpu_counter_add_batch`, both kernel core
-primitives with no trimming precedent.
-
-Newly covered symbols (all confirmed absent from `nm -u`): `d_instantiate`,
-`d_obtain_alias`, `d_splice_alias`, `d_add`, `d_make_root`, `d_path`, `ihold`,
-`clear_inode`, `clear_nlink`, `drop_nlink`, `inc_nlink`, `set_nlink`,
-`inode_init_once`, `unlock_new_inode`, `iget5_locked`, `ilookup5`,
-`init_special_inode`, `inode_set_flags`, `inode_init_owner`, `setattr_prepare`,
-`touch_atime`, `sync_filesystem`, `vfs_fsync`, `vfs_fsync_range`,
-`truncate_inode_pages_final`, `current_umask`, `in_group_p`,
-`capable_wrt_inode_uidgid`, `notify_change`, `finish_open`, `generic_read_dir`,
-`backing_file_user_path`, `get_next_ino`, `__insert_inode_hash`.
-
-**`capable_wrt_inode_uidgid` (root cause of issue #2).** Called from
-`vendor/fs/overlayfs/inode.c`. Confirmed against the `__ksymtab_strings` table
-(6594 entries) extracted from a Meizu 21 Pro (6.1.25) `boot.img`: that kernel
-exports 206 of the 207 symbols `lkm4ctr` needs, and this is the only missing one.
-Redirection is configured per tier (OLD / MID / NEW).
-
-**macvlan.** `dev_mc_add`, `dev_mc_del`, `netdev_is_rx_handler_busy`,
-`dev_forward_skb`, `eth_header_cache`, `eth_header_cache_update` now use
-same-name forwarding functions with runtime resolution. v0.1.22 rewrote
-`dev_mc_add_excl` as `dev_mc_add`, which is also unexported on some kernels.
-
-**vkms.** `drmm_crtc_init_with_planes` replaced with
-`drm_crtc_init_with_planes`. Both have identical variadic signatures and are
-`EXPORT_SYMBOL`'d upstream. CRTCs are released by `drm_mode_config_cleanup()`.
-
-**droid_lkm_cpu / droid_lkm_pids.** `cgroup_add_dfl_cftypes` now resolved at
-runtime (`cpu_ksym()` / `kallrecon_klp()`), matching the existing handling of
-`cgroup_rm_cftypes` in the same modules.
-
-### Added
-
-**`scripts/gen_vfs_compat.py`.** Extracts function prototypes from kernel BTF
-and generates pointer declarations, same-name forwarding functions and a
-resolution table. Prevents hand-written signature errors.
-
-**`scripts/verify_against_bootimg.py`.** Extracts `__ksymtab_strings` from a
-`boot.img`, compares it against a `.ko`'s undefined symbols, and reports missing
-entries per module.
-
-**`lkm4ctr_lite`.** Variant without the vendored overlayfs (`VNS_LITE=1`).
-`service.sh` loads the full build first and falls back on failure. Targets
-kernels that trim overlayfs-only symbols.
-
-**Crash capture.** `post-fs-data.sh` checks `/sys/fs/pstore/` and, when
-non-empty, copies the contents to
-`/data/adb/droidspaces_lkm.d/pstore-<timestamp>.txt`.
+```
+overlay_override: off (running kernel's overlayfs in use)
+```
 
 ### Changed
 
-**Build-time symbol checks.** `BAD_SYMS` in `scripts/build_modules.sh` expanded
-from 12 to 53 entries; `MUST_NOT_APPEAR` added with 15 entries and a hard
-`exit 1` on match.
+`vns_ovl_exit()` guards `kmem_cache_destroy()` against NULL and clears the pointer.
 
-**`zram-lkm`.** Added build-time export check (commit `2ba41c3` in that repo).
+### Security audit fixes
 
-### Version variants
+The whole-repo audit produced these hardening changes. None of them is a
+regression fix; they close paths that were reachable but had not been hit.
 
-| Symbol | Change | Handling |
-|---|---|---|
-| `kmem_cache_alloc_lru` | macro since 6.10, symbol renamed `_noprof` | conditional entry macro + same-name function |
-| `__percpu_counter_init` | `_many` since 6.6 (extra `nr_counters`) | conditional entry macro + same-name function |
-| `d_tmpfile` | renamed `d_mark_tmpfile` since 6.7 | conditional entry macro |
-| `d_parent_ino` | added in 6.12 | conditional entry macro + same-name function |
-| `generic_encode_ino32_fh` | added in 6.9 | conditional entry macro |
+**Refuse the overlayfs takeover when VFS symbol resolution failed.**
+`vns_ovl_vfs_compat_resolve()` deliberately continues past individual failures
+(the lite variant depends on that: an early return made `mq_init_ns` fail with
+`-ENOMEM`). But with `overlay_override=Y`, the `#define` form
+`(*vns_ovl_vfsc_notify_change)(...)` becomes a **NULL call** when a pointer did
+not resolve, and the same-name forwarders silently no-op the permission and
+attribute operations the vendored overlayfs relies on. Resolution stays
+non-fatal; only the *takeover* is now refused, falling back to the running
+kernel's own overlayfs. New accessor `vns_ovl_vfs_compat_resolve_failed()` lives
+in `glue/vendor_kernel_ovl_vfs_compat.c` (part of `LKM4CTR_BASE_OBJS`, so both
+the full and lite builds link it).
 
-When a symbol is called from a kernel header's `static inline` body, `#define`
-cannot intercept it (the inline is parsed before the compat header); a same-name
-forwarding function is required. `generic_read_dir`, `kmem_cache_alloc_lru`,
-`__percpu_counter_init_many`, `percpu_counter_destroy_many` and `d_parent_ino`
-fall into this category.
+**Never free a trampoline without a real grace period.** `hk_wait_tasks_rcu()`
+used to return `void` and merely warn when `synchronize_rcu_tasks` could not be
+resolved; its callers freed anyway. A core already running inside the trampoline
+then hit a use-after-free. It now returns whether a grace period actually
+elapsed, and all three release sites (`hk_inline_unhook`, `hk_inline_exit`,
+`shadow_inline_remove`) keep the trampoline instead — the pending entry also
+blocks `rmmod`, so the outcome is a bounded leak and a refused unload, never a
+dangling executable page. `shadow_inline_remove()` previously used plain
+`synchronize_rcu()`, which does not wait for a CPU that already fetched the
+detour; it uses the tasks-RCU helper like the rest of the engine. Applied to
+both engine copies (`extra/devtmpfs/hk/` and the `glue/hk/` copy in patch 0005).
+`hk_binder.c` was left alone — it is dead code, absent from every object list.
 
-### Verification
+**GPL source snapshot applied the local patches to the wrong path.**
+`git -C /tmp/src/lkm4ctr apply "PWD/$p"` was missing the `$` (literal `PWD`),
+and the trailing `2>/dev/null || true` swallowed every failure — so the source
+tarball shipped *without* the 0001–0010 patches while the `.ko` files came from
+patched sources, silently. Now resolves `"$PWD"/patches/*.patch` and fails the
+job on error.
 
-- All seven KMIs build; `BAD_SYMS` reports zero for each.
-- Meizu 21 Pro (6.1.25): 10 modules, 0 missing. Source: `boot.img` supplied by
-  the reporter.
-- PHZ110 (MediaTek mt6989 / 6.1.157): 10 modules, 0 missing. Source:
-  `__ksymtab_` entries from `/proc/kallsyms` (22081 total).
-- PHZ110 live load: `macvlan` `insmod` succeeded (`rc=0`);
-  `ip link add ... type macvlan` succeeded; 8/8 capability checks passed;
-  `Unknown symbol` count 0.
+**A root script wrote through a world-writable path.**
+`action.sh`'s `/proc` mount probe used `/data/local/tmp/.dsp_proctest`, where any
+user could pre-create a symlink and have root's `mount` follow it onto an
+attacker-chosen target. Moved to `/mnt` (root-owned) with an explicit `-L` guard,
+and `rm -rf` replaced by `mkdir`/`rmdir`.
 
-### Known issues
+**Reclaimed cgroup entries were removed after a stale check.**
+In both `pids_reap_fn()` and `cpu_tick()`, the "should reclaim" test ran outside
+the mutex while the writer (`pids_max_write` / `cpu_max_write`, holding that mutex
+throughout) can reactivate the very same entry — reuse keeps the same pointer and
+just clears `dead`, so the existing `xa_load(...) == p` recheck did not exclude
+it. The condition is now re-evaluated under the lock before erasing.
 
-- issue #1 (Redmi Note 12 Turbo / 5.10.269): reported infinite reboot not
-  reproduced. `/sys/fs/pstore` was empty on that device, indicating a hang
-  rather than a panic. Awaiting further reports.
-- issue #3 / #4 (6.12.23-android16-5): reported symbols fixed, but no matching
-  device kernel was available for equivalent verification.
+**`msg()` rejects `%n`.** Templates are static in-repo strings, so `%n` could not
+reach the format position; the guard is defense in depth against a future
+template or an accidental external value.
+
+### Verified
+
+Full KMI matrix (all seven) builds green, including the aggregate module and the
+lite variant, confirming the new accessor links in both. Device smoke test on
+PHZ110 (MT6989, `6.1.157`): PID/IPC/UTS/user/net/cgroup namespaces, in-container
+`/proc` mount (214 nodes), devtmpfs, `/dev/dri/renderD128`, veth creation, binder
+nodes, emulated `pids.max`/`cpu.max`, and the export-symbol check (0 missing of
+781 rows) all pass, with no kernel anomalies in `dmesg`.
