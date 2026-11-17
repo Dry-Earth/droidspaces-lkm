@@ -391,7 +391,7 @@ static ctl_can_fork_fn ctl_can_fork_orig;
 static ctl_post_fork_fn ctl_post_fork_orig;
 static ctl_exit_fn ctl_exit_orig;
 
-static __nocfi noinline int ctl_can_fork_wrap(struct task_struct *child,
+__nocfi noinline int ctl_can_fork_wrap(struct task_struct *child,
 					      struct kernel_clone_args *kargs)
 {
 	struct cgroup *cgrp;
@@ -413,7 +413,7 @@ static __nocfi noinline int ctl_can_fork_wrap(struct task_struct *child,
 }
 
 /* post_fork：记账 +1。pre_handler 在入口记账，wrapper 也先记账再调原函数 */
-static __nocfi noinline void ctl_post_fork_wrap(struct task_struct *child,
+__nocfi noinline void ctl_post_fork_wrap(struct task_struct *child,
 						struct kernel_clone_args *kargs)
 {
 	unsigned long v;
@@ -429,7 +429,7 @@ static __nocfi noinline void ctl_post_fork_wrap(struct task_struct *child,
 }
 
 /* exit：记账 -1，同样在调原函数之前 */
-static __nocfi noinline void ctl_exit_wrap(struct task_struct *tsk)
+__nocfi noinline void ctl_exit_wrap(struct task_struct *tsk)
 {
 	struct cgroup *cgrp;
 
