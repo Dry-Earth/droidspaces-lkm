@@ -1,0 +1,13 @@
+diff --git a/vendor/kernel/cgroup/namespace.c b/vendor/kernel/cgroup/namespace.c
+index aedaa22..12ba1f0 100644
+--- a/vendor/kernel/cgroup/namespace.c
++++ b/vendor/kernel/cgroup/namespace.c
+@@ -44,7 +44,7 @@
+  * 链并操作全局 ucounts_hashtable；vendored ns 的 ucount 记账与真实内核
+  * 不一致。CONFIG_USER_NS=n 的内核自己在这里用的就是 &init_user_ns。
+  */
+-struct cgroup_namespace *vns_copy_cgroup_ns(unsigned long flags,
++struct cgroup_namespace *__nocfi vns_copy_cgroup_ns(unsigned long flags,
+ 					struct user_namespace *user_ns,
+ 					struct cgroup_namespace *old_ns) /* [RENAME] */
+ {
