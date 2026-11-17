@@ -109,6 +109,55 @@ dynamic ftrace 无处可改。`CONFIG_HAVE_DYNAMIC_FTRACE_WITH_REGS=y` 只说明
 时才值得重新考虑 —— 而上面测出的 kprobe 开销说明，那时候也大概率不值得
 为此增加复杂度。
 
+## 风险与边界
+
+以下都是「会给出错误结果而不是报错」的路径。每一条都考虑过；都没有靠增加符号
+解析来解决。
+
+### struct module 布局不一致
+
+`within_module()` 是 static inline，直接读 `struct module` 里的 `core_layout`
+字段。模块按 DDK 头文件编译，设备内核是厂商自己编的，任何改动 `struct module`
+的配置都会让这些偏移错位。测试设备有 `CONFIG_MODULE_SCMVERSION=y`，是 DDK 树里
+没有的厂商增项。
+
+偏移错了就是调用者归属判错。假阴性只是不重定向；**假阳性才是危险的**：一个与
+Mali 无关的 `find_get_pid(nr)` 会被改写成「调用者自己的 group leader」，于是
+`waitid`、`kill`、`pidfd_open` 拿到的是**别的任务**。整个过程不产生任何报错，
+调用方据此对错误的进程动作。
+
+`nshf_layout_ok()` 在装钩子前拦这一道：本模块自己的两个地址必须被判为落在
+`THIS_MODULE` 内，且 `core_layout.size` 必须是合理的分配大小。它**证明不了布局
+逐字节正确** —— 部分错位的结构体仍可能通过 —— 所以它是绊线，不是证明。结果记在
+`nshf_layout_valid` 里。
+
+### mali_kbase 编进 vmlinux
+
+`nshf_resolve_mali()` 遍历的是模块链表。如果内核把 `CONFIG_MALI` 编进内核而不是
+做成模块，链表里没有对应项，查找失败，模块照样加载但什么都不重定向 —— **没有任何
+报错**，GPU context 创建和之前一样失败。编进内核的 kbase，模块层面无法处理。
+
+### CONFIG_KPROBES 未开
+
+`register_kprobe` 不存在，模块加载时报 `Unknown symbol register_kprobe`。
+这一种至少看得见。
+
+### 计数是近似值
+
+`nshf_seen` / `nshf_hits` 是普通 `unsigned long`，各 CPU 无锁自增，并发命中会丢。
+用来判断数量级可以，不能当精确账目。
+
+### 驱动始终不出现时的惰性解析开销
+
+如果加载时 `mali_kbase` 不在，handler 会在每次被拦截的调用上遍历模块链表直到找到。
+这个遍历正是缓存解析结果要消除的开销。`nshf_resolve_left` 把它限制在 4096 次之后
+停止查找；测试设备约 5 次/分钟，远超任何一次开机的时间尺度。
+
+### 只在一台设备验证
+
+所有数据来自 OPPO PHZ110 / MT6989 / `6.1.157-android14-11`，驱动
+`mali_kbase_mt6989_r44`。其他厂商的 Mali 驱动、其他内核、编进内核的配置都未验证。
+
 ## ioctl 编号
 
 此构建上 `VERSION_CHECK` 为 `0xC0048034`，而非 `0xC0048000`（`_IOWR(0x80, 0, 4)`）。

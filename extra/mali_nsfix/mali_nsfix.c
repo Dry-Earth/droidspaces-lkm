@@ -21,14 +21,21 @@
  *
  * The vendor's own fix replaces the lookup with current->group_leader. This
  * module achieves the same result without touching the driver binary: it
- * intercepts find_get_pid() and, when the caller is inside a kbase module,
- * hands back a reference to the caller's own group leader. pid_task() on that
- * pid returns exactly the task the driver wanted, and the driver's put_pid()
+ * probes find_get_pid() and, when the caller is inside a kbase module, hands
+ * back a reference to the caller's own group leader. pid_task() on that pid
+ * returns exactly the task the driver wanted, and the driver's put_pid()
  * balances the reference taken here.
  *
  * Because the redirected result equals what a host process would have got,
  * redirecting unconditionally for kbase callers is a no-op for Android and
  * the fix for containers - no namespace test is needed.
+ *
+ * Why a kprobe and not a rebuilt mali_kbase.ko
+ * -------------------------------------------
+ * Rebuilding the vendor driver needs its source, matching symbol CRCs against
+ * the running kernel and replacing the module in vendor_dlkm (or rmmod-ing a
+ * driver Android is actively using, which panics on the next GPU fence).
+ * A kprobe needs none of that and survives an OTA.
  *
  * Why kprobe and not ftrace
  * -------------------------
@@ -48,12 +55,25 @@
  * 44 of 1800 interceptions were Mali callers. At 1-3 us per trap that is
  * 0.000008%-0.000025% CPU - not worth chasing.
  *
- * Why not rebuild mali_kbase.ko
- * -----------------------------
- * Rebuilding the vendor driver needs its source, matching symbol CRCs against
- * the running kernel and replacing the module in vendor_dlkm (or rmmod-ing a
- * driver Android is actively using, which panics on the next GPU fence).
- * Neither backend here needs any of that, and both survive an OTA.
+ * Correctness depends on struct layout, and is checked
+ * ---------------------------------------------------
+ * within_module() is a static inline that reads struct module's core_layout
+ * fields. The plugin is built against the DDK's headers, but the device kernel
+ * is the vendor's build: any config or patch that changes struct module shifts
+ * those offsets. CONFIG_MODULE_SCMVERSION=y is present on the test device and
+ * is a vendor addition absent from the DDK tree.
+ *
+ * If the offsets are wrong, within_module() answers wrongly. A false negative
+ * just leaves the redirect off (GPU context creation keeps failing - visible).
+ * A false positive is worse: an unrelated find_get_pid(nr) gets redirected to
+ * get_task_pid(current->group_leader), so a caller asking about some other pid
+ * (waitid, kill, pidfd_open) receives the wrong task. That does not produce an
+ * error message; it produces a wrong signal target or a wrong wait target.
+ *
+ * nshf_layout_ok() therefore validates the layout against the one thing we can
+ * verify without symbol lookups: one of our own functions must be classified
+ * as inside THIS_MODULE. If that fails, the probe is not installed and the
+ * module refuses to load.
  *
  * Scope
  * -----
@@ -84,30 +104,40 @@ module_param_string(mali_prefix, mali_prefix, sizeof(mali_prefix), 0444);
 MODULE_PARM_DESC(mali_prefix,
 		 "Module name prefix whose find_get_pid() calls are redirected (default mali_kbase)");
 
-
 /*
  * Interception counters, readable without unloading:
  *   cat /sys/module/mali_nsfix/parameters/nshf_seen
  *
- * nshf_seen counts every intercepted find_get_pid() call anywhere in the
- * kernel; nshf_hits counts the ones redirected. seen/hits divided by uptime
- * gives the exact interception rate - the number that decides whether the
- * per-call cost matters at all.
+ * They are plain unsigned long incremented from every CPU with no
+ * serialisation, so concurrent hits can be lost. They are diagnostics, not
+ * accounting: treat the values as a lower bound and the rate derived from them
+ * as approximate.
  */
 static unsigned long nshf_seen;
 static unsigned long nshf_hits;
 module_param(nshf_seen, ulong, 0444);
-MODULE_PARM_DESC(nshf_seen, "intercepted find_get_pid() calls since load");
+MODULE_PARM_DESC(nshf_seen, "intercepted find_get_pid() calls since load (approximate)");
 module_param(nshf_hits, ulong, 0444);
-MODULE_PARM_DESC(nshf_hits, "calls redirected to the group leader");
+MODULE_PARM_DESC(nshf_hits, "calls redirected to the group leader (approximate)");
+
+/* Set once the layout self-check has passed. Never cleared. */
+static bool nshf_layout_valid;
+module_param(nshf_layout_valid, bool, 0444);
+MODULE_PARM_DESC(nshf_layout_valid, "struct module layout self-check result");
 
 /*
- * Replacement reached only through a redirect, so it never has to call the
+ * Replacement reached only through the redirect, so it never has to call the
  * original.
  *
  * get_task_pid(leader, PIDTYPE_PID) returns the leader with a reference held;
  * the driver's put_pid() drops it. Return type and ABI match find_get_pid()
  * exactly, so the caller cannot tell the difference and KCFI stays happy.
+ *
+ * nr is deliberately ignored: the only caller we redirect is kbase, which
+ * passes its own current->tgid, and the group leader is the task that value
+ * denotes. A redirected call that is NOT from kbase would therefore return the
+ * wrong task - which is why the layout check below refuses to arm the probe
+ * when classification cannot be trusted.
  */
 static struct pid *__nocfi nshf_get_pid(pid_t nr)
 {
@@ -127,8 +157,44 @@ static struct pid *__nocfi nshf_get_pid(pid_t nr)
  * try_module_get() pins the module so the pointer cannot go stale; the
  * reference is dropped in nshf_exit(). mali_kbase may be loaded after this
  * module, so resolution is also attempted lazily until it succeeds.
+ *
+ * The lazy path can run concurrently on several CPUs and each may take its own
+ * try_module_get() reference, leaking all but the winner's. That is at most a
+ * handful of references on a driver that never unloads in practice, so it is
+ * accepted rather than serialised - the handler runs with interrupts off and
+ * must not spin on a lock.
  */
 static struct module *nshf_mali_mod;
+
+/*
+ * Lazy resolution attempts left.
+ *
+ * Without a cap, a device that never loads mali_kbase pays the full module-list
+ * walk (632 entries plus a strncmp each on the test device) on EVERY
+ * find_get_pid() call, inside a kprobe handler with interrupts off. That is
+ * the exact cost the cached pointer was introduced to remove, just moved to
+ * the "driver absent" case.
+ *
+ * After NSHF_RESOLVE_TRIES failures the handler stops looking and returns
+ * "not mali" immediately.
+ *
+ * The number has to be large. service.sh loads this module at late_start, long
+ * after vendor_dlkm, so nshf_init() normally resolves eagerly and the lazy path
+ * never runs. It only matters when mali_kbase appears afterwards - and in that
+ * case a small cap could be exhausted by early find_get_pid() traffic (from
+ * init, healthd, the activity manager) before the driver shows up, permanently
+ * disabling the redirect on a device that needed it.
+ *
+ * Measured rate on the test device is ~5 calls/min, so 4096 tries is more than
+ * half a day of "driver still absent". The cost is bounded either way: each
+ * failed try is one module-list walk, and it happens at most this many times
+ * for the whole uptime.
+ */
+#define NSHF_RESOLVE_TRIES	4096
+static int nshf_resolve_left = NSHF_RESOLVE_TRIES;
+module_param(nshf_resolve_left, int, 0444);
+MODULE_PARM_DESC(nshf_resolve_left,
+		 "remaining lazy lookups for the kbase module (0 = gave up)");
 
 static struct module *nshf_resolve_mali(void)
 {
@@ -151,6 +217,11 @@ static struct module *nshf_resolve_mali(void)
 static bool nshf_caller_is_mali(unsigned long addr)
 {
 	if (unlikely(!nshf_mali_mod)) {
+		if (!nshf_resolve_left)
+			return false;   /* gave up; see NSHF_RESOLVE_TRIES */
+		if (--nshf_resolve_left == 0)
+			pr_info("mali_nsfix: gave up looking for '%s*' after %d tries\n",
+				mali_prefix, NSHF_RESOLVE_TRIES);
 		nshf_mali_mod = nshf_resolve_mali();
 		if (!nshf_mali_mod)
 			return false;   /* not loaded (yet); nothing to redirect */
@@ -162,8 +233,45 @@ static bool nshf_caller_is_mali(unsigned long addr)
 }
 
 /*
+ * Is within_module() actually reading struct module correctly?
+ *
+ * The positive case is self-evident and needs no external symbol: our own
+ * function lives in this module's text, so within_module() must report true
+ * for it. A wrong core_layout offset makes that come back false.
+ *
+ * The negative case uses a second address that is also ours - a static data
+ * object. It must land in the same module, which distinguishes "read the right
+ * struct" from "read a struct that happens to look plausible".
+ *
+ * Deliberately no kernel-symbol address is used here: resolving one would pull
+ * in kallsyms machinery and reintroduce exactly the portability problem this
+ * check exists to guard against.
+ */
+static bool nshf_layout_ok(void)
+{
+	unsigned long size;
+
+	if (!within_module((unsigned long)&nshf_layout_ok, THIS_MODULE))
+		return false;
+	if (!within_module((unsigned long)&nshf_layout_valid, THIS_MODULE))
+		return false;
+
+	/*
+	 * Third check: core_layout.size must be a plausible allocation. Both
+	 * functions above living "inside" a module whose recorded size is 0 or
+	 * 4 GB means the offset is pointing at something that merely happens to
+	 * bracket our addresses by luck.
+	 */
+	size = THIS_MODULE->core_layout.size;
+	if (size < 4096 || size > (64UL << 20))
+		return false;
+
+	return true;
+}
+
+/*
  * arm64 passes the caller's return address in x30 (regs->regs[30]) at the very
- * first instruction of a function, which is where both probes sit.
+ * first instruction of a function, which is where the probe sits.
  */
 #if defined(CONFIG_ARM64)
 #define NSHF_CALLER_PC(regs) ((regs)->regs[30])
@@ -172,10 +280,6 @@ static bool nshf_caller_is_mali(unsigned long addr)
 #else
 #error "mali_nsfix: unsupported architecture"
 #endif
-
-/* ======================================================================== */
-/* kprobe backend                                                           */
-/* ======================================================================== */
 
 static struct kprobe nshf_kp;
 
@@ -205,7 +309,7 @@ static int nshf_arm_kprobe(void)
 
 	ret = register_kprobe(&nshf_kp);
 	if (ret)
-		pr_info("mali_nsfix: register_kprobe(find_get_pid) = %d\n", ret);
+		pr_err("mali_nsfix: register_kprobe(find_get_pid) = %d\n", ret);
 	return ret;
 }
 
@@ -214,16 +318,24 @@ static void nshf_disarm_kprobe(void)
 	unregister_kprobe(&nshf_kp);
 }
 
-/* ======================================================================== */
-/* init / exit                                                              */
-/* ======================================================================== */
-
 static int __init nshf_init(void)
 {
 	int ret;
 
 	if (!strlen(mali_prefix))
 		return -EINVAL;
+
+	/*
+	 * Validate struct module before arming anything. Without this, a
+	 * mismatched layout turns into misattributed callers, and a redirected
+	 * non-kbase call returns the wrong task to its caller.
+	 */
+	if (!nshf_layout_ok()) {
+		pr_err("mali_nsfix: struct module layout check failed; "
+		       "refusing to arm (within_module() cannot be trusted)\n");
+		return -EINVAL;
+	}
+	nshf_layout_valid = true;
 
 	ret = nshf_arm_kprobe();
 	if (ret)
@@ -233,7 +345,7 @@ static int __init nshf_init(void)
 	 * booted device); the handler falls back to lazy resolution otherwise. */
 	nshf_mali_mod = nshf_resolve_mali();
 
-	pr_info("mali_nsfix: redirecting callers in '%s*'%s\n",
+	pr_info("mali_nsfix: redirecting callers in '%s*', layout verified%s\n",
 		mali_prefix,
 		nshf_mali_mod ? " (driver already loaded)" : " (driver not loaded yet)");
 	return 0;
@@ -258,4 +370,4 @@ module_exit(nshf_exit);
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("misaka5202");
 MODULE_DESCRIPTION("Redirect find_get_pid() calls made by the Mali kbase driver so GPU contexts work inside a PID namespace");
-MODULE_VERSION("0.2.0");
+MODULE_VERSION("0.3.0");

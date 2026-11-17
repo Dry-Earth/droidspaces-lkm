@@ -123,6 +123,64 @@ as dead code. Revisit only if a target kernel has `CONFIG_FUNCTION_TRACER=y` -
 and note that the measured kprobe cost above makes that unlikely to be worth
 the complexity.
 
+## Risks and limits
+
+These are the ways this module gives a wrong answer rather than an error. Each
+one has been considered; none is addressed by adding a symbol lookup.
+
+### struct module layout mismatch
+
+`within_module()` is a static inline reading `core_layout` fields out of
+`struct module`. The module is built against the DDK headers, the kernel on the
+device is the vendor's build, and anything that changes `struct module` shifts
+those offsets. The test device has `CONFIG_MODULE_SCMVERSION=y`, a vendor
+addition absent from the DDK tree.
+
+Wrong offsets mean wrong caller classification. A false negative just leaves the
+redirect off. A false positive is the dangerous one: an unrelated
+`find_get_pid(nr)` gets rewritten to the caller's own group leader, so `waitid`,
+`kill` or `pidfd_open` receive a pid for the wrong task. No error is logged; the
+caller acts on the wrong process.
+
+`nshf_layout_ok()` guards this before the probe is armed: two of the module's own
+addresses must classify as inside `THIS_MODULE`, and `core_layout.size` must be a
+plausible allocation. It cannot prove the layout is byte-exact - a partially
+shifted struct could still pass - so it is a tripwire, not a proof. It is
+recorded in `nshf_layout_valid`.
+
+### mali_kbase built into vmlinux
+
+`nshf_resolve_mali()` walks the module list. A kernel with `CONFIG_MALI` built
+in rather than as a module has no entry to find, so the lookup fails, the module
+loads, and nothing is redirected. There is no error - GPU context creation keeps
+failing exactly as it did before. Built-in kbase cannot be handled from a module
+without knowing its text range by other means.
+
+### CONFIG_KPROBES not set
+
+`register_kprobe` would not exist and the module fails to load with
+`Unknown symbol register_kprobe`. That one is at least visible.
+
+### Counters are approximate
+
+`nshf_seen` and `nshf_hits` are plain `unsigned long` incremented from every CPU
+without serialisation. Concurrent hits are lost. Use them to judge order of
+magnitude, not to account exactly.
+
+### Lazy resolution cost when the driver never appears
+
+If `mali_kbase` is not present at load time the handler walks the module list on
+each intercepted call until it is found. That walk is why the resolved pointer
+is cached. `nshf_resolve_left` caps it at 4096 attempts and then stops looking;
+on the test device (about 5 interceptions per minute) that is far longer than any
+boot.
+
+### Verified on one device
+
+Everything here was measured on OPPO PHZ110 / MT6989 / `6.1.157-android14-11`
+with `mali_kbase_mt6989_r44`. Other vendor Mali drivers, other kernels and
+built-in configurations are untested.
+
 ## ioctl numbers
 
 `VERSION_CHECK` on this build is `0xC0048034`, not `0xC0048000`
