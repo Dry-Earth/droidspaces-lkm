@@ -863,12 +863,10 @@ static void ctl_install_post_fork(void)
 		if (!ret) {
 			ctl_post_fork_orig = (ctl_post_fork_fn)(unsigned long)ctl_post_fork_inline.orig;
 			ctl_post_fork_inline_live = true;
-			pids_info("cgroup_post_fork on the inline route
-");
+			pids_info("cgroup_post_fork on the inline route\n");
 			return;
 		}
-		pids_warn("cgroup_post_fork inline failed %d%s
-", ret,
+		pids_warn("cgroup_post_fork inline failed %d%s\n", ret,
 			  ctl_route == 1 ? " (route=inline, giving up)"
 					 : ", falling back to kprobe");
 		if (ctl_route == 1)
@@ -890,12 +888,10 @@ static void ctl_install_exit(void)
 		if (!ret) {
 			ctl_exit_orig = (ctl_exit_fn)(unsigned long)ctl_exit_inline.orig;
 			ctl_exit_inline_live = true;
-			pids_info("cgroup_exit on the inline route
-");
+			pids_info("cgroup_exit on the inline route\n");
 			return;
 		}
-		pids_warn("cgroup_exit inline failed %d%s
-", ret,
+		pids_warn("cgroup_exit inline failed %d%s\n", ret,
 			  ctl_route == 1 ? " (route=inline, giving up)"
 					 : ", falling back to kprobe");
 		if (ctl_route == 1)
