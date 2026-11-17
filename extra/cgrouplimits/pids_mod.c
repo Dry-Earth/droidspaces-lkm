@@ -371,7 +371,17 @@ static bool ctl_exit_inline_live;
  * 逐字匹配原函数签名，签名一变就是错的参数。6.1 的 cgroup_can_fork 是
  * (child, kargs)，这里按它写；其它版本一律走 kprobe（见 ctl_route 说明）。
  */
-#if LINUX_VERSION_CODE == KERNEL_VERSION(6, 1, 0)
+/* 6.1 全系（含 6.1.138 这类 patchlevel 非 0 的 GKI）：
+ * 必须用区间判断，写成 == KERNEL_VERSION(6,1,0) 在 6.1.138 上是**假**
+ * （LINUX_VERSION_CODE 含 patchlevel），wrapper 会静默不编译、静默退回
+ * kprobe —— 编译照样通过，只有看符号才发现的。
+ * 签名（find_x7_kernel/kernel/cgroup/cgroup.c）：
+ *   int cgroup_can_fork(struct task_struct *, struct kernel_clone_args *)
+ *   void cgroup_post_fork(struct task_struct *, struct kernel_clone_args *)
+ *   void cgroup_exit(struct task_struct *)
+ */
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 1, 0) && \
+    LINUX_VERSION_CODE < KERNEL_VERSION(6, 2, 0)
 #define CTL_CAN_FORK_INLINE 1
 typedef int (*ctl_can_fork_fn)(struct task_struct *, struct kernel_clone_args *);
 typedef void (*ctl_post_fork_fn)(struct task_struct *, struct kernel_clone_args *);
