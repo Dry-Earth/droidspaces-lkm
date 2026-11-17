@@ -4,7 +4,7 @@ This is the English changelog. Entries before v0.1.23 exist only in Chinese;
 see [CHANGELOG.md](CHANGELOG.md). Version numbering rationale is documented
 there as well.
 
-## v0.1.25 (not released)
+## v0.1.25
 
 ### Fixed
 
