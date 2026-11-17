@@ -18,24 +18,33 @@
 #   4) macvlan       - 容器独立局域网 IP
 #   5) vkms          - 虚拟 DRM 设备, 提供 /dev/dri/renderD128
 #
-# vkms 是 anland / wayland 桌面的前提:
-#   Hyprland 和 KWin 的 Wayland 后端要一个能 gbm_create_device() 的
-#   DRM render node。厂商内核没开 CONFIG_DRM_VGEM / CONFIG_DRM_VKMS,
-#   只有 card0 (display controller), 没有 render 节点。
+# vkms 的定位（2026-11 实测后修正）
+# ---------------------------------
+# 原先认为 vkms 是 anland / wayland 桌面的前提：Hyprland 和 KWin 的 Wayland
+# 后端要一个能 gbm_create_device() 的 DRM render node，而厂商内核没开
+# CONFIG_DRM_VGEM / CONFIG_DRM_VKMS，只有 card0（display controller）。
 #
-#   为什么是 vkms 而不是 vgem: Mesa 的 GBM 后端按 DRM driver 名字找 dri
-#   驱动, 有 vkms_dri.so 却**没有** vgem_dri.so。用 vgem 时 Hyprland 停在
+# 实测（OPPO PHZ110 / MT6989 / 6.1.157）推翻了这个前提：卸掉 vkms 之后，
+# /dev/dri/renderD128 消失，GL 客户端仍然渲染成功并正常上屏；合成器
+# waylandbridge 映射的是 libGLES_mali.so、打开的是 /dev/mali0，
+# /dev/dri/renderD128 的 fd 数是 0 —— 它从来没被打开过。
+#
+# 所以 Mali 平台（有 /dev/mali0 或 mali_kbase）不再加载 vkms，见下方平台
+# 判定段。非 Mali 且没有 render node 的平台仍然加载，那是它还有意义的地方。
+#
+# 为什么是 vkms 而不是 vgem: Mesa 的 GBM 后端按 DRM driver 名字找 dri
+# 驱动, 有 vkms_dri.so 却**没有** vgem_dri.so。用 vgem 时 Hyprland 停在
 #     openRenderNode got drm device /dev/dri/renderD128
 #     CRIT: Couldn't open a gbm device   (OpenGL.cpp:351)
-#   vkms 是内核自带的虚拟 KMS 驱动 (card + render + CRTC + plane), 配
-#   kms_swrast_dri.so 就能软件渲染出帧。
 #
-#   本仓库对 vkms 打了一个补丁: 上游 driver_features 只有
-#   MODESET|ATOMIC|GEM, 不建 render node; 加上 DRIVER_RENDER 后才会生成
-#   /dev/dri/renderD128。补丁见 scripts/patch_vkms_debugfs.py（同一处改的是
-#   上游 drm_crtc_add_crc_entry 依赖 DEBUG_FS 的问题）。
+# 本仓库对 vkms 打了一个补丁: 上游 driver_features 只有
+# MODESET|ATOMIC|GEM, 不建 render node; 加上 DRIVER_RENDER 后才会生成
+# /dev/dri/renderD128。补丁见 scripts/patch_vkms_debugfs.py（同一处改的是
+# 上游 drm_crtc_add_crc_entry 依赖 DEBUG_FS 的问题）。
 #
-#   必须在容器启动前加载, 否则 Droidspaces 扫描 /dev 时看不到它。
+# 注意 vkms 背后没有 GPU：它提供的 render node 上 Mesa 只能落回 llvmpipe
+# （CPU 软件渲染）。因此它不该被当作「mali_nsfix 失败时的性能 fallback」——
+# 那条路会把用户静默降级到软件渲染，界面上看不出异常。
 #
 # devtmpfs_lkm 必须带 devtmpfs_probe=2:
 #   默认 probe=0 会启动 kthread 并安装 device_add/device_del inline hook,
@@ -440,9 +449,31 @@ dlog "platform: mali=${GPU_HAS_MALI} renderD128=$([ -e /dev/dri/renderD128 ] && 
 # 但它属于 drm.ko 的**模块依赖**：drm 还没加载时 insmod 只会报
 # "Unknown symbol"，而这里跑在 late_start，drm 未必已经就绪。
 # 所以失败后重试几次，而不是一次就放弃。
-# 已经有 render node 就不装 vkms：高通机型多数由 kgsl/Adreno 原生提供，
-# 再装一个只会多出一个用不上的 card 节点。
-if [ -e /dev/dri/renderD128 ]; then
+#
+# 为什么 Mali 平台不再加载 vkms
+# -----------------------------
+# 原先的判断是「没有 /dev/dri/renderD128 就装 vkms」，因为 older anland
+# 的合成器走 GBM。实测（OPPO PHZ110 / MT6989 / 6.1.157）推翻了这个前提：
+#
+#   卸掉 vkms → /dev/dri/renderD128 消失
+#   再跑 GL 客户端 → 仍然渲染成功，画面正常上屏（运行中 49.5% 品红，退出后 0%）
+#   合成器 waylandbridge: libGLES_mali.so 已映射，/dev/mali0 fd=1，
+#                        /dev/dri/renderD128 fd=0 —— 根本没打开过
+#
+# 也就是说 Mali 平台上合成器直接用 /dev/mali0，不经过 renderD128。
+# 而 vkms 背后没有 GPU，一旦被当作渲染后端，Mesa 只能落回 llvmpipe
+# （CPU 软件渲染，实测 1280x720 填充 461 fps / 6.80 Gpix/s）。把它留在
+# 加载列表里没有收益，反而多一个 card 节点和一条可能被误用的软件路径。
+#
+# 更麻烦的是卸载行为：容器运行期间 rmmod vkms，容器的 bind mount 会留下
+# 一个指向已删除 inode 的节点 —— ls 看得见、open() 报 EPERM。只做「节点
+# 是否存在」判断的程序会通过检查再失败，比节点干脆不存在更难排查。
+#
+# 所以：Mali 平台跳过 vkms；没有 Mali 且没有 render node 的平台仍然加载，
+# 那是它唯一还有意义的地方。
+if [ "$GPU_HAS_MALI" = 1 ]; then
+    dlog "[SKIP] ${M_SKIP_VKMS_MALI}"
+elif [ -e /dev/dri/renderD128 ]; then
     dlog "[SKIP] ${M_SKIP_VKMS}"
 elif ! load_mod vkms ""; then
     for _try in 1 2 3 4 5; do

@@ -30,24 +30,23 @@
  * redirecting unconditionally for kbase callers is a no-op for Android and
  * the fix for containers - no namespace test is needed.
  *
- * Two interception backends
+ * Why kprobe and not ftrace
  * -------------------------
- * kprobe: replaces the first instruction of find_get_pid() with a BRK. Every
- *   call anywhere in the kernel traps into the exception vector, runs the
- *   handler, then single-steps the displaced instruction. Reliable, but the
- *   cost is paid by every find_get_pid() call in the system, not only Mali's.
+ * ftrace would be cheaper: find_get_pid() carries a call to __fentry__ at its
+ * entry when CONFIG_FUNCTION_TRACER is on, and dynamic ftrace rewrites that
+ * into a branch to the trampoline. With FTRACE_OPS_FL_IPMODIFY the handler may
+ * rewrite regs->pc, which is how livepatch redirects a function - no
+ * breakpoint, no exception, no single-step.
  *
- * ftrace: find_get_pid() carries a call to __fentry__ at its entry (patched to
- *   a NOP at build time when CONFIG_DYNAMIC_FTRACE is on). dynamic ftrace
- *   rewrites that NOP into a branch to the tracing trampoline. With
- *   FTRACE_OPS_FL_IPMODIFY the handler may rewrite regs->pc, which is how
- *   livepatch redirects a function - no breakpoint, no exception, no
- *   single-step. The caller still pays the trampoline, but that is a direct
- *   branch and register save, not two exception round trips.
+ * But CONFIG_FUNCTION_TRACER is unset on this device and in the DDK build tree
+ * (# CONFIG_FUNCTION_TRACER is not set in both /proc/config.gz and the tree's
+ * .config). Without it there are no __fentry__ call sites to patch, so the
+ * ftrace path would compile to nothing.
  *
- * ftrace is attempted first and kprobe is used if it cannot be armed. Both
- * paths produce identical behaviour; the difference is what each intercepted
- * call costs.
+ * Measured cost of the kprobe alternative on OPPO PHZ110 / MT6989 / 6.1.157:
+ * find_get_pid() is intercepted about 5 times per minute system-wide, and
+ * 44 of 1800 interceptions were Mali callers. At 1-3 us per trap that is
+ * 0.000008%-0.000025% CPU - not worth chasing.
  *
  * Why not rebuild mali_kbase.ko
  * -----------------------------
@@ -85,20 +84,6 @@ module_param_string(mali_prefix, mali_prefix, sizeof(mali_prefix), 0444);
 MODULE_PARM_DESC(mali_prefix,
 		 "Module name prefix whose find_get_pid() calls are redirected (default mali_kbase)");
 
-/*
- * Backend selection.
- *   auto   (default) ftrace if it can be armed, otherwise kprobe
- *   ftrace fail to load if ftrace is unavailable
- *   kprobe kprobe only
- */
-static char nshf_backend[16] = "auto";
-module_param_string(nshf_backend, nshf_backend, sizeof(nshf_backend), 0444);
-MODULE_PARM_DESC(nshf_backend, "auto (default) | ftrace | kprobe");
-
-/* Which backend actually ended up armed: 0 = none, 1 = ftrace, 2 = kprobe. */
-static int nshf_active = 0;
-module_param(nshf_active, int, 0444);
-MODULE_PARM_DESC(nshf_active, "armed backend: 0 none, 1 ftrace, 2 kprobe");
 
 /*
  * Interception counters, readable without unloading:
@@ -189,107 +174,6 @@ static bool nshf_caller_is_mali(unsigned long addr)
 #endif
 
 /* ======================================================================== */
-/* ftrace backend                                                           */
-/* ======================================================================== */
-
-/*
- * Budget:
- *   FTRACE_OPS_FL_SAVE_REGS  makes regs available (needed to read x30 and to
- *                            write pc back)
- *   FTRACE_OPS_FL_IPMODIFY   permits changing regs->pc. This is how livepatch
- *                            redirects a function entry; without it the kernel
- *                            rejects the modification.
- *
- * The handler must be notrace: it runs from the tracing trampoline and must
- * not itself be traced.
- *
- * ftrace_regs and ftrace_get_regs() exist from 6.1 on arm64. Older kernels use
- * a plain struct pt_regs argument; instead of maintaining both shapes, ftrace
- * is compiled out there and kprobe is used.
- */
-#if defined(CONFIG_DYNAMIC_FTRACE_WITH_REGS) && \
-	LINUX_VERSION_CODE >= KERNEL_VERSION(6, 1, 0)
-#define NSHF_HAVE_FTRACE 1
-#include <linux/ftrace.h>
-
-static void notrace nshf_ftrace_thunk(unsigned long ip, unsigned long parent_ip,
-				      struct ftrace_ops *ops,
-				      struct ftrace_regs *fregs)
-{
-	struct pt_regs *regs;
-	unsigned long caller;
-
-	(void)ip;
-	(void)parent_ip;
-	(void)ops;
-
-	/*
-	 * ftrace_get_regs() returns NULL unless the ops were registered with
-	 * FTRACE_OPS_FL_SAVE_REGS. It is set, so this is a sanity check only.
-	 */
-	regs = ftrace_get_regs(fregs);
-	if (unlikely(!regs))
-		return;
-
-	caller = NSHF_CALLER_PC(regs);
-	nshf_seen++;
-
-	if (!nshf_caller_is_mali(caller))
-		return;                 /* run the original function */
-
-	nshf_hits++;
-	regs->pc = (unsigned long)nshf_get_pid;
-}
-
-static struct ftrace_ops nshf_ops = {
-	.func  = nshf_ftrace_thunk,
-	.flags = FTRACE_OPS_FL_SAVE_REGS | FTRACE_OPS_FL_IPMODIFY,
-};
-
-static int nshf_arm_ftrace(void)
-{
-	char buf[32];
-	int ret;
-
-	/*
-	 * Name-based filter: avoids kallsyms_lookup_name(), which stopped being
-	 * exported in 5.7. ftrace_set_filter() resolves the name internally and
-	 * returns -ENODEV when no instrumented function matches - which is also
-	 * our detection for "find_get_pid was built without -pg".
-	 */
-	strscpy(buf, "find_get_pid", sizeof(buf));
-
-	ret = ftrace_set_filter(&nshf_ops, buf, strlen(buf), 0);
-	if (ret) {
-		pr_info("mali_nsfix: ftrace_set_filter(find_get_pid) = %d\n", ret);
-		return ret;
-	}
-
-	ret = register_ftrace_function(&nshf_ops);
-	if (ret) {
-		pr_info("mali_nsfix: register_ftrace_function = %d\n", ret);
-		/* Leave no half-armed filter behind for the kprobe fallback. */
-		ftrace_set_filter(&nshf_ops, buf, strlen(buf), 1);
-		return ret;
-	}
-
-	return 0;
-}
-
-static void nshf_disarm_ftrace(void)
-{
-	char buf[32];
-
-	strscpy(buf, "find_get_pid", sizeof(buf));
-	unregister_ftrace_function(&nshf_ops);
-	ftrace_set_filter(&nshf_ops, buf, strlen(buf), 1);
-}
-#else
-#define nshf_arm_ftrace()	(-EOPNOTSUPP)
-#define nshf_disarm_ftrace()	do { } while (0)
-#endif /* CONFIG_DYNAMIC_FTRACE_WITH_REGS */
-
-/* ======================================================================== */
 /* kprobe backend                                                           */
 /* ======================================================================== */
 
@@ -336,62 +220,35 @@ static void nshf_disarm_kprobe(void)
 
 static int __init nshf_init(void)
 {
-	int ret = -EINVAL;
+	int ret;
 
 	if (!strlen(mali_prefix))
 		return -EINVAL;
 
-	if (!strcmp(nshf_backend, "ftrace")) {
-		ret = nshf_arm_ftrace();
-		if (ret)
-			return ret;
-		nshf_active = 1;
-	} else if (!strcmp(nshf_backend, "kprobe")) {
-		ret = nshf_arm_kprobe();
-		if (ret)
-			return ret;
-		nshf_active = 2;
-	} else if (!strcmp(nshf_backend, "auto")) {
-		ret = nshf_arm_ftrace();
-		if (!ret) {
-			nshf_active = 1;
-		} else {
-			pr_info("mali_nsfix: ftrace unavailable (%d), using kprobe\n",
-				ret);
-			ret = nshf_arm_kprobe();
-			if (ret)
-				return ret;
-			nshf_active = 2;
-		}
-	} else {
-		pr_err("mali_nsfix: unknown backend '%s'\n", nshf_backend);
-		return -EINVAL;
-	}
+	ret = nshf_arm_kprobe();
+	if (ret)
+		return ret;
 
 	/* Resolve eagerly when the driver is already loaded (the usual case on a
 	 * booted device); the handler falls back to lazy resolution otherwise. */
 	nshf_mali_mod = nshf_resolve_mali();
 
-	pr_info("mali_nsfix: backend=%s redirecting callers in '%s*'%s\n",
-		nshf_active == 1 ? "ftrace" : "kprobe", mali_prefix,
+	pr_info("mali_nsfix: redirecting callers in '%s*'%s\n",
+		mali_prefix,
 		nshf_mali_mod ? " (driver already loaded)" : " (driver not loaded yet)");
 	return 0;
 }
 
 static void __exit nshf_exit(void)
 {
-	if (nshf_active == 1)
-		nshf_disarm_ftrace();
-	else if (nshf_active == 2)
-		nshf_disarm_kprobe();
+	nshf_disarm_kprobe();
 
 	if (nshf_mali_mod) {
 		module_put(nshf_mali_mod);
 		nshf_mali_mod = NULL;
 	}
 
-	pr_info("mali_nsfix: removed (backend=%s, intercepted %lu time(s), redirected %lu)\n",
-		nshf_active == 1 ? "ftrace" : (nshf_active == 2 ? "kprobe" : "none"),
+	pr_info("mali_nsfix: removed (intercepted %lu time(s), redirected %lu)\n",
 		nshf_seen, nshf_hits);
 }
 

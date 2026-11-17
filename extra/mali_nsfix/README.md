@@ -77,6 +77,52 @@ container:
 Five consecutive runs with the module loaded: 5/5 succeeded, zero
 `Failed to get pid pointer` lines. Also verified as uid 1000 rather than root.
 
+## Overhead
+
+Interception counters are exported as module parameters, so the cost can be
+read without unloading:
+
+```sh
+cat /sys/module/mali_nsfix/parameters/nshf_seen   # every intercepted call
+cat /sys/module/mali_nsfix/parameters/nshf_hits   # calls actually redirected
+```
+
+Measured on the device above, 60-second window:
+
+```
+nshf_seen:  +5 in 60 s      (0.083 calls/s system-wide)
+nshf_hits:  +0 in 60 s      (no GPU context was created during the window)
+cumulative: 1800 intercepted, 44 redirected  (2.4% are Mali callers)
+```
+
+At 1-3 us per kprobe trap that works out to **0.000008% - 0.000025% CPU**.
+`find_get_pid()` is not a hot function: five calls per minute across the whole
+system. None of them are on the per-frame GPU path - `kbase_create_context()`
+calls it once per context, and workload submission does not call it at all, so
+rendering throughput is unaffected.
+
+## Why not ftrace
+
+ftrace would avoid the breakpoint and the single-step, and with
+`FTRACE_OPS_FL_IPMODIFY` the handler could rewrite `regs->pc` the way livepatch
+does. It is not available here:
+
+```
+DDK build tree:  # CONFIG_FUNCTION_TRACER is not set
+device kernel:   # CONFIG_FUNCTION_TRACER is not set
+```
+
+Without `CONFIG_FUNCTION_TRACER` the compiler inserts no `__fentry__` call
+sites, so dynamic ftrace has nothing to patch. `CONFIG_HAVE_DYNAMIC_FTRACE_WITH_REGS`
+being `y` only means the architecture supports the technique, not that it is
+enabled.
+
+An ftrace backend was written and compiled successfully on all seven KMIs, but
+it compiled to nothing on every one of them. It was removed rather than shipped
+as dead code. Revisit only if a target kernel has `CONFIG_FUNCTION_TRACER=y` -
+and note that the measured kprobe cost above makes that unlikely to be worth
+the complexity.
+
 ## ioctl numbers
 
 `VERSION_CHECK` on this build is `0xC0048034`, not `0xC0048000`

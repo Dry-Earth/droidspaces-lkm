@@ -67,6 +67,48 @@ OPPO PHZ110，MediaTek MT6989，`mali_kbase_mt6989_r44`，Android 17，内核
 模块加载状态下连续运行五次：5/5 成功，无 `Failed to get pid pointer` 行。
 亦以 uid 1000 而非 root 验证通过。
 
+## 开销
+
+拦截计数导出成了模块参数，不用卸载模块就能读：
+
+```sh
+cat /sys/module/mali_nsfix/parameters/nshf_seen   # 全系统拦截次数
+cat /sys/module/mali_nsfix/parameters/nshf_hits   # 真正被重定向的次数
+```
+
+在上述设备上实测，60 秒窗口：
+
+```
+nshf_seen:  60 秒 +5 次    （全系统 0.083 次/秒）
+nshf_hits:  60 秒 +0 次    （该窗口内没有创建 GPU context）
+累计:       拦截 1800 次，重定向 44 次（2.4% 是 Mali 调用者）
+```
+
+按 kprobe 单次陷入 1-3 µs 计算，折合 **0.000008% - 0.000025% CPU**。
+
+`find_get_pid()` 不是热函数：全系统每分钟才 5 次。而且它不在每帧渲染路径上
+—— `kbase_create_context()` 每个 context 调一次，workload 提交完全不调，
+所以渲染吞吐不受影响。
+
+## 为什么不用 ftrace
+
+ftrace 能省掉断点和单步，配合 `FTRACE_OPS_FL_IPMODIFY` 还能像 livepatch
+那样改写 `regs->pc`。但这台设备上不可用：
+
+```
+DDK 构建树:  # CONFIG_FUNCTION_TRACER is not set
+设备内核:    # CONFIG_FUNCTION_TRACER is not set
+```
+
+没有 `CONFIG_FUNCTION_TRACER`，编译器不会在函数入口插 `__fentry__` 调用点，
+dynamic ftrace 无处可改。`CONFIG_HAVE_DYNAMIC_FTRACE_WITH_REGS=y` 只说明
+架构支持这个技术，不代表功能已开启。
+
+我写过一版 ftrace 后端，七个 KMI 全部编译通过，但**每一个都编译成了空**。
+与其作为死代码发布，不如删掉。只有目标内核确实开了 `CONFIG_FUNCTION_TRACER`
+时才值得重新考虑 —— 而上面测出的 kprobe 开销说明，那时候也大概率不值得
+为此增加复杂度。
+
 ## ioctl 编号
 
 此构建上 `VERSION_CHECK` 为 `0xC0048034`，而非 `0xC0048000`（`_IOWR(0x80, 0, 4)`）。
