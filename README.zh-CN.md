@@ -123,6 +123,12 @@ touch /data/adb/modules/droidspaces_lkm/enable_vkms
 空间的值、`find_get_pid()` 却经由调用者的活动命名空间解析，容器进程两者不一致，
 查找失败。机制与实测数据见 [`extra/mali_nsfix/README.zh-CN.md`](extra/mali_nsfix/README.zh-CN.md)。
 
+它正是 Mali 版 RootFS 能用的前提：那个镜像通过 libhybris 使用厂商
+`libGLES_mali.so`，而它需要在容器内创建 GPU context。实测开销
+（PHZ110 / MT6989 / 6.1.157）为 **0.000008% - 0.000025% CPU** —— 全系统每分钟
+约 5 次 `find_get_pid()` 拦截；计数不用卸载模块就能读，在
+`/sys/module/mali_nsfix/parameters/` 下的 `nshf_seen` / `nshf_hits`。
+
 Mali 容器还需要什么（Android 侧合成器配置、`dma-buf` 处理），见 RootFS 仓库的
 [桌面与 Anland 指南](https://github.com/misaka5202/Droidspaces-anland6-rootfs/blob/main/docs/zh/桌面与Anland.md)。
 

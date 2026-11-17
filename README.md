@@ -135,6 +135,13 @@ container process the two disagree and the lookup fails. See
 [`extra/mali_nsfix/README.md`](extra/mali_nsfix/README.md) for the mechanism and
 measurements.
 
+It is what makes the Mali RootFS image usable at all: that image renders through
+libhybris against the vendor `libGLES_mali.so`, which needs a GPU context inside
+the container. Measured overhead on PHZ110 / MT6989 / 6.1.157 is
+**0.000008% - 0.000025% CPU** (about five intercepted `find_get_pid()` calls per
+minute system-wide), and the counters can be read without unloading:
+`nshf_seen` / `nshf_hits` under `/sys/module/mali_nsfix/parameters/`.
+
 What else a Mali container needs — the Android-side compositor settings and the
 `dma-buf` handling — is in the RootFS repository's
 [desktop and Anland guide](https://github.com/misaka5202/Droidspaces-anland6-rootfs/blob/main/docs/en/desktop-and-anland.md).

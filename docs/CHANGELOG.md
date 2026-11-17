@@ -48,8 +48,28 @@ cgrouplimits 原先各拷贝一份且已分叉，现在共用一份（构建期 
 
 **hk 引擎提升为公共目录 `extra/hk/`**，devtmpfs 与 cgrouplimits 共用。
 
-**mali_nsfix 增加 ftrace 后端**：auto 档优先 ftrace（无断点、无异常、无单步），
-失败落回 kprobe；新增 `nshf_backend` / `nshf_active` 两个只读参数。
+**`mali_nsfix` 增加 `struct module` 布局自校验，并实测了开销。**
+
+`within_module()` 读的是 `struct module` 的 `core_layout` 字段偏移，而模块按
+DDK 头文件编译、设备内核是厂商编的 —— 任何改动该结构体的配置都会让偏移错位。
+错位时假阴性只是不重定向；**假阳性会把无关的 `find_get_pid(nr)` 改写成调用者
+自己的 group leader**，于是 `waitid` / `kill` / `pidfd_open` 拿到错误任务，
+且不产生任何报错。现在装钩子前先自校验（本模块两个地址必须判为落在
+`THIS_MODULE` 内，且 `core_layout.size` 合理），不通过就拒绝加载。
+
+计数导出为 `nshf_seen` / `nshf_hits`，可直接读，不用卸载模块。真机实测
+（PHZ110 / MT6989 / 6.1.157）：60 秒全系统拦截 5 次，累计 1800 次中 44 次是
+Mali 调用者；按每次陷入 1-3 µs 折合 **0.000008% - 0.000025% CPU**。
+
+**`vkms` 改为默认不加载**，需要时在模块目录放 `enable_vkms`。实测卸掉
+`vkms` 后 anland 的 `waylandbridge` 仍用 `/dev/mali0` 正常渲染上屏
+（`renderD128` 的 fd 数为 0），Mali 平台不需要它；而它提供的 render node
+背后没有 GPU，一旦被当作渲染后端只会落回 llvmpipe（CPU）。
+
+**写了一版 ftrace 后端，最终没有保留。** 它在七个 KMI 上都编译通过，但每一个
+都编译成了空：DDK 构建树与设备内核都是 `# CONFIG_FUNCTION_TRACER is not set`，
+没有 `__fentry__` 调用点可 patch。加上面实测的 kprobe 开销（十万分之几 CPU），
+这条路没有价值，作为死代码删掉而不是发布。
 
 **死代码清理**：`hk_binder.c` / `hk_lsm.c` 未被任何 Makefile 链入，移除。
 

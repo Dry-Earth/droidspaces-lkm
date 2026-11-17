@@ -33,7 +33,7 @@
 | `ip6table_nat` | 本仓库实现（含 5.10/5.15/6.1+ 三套签名分支） |
 | `droid_lkm_pids` / `droid_lkm_cpu` | `extra/cgrouplimits/`（含共用布局探测 `common.c`） |
 | `uart_guard` | `extra/uart_guard/`（kprobe，不依赖内核版本差异） |
-| `mali_nsfix` | `extra/mali_nsfix/`（kprobe，不依赖内核版本差异；仅 Mali 平台自动加载） |
+| `mali_nsfix` | `extra/mali_nsfix/`（kprobe，不依赖内核版本差异；仅 Mali 平台自动加载；装钩子前自校验 `struct module` 布局） |
 | `vkms` | 内核树源码 + 补丁；**默认不加载**，需在模块目录放 `enable_vkms` |
 
 ## vkms 的 DRIVER_RENDER 补丁

@@ -41,9 +41,33 @@ because kbuild's `M=` rejects out-of-tree objects).
 **The hk engine moved to the shared `extra/hk/`**, used by both devtmpfs and
 cgrouplimits.
 
-**mali_nsfix gained an ftrace backend**: auto prefers ftrace (no breakpoint, no
-exception, no single-step) and falls back to kprobe; two read-only parameters
-`nshf_backend` / `nshf_active` were added.
+**`mali_nsfix` gained a `struct module` layout self-check, and its cost was
+measured.** `within_module()` reads `core_layout` fields out of `struct module`,
+but the module is built against the DDK headers while the device kernel is the
+vendor's build, so any config that changes that struct shifts the offsets. A
+false negative merely leaves the redirect off; **a false positive rewrites an
+unrelated `find_get_pid(nr)` to the caller's own group leader**, so `waitid`,
+`kill` or `pidfd_open` receive the wrong task, with no error logged. The probe is
+now armed only after a self-check passes (two of the module's own addresses must
+classify as inside `THIS_MODULE`, and `core_layout.size` must be plausible).
+
+Counters are exported as `nshf_seen` / `nshf_hits` and readable without
+unloading. Measured on PHZ110 / MT6989 / 6.1.157: 5 interceptions per 60 s
+system-wide, 44 of 1800 cumulative being Mali callers; at 1-3 us per trap that is
+**0.000008% - 0.000025% CPU**.
+
+**`vkms` no longer loads by default**; create `enable_vkms` in the module
+directory to load it. Measured: with `vkms` removed, anland's `waylandbridge`
+still renders and presents through `/dev/mali0` (the `/dev/dri/renderD128` fd
+count is zero), so Mali platforms do not need it — and the render node it
+provides has no GPU behind it, so using it as a rendering backend only falls back
+to llvmpipe on the CPU.
+
+**An ftrace backend was written and then dropped.** It compiled on all seven KMIs
+but compiled to nothing on every one: both the DDK tree and the device kernel
+have `# CONFIG_FUNCTION_TRACER is not set`, so there are no `__fentry__` call
+sites to patch. Combined with the measured kprobe cost above, the path had no
+value, so it was removed rather than shipped as dead code.
 
 **Dead code removed**: `hk_binder.c` / `hk_lsm.c` were linked by no Makefile.
 
