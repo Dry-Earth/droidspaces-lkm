@@ -84,17 +84,20 @@ cgroup 控制器。多数厂商内核为了通过 GKI ABI 检查把这些都编�
 | `devtmpfs_lkm.ko` | 注册 devtmpfs 文件系统 | `DEVTMPFS` | ✅ |
 | `macvlan.ko` | 容器独立局域网 IP | `MACVLAN` | ✅ |
 | `ip6table_nat.ko` | IPv6 NAT | `IP6_NF_NAT` / `IP6_NF_TARGET_MASQUERADE` | ✅ |
-| `vkms.ko` | 虚拟 DRM 设备，提供 render node | `DRM_VKMS`（含 `DRIVER_RENDER` 补丁） | ✅ |
+| `vkms.ko` | 虚拟 DRM 设备，提供 render node | `DRM_VKMS`（含 `DRIVER_RENDER` 补丁） | ⭕ |
 | `droid_lkm_pids.ko` | 仿真 pids 控制器 | `CGROUP_PIDS` | ✅ |
 | `droid_lkm_cpu.ko` | 时间片 CPU 配额 | `CFS_BANDWIDTH` | ✅ |
 | `uart_guard.ko` | tty 属性读取保护（kprobe） | 无（防厂商内核 `uart_get_info` 锁崩） | ✅ |
 | `mali_nsfix.ko` | 重定向 `mali_kbase` 的 pid 查找，使 GPU context 能在 PID 命名空间内创建 | 无（补驱动的一处假设，见[它的说明](extra/mali_nsfix/README.zh-CN.md)） | 🔵 |
 
-**九个模块都会开机加载**，但其中两个带平台条件（见下）。三个补充模块
-（`droid_lkm_pids` / `droid_lkm_cpu` / `uart_guard`）排在最后，不会挡住前面五个：
-它们失败时设备照常开机、照常跑容器，只是少了对应的限额或 tty 保护。想"装但不
-加载"某个，在模块目录放 `disable_pids` / `disable_cpu` / `disable_uart_guard` /
-`disable_mali` 文件即可。
+自动加载标记：✅ 开机加载 · 🔵 仅 Mali 平台开机加载 · ⭕ 默认不加载，
+需在模块目录创建 `enable_vkms` 才装。
+
+**九个里有八个开机加载**（带平台条件，见下），`vkms` 是例外、需要显式开启。
+三个补充模块（`droid_lkm_pids` / `droid_lkm_cpu` / `uart_guard`）排在最后，
+不会挡住前面五个：它们失败时设备照常开机、照常跑容器，只是少了对应的限额或
+tty 保护。想"装但不加载"某个，在模块目录放 `disable_pids` / `disable_cpu` /
+`disable_uart_guard` / `disable_mali` 文件即可。
 
 ### 按平台条件加载的模块
 

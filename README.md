@@ -90,18 +90,23 @@ they are the reason this project exists at v1.0.0 rather than v0.x.
 | `devtmpfs_lkm.ko` | Registers a devtmpfs filesystem | `DEVTMPFS` | ✅ |
 | `macvlan.ko` | Per-container LAN IP | `MACVLAN` | ✅ |
 | `ip6table_nat.ko` | IPv6 NAT | `IP6_NF_NAT` / `IP6_NF_TARGET_MASQUERADE` | ✅ |
-| `vkms.ko` | Virtual DRM device, provides a render node | `DRM_VKMS` (with `DRIVER_RENDER` patch) | ✅ |
+| `vkms.ko` | Virtual DRM device, provides a render node | `DRM_VKMS` (with `DRIVER_RENDER` patch) | ⭕ |
 | `droid_lkm_pids.ko` | Emulated pids controller | `CGROUP_PIDS` | ✅ |
 | `droid_lkm_cpu.ko` | Time-slice CPU quota | `CFS_BANDWIDTH` | ✅ |
 | `uart_guard.ko` | tty attribute read protection (kprobe) | none (guards a vendor `uart_get_info` lock bug) | ✅ |
 | `mali_nsfix.ko` | Redirects `mali_kbase`'s pid lookup so GPU contexts can be created in a PID namespace | none (fixes a driver assumption; see [its README](extra/mali_nsfix/README.md)) | 🔵 |
 
-**All nine load at boot,** subject to the two platform conditions below. The
-three supplementary modules (`droid_lkm_pids`, `droid_lkm_cpu`, `uart_guard`) go
-last and cannot block the five above them: a failure there leaves a device that
-still boots and runs containers, just without the corresponding limit or tty
-guard. To install but not load one, drop a `disable_pids` / `disable_cpu` /
-`disable_uart_guard` / `disable_mali` file in the module directory.
+Autoload marks: ✅ loads at boot · 🔵 loads at boot on Mali platforms only ·
+⭕ not loaded by default — create `enable_vkms` in the module directory to load
+it.
+
+**Eight of the nine load at boot,** subject to the platform conditions below;
+`vkms` is the exception and needs an explicit opt-in. The three supplementary
+modules (`droid_lkm_pids`, `droid_lkm_cpu`, `uart_guard`) go last and cannot
+block the five above them: a failure there leaves a device that still boots and
+runs containers, just without the corresponding limit or tty guard. To install
+but not load one, drop a `disable_pids` / `disable_cpu` / `disable_uart_guard` /
+`disable_mali` file in the module directory.
 
 ### Platform-dependent modules
 
