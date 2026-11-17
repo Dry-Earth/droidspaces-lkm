@@ -77,9 +77,11 @@ jobs:
 
           # --prerelease 是当前阶段的硬性要求：还没有经过完整真机回归的
           # 正式版本，任何发布都只能是预览版。
+          # 标题只写 tag（与 zram-lkm 一致）：KernelSU 的更新弹窗显示的是
+          # update.json 的 changelog，Release 标题不参与更新判断，保持简洁。
           gh release create "$TAG" \
             --repo "$GITHUB_REPOSITORY" \
-            --title "Droidspaces LKM $TAG (preview)" \
+            --title "$TAG" \
             --prerelease \
             --notes-file notes.md \
             dist/*.ko dist/*.zip dist/source-*.tar.gz
