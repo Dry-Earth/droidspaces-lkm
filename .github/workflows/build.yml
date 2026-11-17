@@ -94,7 +94,12 @@ jobs:
           REQUESTED: ${{ inputs.kmis }}
         run: |
           set -euo pipefail
-          kmis="${REQUESTED:-$DEFAULT_KMIS}"
+          # '' 和 'all' 都表示全量。不能用 ${REQUESTED:-...} 单独处理，
+          # 因为调用方（ci.yml 的 full_matrix）传的哨兵值必须显式识别。
+          case "$REQUESTED" in
+            ''|all|ALL) kmis="$DEFAULT_KMIS" ;;
+            *)          kmis="$REQUESTED" ;;
+          esac
           json=$(python3 scripts/make_matrix.py "$kmis")
           echo "matrix=$json" >> "$GITHUB_OUTPUT"
           echo "ddk_release=${{ inputs.ddk_release }}" >> "$GITHUB_OUTPUT"

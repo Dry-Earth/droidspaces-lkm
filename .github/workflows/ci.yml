@@ -45,7 +45,9 @@ jobs:
       # 7 个 KMI 就是 7 份这个成本，而关键路径只取决于最慢的那一个 ——
       # 全量并不会让结果更早出来，只多烧 runner 分钟。
       # 需要全量时勾 full_matrix，或手动指定 kmis。
-      kmis: ${{ inputs.full_matrix && '' || (inputs.kmis || 'android14-6.1') }}
+      # 不要用 '' 作哨兵：GitHub 表达式里空串是 falsy，
+      # `true && '' || X` 会求值成 X —— 全量开关就这么静默失效过。
+      kmis: ${{ inputs.full_matrix && 'all' || (inputs.kmis || 'android14-6.1') }}
       package: false   # CI 不做模块打包，产物只留 ko-* artifact
 
   # 汇总一次，让 PR 上能一眼看到各 KMI 产出了哪些 .ko
