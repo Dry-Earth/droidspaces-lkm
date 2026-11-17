@@ -358,6 +358,12 @@ static struct kprobe ctl_can_fork_probe;
 static struct hk_inline ctl_can_fork_inline;
 static bool ctl_can_fork_inline_live;
 
+static struct hk_inline ctl_post_fork_inline;
+static bool ctl_post_fork_inline_live;
+
+static struct hk_inline ctl_exit_inline;
+static bool ctl_exit_inline_live;
+
 /*
  * inline 路由的 wrapper，只在**签名已确认**的版本编译。
  *
@@ -368,8 +374,12 @@ static bool ctl_can_fork_inline_live;
 #if LINUX_VERSION_CODE == KERNEL_VERSION(6, 1, 0)
 #define CTL_CAN_FORK_INLINE 1
 typedef int (*ctl_can_fork_fn)(struct task_struct *, struct kernel_clone_args *);
+typedef void (*ctl_post_fork_fn)(struct task_struct *, struct kernel_clone_args *);
+typedef void (*ctl_exit_fn)(struct task_struct *);
 
 static ctl_can_fork_fn ctl_can_fork_orig;
+static ctl_post_fork_fn ctl_post_fork_orig;
+static ctl_exit_fn ctl_exit_orig;
 
 static __nocfi noinline int ctl_can_fork_wrap(struct task_struct *child,
 					      struct kernel_clone_args *kargs)
@@ -390,6 +400,35 @@ static __nocfi noinline int ctl_can_fork_wrap(struct task_struct *child,
 		}
 	}
 	return ctl_can_fork_orig(child, kargs);
+}
+
+/* post_fork：记账 +1。pre_handler 在入口记账，wrapper 也先记账再调原函数 */
+static __nocfi noinline void ctl_post_fork_wrap(struct task_struct *child,
+						struct kernel_clone_args *kargs)
+{
+	unsigned long v;
+	struct cgroup *cgrp;
+
+	if (ctl_layout_ok && kargs &&
+	    ctl_read_ptr((unsigned long)kargs + ctl_kargs_cset_off, &v)) {
+		cgrp = ctl_css_dfl_cgrp((struct css_set *)v);
+		if (cgrp)
+			pids_charge(cgrp, 1);
+	}
+	ctl_post_fork_orig(child, kargs);
+}
+
+/* exit：记账 -1，同样在调原函数之前 */
+static __nocfi noinline void ctl_exit_wrap(struct task_struct *tsk)
+{
+	struct cgroup *cgrp;
+
+	if (ctl_layout_ok && tsk) {
+		cgrp = ctl_task_dfl_cgrp(tsk);
+		if (cgrp)
+			pids_charge(cgrp, -1);
+	}
+	ctl_exit_orig(tsk);
 }
 #endif /* 6.1 */
 
@@ -787,7 +826,7 @@ static void ctl_install_can_fork(void)
 		ret = hk_inline_hook(&ctl_can_fork_inline, "cgroup_can_fork",
 				     "ctl_can_fork_wrap");
 		if (!ret) {
-			ctl_can_fork_orig = ctl_can_fork_inline.orig;
+			ctl_can_fork_orig = (ctl_can_fork_fn)(unsigned long)ctl_can_fork_inline.orig;
 			ctl_can_fork_inline_live = true;
 			pids_info("cgroup_can_fork on the inline route\n");
 			return;
@@ -801,6 +840,60 @@ static void ctl_install_can_fork(void)
 #endif
 	ctl_probe_one(&ctl_can_fork_probe, "cgroup_can_fork",
 		      ctl_can_fork_pre, &ctl_live_can_fork);
+}
+
+static void ctl_install_post_fork(void)
+{
+	int ret;
+
+#ifdef CTL_CAN_FORK_INLINE
+	if (ctl_route != 2) {
+		ret = hk_inline_hook(&ctl_post_fork_inline, "cgroup_post_fork",
+				     "ctl_post_fork_wrap");
+		if (!ret) {
+			ctl_post_fork_orig = (ctl_post_fork_fn)(unsigned long)ctl_post_fork_inline.orig;
+			ctl_post_fork_inline_live = true;
+			pids_info("cgroup_post_fork on the inline route
+");
+			return;
+		}
+		pids_warn("cgroup_post_fork inline failed %d%s
+", ret,
+			  ctl_route == 1 ? " (route=inline, giving up)"
+					 : ", falling back to kprobe");
+		if (ctl_route == 1)
+			return;
+	}
+#endif
+	ctl_probe_one(&ctl_fork_probe, "cgroup_post_fork",
+		      ctl_fork_pre, &ctl_live_fork);
+}
+
+static void ctl_install_exit(void)
+{
+	int ret;
+
+#ifdef CTL_CAN_FORK_INLINE
+	if (ctl_route != 2) {
+		ret = hk_inline_hook(&ctl_exit_inline, "cgroup_exit",
+				     "ctl_exit_wrap");
+		if (!ret) {
+			ctl_exit_orig = (ctl_exit_fn)(unsigned long)ctl_exit_inline.orig;
+			ctl_exit_inline_live = true;
+			pids_info("cgroup_exit on the inline route
+");
+			return;
+		}
+		pids_warn("cgroup_exit inline failed %d%s
+", ret,
+			  ctl_route == 1 ? " (route=inline, giving up)"
+					 : ", falling back to kprobe");
+		if (ctl_route == 1)
+			return;
+	}
+#endif
+	ctl_probe_one(&ctl_exit_probe, "cgroup_exit", ctl_exit_pre,
+		      &ctl_live_exit);
 }
 
 /* ------------------------------------------------ hk 引擎（inline 路由）---
@@ -889,10 +982,8 @@ static int __init droid_lkm_pids_init(void)
 	/* B2：fork 拦截，只在布局校验通过时装 */
 	if (ctl_layout_ok) {
 		ctl_install_can_fork();
-		ctl_probe_one(&ctl_fork_probe, "cgroup_post_fork",
-			      ctl_fork_pre, &ctl_live_fork);
-		ctl_probe_one(&ctl_exit_probe, "cgroup_exit", ctl_exit_pre,
-			      &ctl_live_exit);
+		ctl_install_post_fork();
+		ctl_install_exit();
 		ctl_probe_one(&ctl_rmdir_probe, "cgroup_rmdir", ctl_rmdir_pre,
 			      &ctl_live_rmdir);
 	} else {
@@ -968,7 +1059,11 @@ static void __exit droid_lkm_pids_exit(void)
 	if (ctl_live_files)
 		p_cgroup_rm_cftypes(pids_max_files);
 	ctl_unprobe(&ctl_rmdir_probe, ctl_live_rmdir);
+	if (ctl_exit_inline_live)
+		hk_inline_unhook(&ctl_exit_inline);
 	ctl_unprobe(&ctl_exit_probe, ctl_live_exit);
+	if (ctl_post_fork_inline_live)
+		hk_inline_unhook(&ctl_post_fork_inline);
 	ctl_unprobe(&ctl_fork_probe, ctl_live_fork);
 	if (ctl_can_fork_inline_live)
 		hk_inline_unhook(&ctl_can_fork_inline);
