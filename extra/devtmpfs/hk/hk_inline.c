@@ -1180,7 +1180,20 @@ void hk_inline_unhook(struct hk_inline *h)
 			h->name ? h->name : "?");
 		return;
 	}
-	hk_wait_tasks_rcu();
+	if (!hk_wait_tasks_rcu()) {
+		/*
+		 * the entry is restored, but a core that fetched the detour before
+		 * disable can still be running inside the trampoline, and we could
+		 * not wait for it. freeing now is a use-after-free, so keep the
+		 * trampoline: the pending entry holds this module's memory and
+		 * blocks rmmod until a later retry gets a real grace period.
+		 */
+		h->pending = true;
+		hk_inline_pending_add(h);
+		pr_warn("[lkmhook] inline unhook %s parked, no tasks-RCU to wait on\n",
+			h->name ? h->name : "?");
+		return;
+	}
 	hk_inline_free(h);
 	h->pending = false;
 	hk_inline_pending_del(h);
@@ -1216,7 +1229,13 @@ void hk_inline_exit(void)
 			list_add(&ent->list, &work);
 			continue;
 		}
-		hk_wait_tasks_rcu();
+		if (!hk_wait_tasks_rcu()) {
+			/* entry restored, but no grace period to prove no core
+			 * is still in the trampoline -- keep it and retry, never
+			 * free on the skip */
+			list_add(&ent->list, &work);
+			continue;
+		}
 		hk_inline_free(ent->hook);
 		ent->hook->pending = false;
 		kfree(ent);

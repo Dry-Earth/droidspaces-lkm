@@ -238,8 +238,17 @@ jobs:
             git clone --depth=1 https://github.com/cyanmint/lkm4ctr.git /tmp/src/lkm4ctr
           fi
           if [ -d patches ]; then
-            for p in patches/*.patch; do
-              [ -f "$p" ] && git -C /tmp/src/lkm4ctr apply "PWD/$p" 2>/dev/null || true
+            # 必须用 $PWD 拼绝对路径：git -C 把 git 的工作目录切到 /tmp/src/lkm4ctr，
+            # 而 $p 是仓库内相对路径（patches/00xx-*.patch）。原来写成字面量 "PWD/$p"
+            # 少了 $，路径永远解析不到；末尾又 || true 把失败全吞了 —— 结果是 GPL
+            # 源码快照里的源码没打这些补丁，和实际出货的 .ko 不一致，而且没有任何
+            # 报错。现在解析绝对路径、失败就明确中断（补丁本应按序干净应用）。
+            for p in "$PWD"/patches/*.patch; do
+              [ -f "$p" ] || continue
+              if ! git -C /tmp/src/lkm4ctr apply "$p"; then
+                echo "::error::补丁应用失败: $p —— GPL 源码快照会与出货 .ko 不一致"
+                exit 1
+              fi
             done
           fi
           rm -rf /tmp/src/lkm4ctr/.git

@@ -282,6 +282,13 @@ esac
 #   msg M_CAP_DEVTMPFS 12
 msg() {
     _fmt="$1"; shift
+    # 模板里出现 %n 会让 printf 往栈上写整数（格式串漏洞里唯一真正危险的
+    # 指示符）。当前模板都是仓库内的静态文案，%n 进不来；这里加一道拒绝是
+    # 纵深防御，防止将来有人往 i18n 里塞带 %n 的串、或把外部内容误当模板传
+    # 进来时变成内存写。其余 %s/%d 都只读参数，安全。
+    case "$_fmt" in
+        *%n*) printf '%s\n' "$_fmt"; return ;;
+    esac
     # shellcheck disable=SC2059
     printf "$_fmt" "$@"
 }

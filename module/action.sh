@@ -136,16 +136,26 @@ fi
 
 # 容器内挂载 /proc。挂到临时目录而不是覆盖 /proc：
 # 覆盖一个已存在的挂载点在 userns 下会 EPERM，且真挂上去会污染当前会话。
-_procmnt=/data/local/tmp/.dsp_proctest
-rm -rf "$_procmnt" 2>/dev/null
-mkdir -p "$_procmnt" 2>/dev/null
-if unshare -pf mount -t proc proc "$_procmnt" 2>/dev/null; then
-    echo "  [OK]   ${M_CAP_PROC}"
-    umount "$_procmnt" 2>/dev/null
-else
+#
+# 路径放 /mnt 而不是 /data/local/tmp：本脚本以 root 跑，而 /data/local/tmp 全局
+# 可写，普通用户可以先把它做成指向敏感目录的符号链接，root 的 mount 会跟着链
+# 挂到攻击者选定的目标上。/mnt 只有 root 能写（下面 devtmpfs 探针也用它），
+# 攻击面消失。再加一道 -L 检查兜底，万一被换成链接就直接放弃。
+_procmnt=/mnt/.dsp_proctest
+if [ -L "$_procmnt" ]; then
+    # 是指向别处的符号链接（-L 不跟随）：绝不跟着挂，判 FAIL。
+    # 注意不能只用 [ ! -d ]：-d 会跟随符号链接，symlink 指向目录时会当成正常目录放过。
     echo "  [FAIL] ${M_CAP_PROC}"
+else
+    mkdir -p "$_procmnt" 2>/dev/null
+    if unshare -pf mount -t proc proc "$_procmnt" 2>/dev/null; then
+        echo "  [OK]   ${M_CAP_PROC}"
+        umount "$_procmnt" 2>/dev/null
+        rmdir "$_procmnt" 2>/dev/null
+    else
+        echo "  [FAIL] ${M_CAP_PROC}"
+    fi
 fi
-rm -rf "$_procmnt" 2>/dev/null
 
 # /proc/filesystems 的格式是 "nodev<TAB>devtmpfs"：第一列是 nodev，
 # 文件系统名在第二列。用 ^devtmpfs 永远匹配不到 —— 这个错误让「操作」按钮

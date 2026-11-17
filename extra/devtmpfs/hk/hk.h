@@ -63,7 +63,9 @@ void hk_notice(enum hk_notice what, const char *detail);
  * freed. it is the flavour the kernel uses for its own text pokes, the symbol is
  * resolved here, and a kernel without it says so once instead of waiting for
  * nothing. the call inside is indirect and cfi is off for it, a direct call from a
- * consumer needs nothing
+ * consumer needs nothing. the return value tells a free site whether a real
+ * grace period actually elapsed: false means the wait was skipped, so the
+ * caller must keep the trampoline rather than free it.
  */
-void hk_wait_tasks_rcu(void);
+bool hk_wait_tasks_rcu(void);
 #endif

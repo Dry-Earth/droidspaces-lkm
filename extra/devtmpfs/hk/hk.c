@@ -159,22 +159,31 @@ void hk_notice(enum hk_notice what, const char *detail)
 }
 
 /*
+ * Returns true when a real tasks-RCU grace period completed, false when it
+ * could not (the symbol is missing). The free sites must only release a
+ * trampoline on true: on false some core may still be inside it, so freeing is
+ * a use-after-free and the caller has to keep the trampoline instead. The
+ * trampoline lives in this module's memory, so keeping it also keeps rmmod
+ * blocked through hk_exit_block's pending count -- that is the safe outcome,
+ * a bounded leak and a refused unload, never a dangling executable page.
+ *
  * the call inside is indirect and cfi is off for it, and noinline is the other
  * half of that: an inline would move the call into whatever caller lto picked, and
  * the check __nocfi turned off would come back with it
  */
-__nocfi noinline void hk_wait_tasks_rcu(void)
+__nocfi noinline bool hk_wait_tasks_rcu(void)
 {
 	hk_synchronize_rcu_tasks_fn fn;
 	unsigned long sym = hk_resolve("synchronize_rcu_tasks");
 
 	if (!sym || !hk_ker_addr_ok(sym)) {
 		pr_warn_once("[lkmhook] synchronize_rcu_tasks not found, "
-			     "a freed trampoline may still be running\n");
-		return;
+			     "keeping freed trampoline alive\n");
+		return false;
 	}
 	fn = (hk_synchronize_rcu_tasks_fn)sym;
 	fn();
+	return true;
 }
 
 void hk_exit(void)

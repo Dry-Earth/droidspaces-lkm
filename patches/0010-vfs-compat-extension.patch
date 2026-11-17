@@ -29,7 +29,7 @@ index 457baec..83b98ea 100644
  int vendor_kernel_init(void);
  int vendor_kernel_module_exit(void);
  void vns_user_ns_exit(void);
-@@ -43,6 +44,23 @@ static int __init lkm4ctr_init(void)
+@@ -43,6 +45,23 @@ static int __init lkm4ctr_init(void)
  	 */
  	vns_trim_symbols_init();
  
@@ -68,7 +68,7 @@ index 0f951ba..e0c0aa0 100644
  
  	if (!vns_setup_ipc_sysctls(&vns_default_ipc_ns)) {
  		err = -ENOMEM;
-@@ -111,8 +112,9 @@ int vns_ipc_default_init(void)
+@@ -111,8 +113,9 @@ int vns_ipc_default_init(void)
  	}
  
  	err = vns_msg_init_ns(&vns_default_ipc_ns);
@@ -83,7 +83,7 @@ diff --git a/glue/vendor_kernel_overlay.c b/glue/vendor_kernel_overlay.c
 index f9c3546..46f9ab9 100644
 --- a/glue/vendor_kernel_overlay.c
 +++ b/glue/vendor_kernel_overlay.c
-@@ -58,7 +58,42 @@
+@@ -58,7 +58,49 @@
   * not a fatal condition for the rest of vendor_kernel, so vns_overlay_init()
   * still returns 0 in that case.
   */
@@ -124,10 +124,17 @@ index f9c3546..46f9ab9 100644
 +	"Enable only when the running kernel has no overlayfs of its own.");
 +
 +static bool vns_ovl_ready;
++
++/*
++ * Defined in vendor_kernel_ovl_vfs_compat.c: true if any compat VFS symbol
++ * failed to resolve. The macro-form pointers (*vns_ovl_vfsc_notify_change)(...) 
++ * etc. are a NULL call when unresolved, so the takeover must be refused.
++ */
++bool vns_ovl_vfs_compat_resolve_failed(void);
  
  static struct file_system_type *(*real_get_fs_type)(const char *name);
  
-@@ -88,16 +123,27 @@ struct shadow_hook *vendor_kernel_overlay_hooks[] = {
+@@ -88,16 +165,41 @@ struct shadow_hook *vendor_kernel_overlay_hooks[] = {
  
  int vns_overlay_init(void)
  {
@@ -138,6 +145,20 @@ index f9c3546..46f9ab9 100644
 +		LKM4CTR_INFO("vendor_kernel",
 +			     "vendored overlayfs override disabled (overlay_override=N); "
 +			     "get_fs_type(\"overlay\") resolves to the running kernel's own overlayfs");
++		return 0;
++	}
++
++	/*
++	 * [C1] 若上一轮 compat 符号解析有任何失败，接管 overlay 是危险的：
++	 * 宏形式 (*vns_ovl_vfsc_notify_change)(...) 会是对 NULL 的调用（内核
++	 * 直接 oops），同名转发函数会静默空操作把 VFS 权限/属性判定全废掉。
++	 * 这时宁可继续用运行内核自带的 overlayfs，也不装一个坏掉的。解析本身
++	 * 仍然非致命（lite 版靠这个不中断加载），只有"接管"这个动作要拒绝。
++	 */
++	if (vns_ovl_vfs_compat_resolve_failed()) {
++		LKM4CTR_INFO("vendor_kernel",
++			     "overlayfs takeover refused: VFS compat symbols did not all resolve; "
++			     "get_fs_type(\"overlay\") stays on the running kernel's overlayfs");
 +		return 0;
 +	}
 +
@@ -156,7 +177,7 @@ index f9c3546..46f9ab9 100644
  		return err;
  	}
  	LKM4CTR_INFO("vendor_kernel", "vendored overlayfs now handles every get_fs_type(\"overlay\") lookup");
-@@ -106,14 +152,21 @@ int vns_overlay_init(void)
+@@ -106,14 +219,21 @@ int vns_overlay_init(void)
  
  void vns_overlay_exit(void)
  {
@@ -183,7 +204,7 @@ diff --git a/glue/vendor_kernel_ovl_vfs_compat.c b/glue/vendor_kernel_ovl_vfs_co
 index e9e9549..405fd1c 100644
 --- a/glue/vendor_kernel_ovl_vfs_compat.c
 +++ b/glue/vendor_kernel_ovl_vfs_compat.c
-@@ -59,22 +59,443 @@ VNS_OVL_VFS_COMPAT_LIST(VNS_OVL_VFSC_DEFINE)
+@@ -59,22 +59,457 @@ VNS_OVL_VFS_COMPAT_LIST(VNS_OVL_VFSC_DEFINE)
  VNS_OVL_VFS_COMPAT_LIST_BF(VNS_OVL_VFSC_DEFINE)
  #undef VNS_OVL_VFSC_DEFINE
  
@@ -633,6 +654,20 @@ index e9e9549..405fd1c 100644
 +	}
  	return 0;
  }
++
++/*
++ * Exposed so vendor_kernel_overlay.c can refuse the overlayfs takeover when
++ * any compat symbol failed to resolve. With a NULL pointer left in place, the
++ * #define form (*vns_ovl_vfsc_notify_change)(...) would be a NULL call, and
++ * the same-name forwarders would silently no-op the VFS permission/attribute
++ * operations the vendored overlayfs depends on -- so takeover is unsafe here.
++ * Returning whether anything failed lets vns_overlay_init() keep the running
++ * kernel's own overlayfs instead of installing a broken one.
++ */
++bool vns_ovl_vfs_compat_resolve_failed(void)
++{
++	return vns_ovl_resolve_failed != 0;
++}
  
 diff --git a/glue/vendor_kernel_ovl_vfs_compat.h b/glue/vendor_kernel_ovl_vfs_compat.h
 index f326a9a..6420846 100644
@@ -728,7 +763,7 @@ index f326a9a..6420846 100644
  /* backing_file_open() exists since 6.6 (in <linux/fs.h>); the full
   * backing_file_ctx-based API (backing_file_read_iter()/write_iter()/
   * splice_read()/splice_write()/mmap(), later moved to its own
-@@ -465,6 +542,9 @@ static inline void generic_fill_statx_attr(struct inode *inode, struct kstat *st
+@@ -465,6 +619,9 @@ static inline void generic_fill_statx_attr(struct inode *inode, struct kstat *st
  	X(override_creds)
  #endif
  #define VNS_OVL_VFS_COMPAT_LIST(X) \
@@ -738,7 +773,7 @@ index f326a9a..6420846 100644
  	X(prepare_creds) \
  	X(errseq_sample) \
  	X(mntput) \
-@@ -534,11 +614,50 @@ static inline void generic_fill_statx_attr(struct inode *inode, struct kstat *st
+@@ -534,11 +694,50 @@ static inline void generic_fill_statx_attr(struct inode *inode, struct kstat *st
  	X(security_file_ioctl) \
  	X(iterate_dir) \
  	X(vfs_setpos) \
@@ -790,7 +825,7 @@ index f326a9a..6420846 100644
  
  #if !VNS_OVL_NEED_BACKING_FILE_FALLBACK
  #define VNS_OVL_VFS_COMPAT_LIST_BF(X) \
-@@ -643,9 +762,48 @@ static inline void generic_fill_statx_attr(struct inode *inode, struct kstat *st
+@@ -643,9 +881,48 @@ static inline void generic_fill_statx_attr(struct inode *inode, struct kstat *st
  	X(security_file_ioctl) \
  	X(iterate_dir) \
  	X(vfs_setpos) \
@@ -840,7 +875,7 @@ index f326a9a..6420846 100644
  
  #define VNS_OVL_VFS_COMPAT_LIST_BF(X) \
  	X(vfs_iter_read) \
-@@ -656,9 +814,16 @@ static inline void generic_fill_statx_attr(struct inode *inode, struct kstat *st
+@@ -656,9 +972,16 @@ static inline void generic_fill_statx_attr(struct inode *inode, struct kstat *st
  #endif /* MID */
  
  #if VNS_OVL_TIER_OLD
@@ -857,7 +892,7 @@ index f326a9a..6420846 100644
  	X(errseq_sample) \
  	X(mntput) \
  	X(__mnt_is_readonly) \
-@@ -743,8 +908,38 @@ static inline void generic_fill_statx_attr(struct inode *inode, struct kstat *st
+@@ -743,8 +1073,38 @@ static inline void generic_fill_statx_attr(struct inode *inode, struct kstat *st
  	X(generic_fillattr) \
  	X(vfs_path_lookup) \
  	X(rw_verify_area) \
@@ -898,7 +933,7 @@ index f326a9a..6420846 100644
  #define VNS_OVL_VFS_COMPAT_LIST_BF(X)
  #endif /* OLD */
  
-@@ -848,6 +1043,41 @@ VNS_OVL_VFS_COMPAT_LIST_BF(VNS_OVL_VFSC_DECLARE)
+@@ -848,6 +1238,41 @@ VNS_OVL_VFS_COMPAT_LIST_BF(VNS_OVL_VFSC_DECLARE)
   */
  #define down_write_killable (*vns_ovl_vfsc_down_write_killable)
  #define d_invalidate (*vns_ovl_vfsc_d_invalidate)
@@ -940,7 +975,7 @@ index f326a9a..6420846 100644
  #if LINUX_VERSION_CODE < KERNEL_VERSION(6, 18, 0)
  #define revert_creds (*vns_ovl_vfsc_revert_creds)
  #define override_creds (*vns_ovl_vfsc_override_creds)
-@@ -891,6 +1121,35 @@ static inline void vns_ovl_revert_creds_compat(const struct cred *revert_cred)
+@@ -891,6 +1351,35 @@ static inline void vns_ovl_revert_creds_compat(const struct cred *revert_cred)
  #define vma_set_file (*vns_ovl_vfsc_vma_set_file)
  #endif
  
@@ -976,7 +1011,7 @@ index f326a9a..6420846 100644
  #if !VNS_OVL_NEED_BACKING_FILE_FALLBACK
  #define backing_file_read_iter (*vns_ovl_vfsc_backing_file_read_iter)
  #define backing_file_write_iter (*vns_ovl_vfsc_backing_file_write_iter)
-@@ -942,6 +1201,19 @@ static inline void vns_ovl_revert_creds_compat(const struct cred *revert_cred)
+@@ -942,6 +1460,19 @@ static inline void vns_ovl_revert_creds_compat(const struct cred *revert_cred)
  #define vfs_listxattr (*vns_ovl_vfsc_vfs_listxattr)
  #define get_cached_acl_rcu (*vns_ovl_vfsc_get_cached_acl_rcu)
  /* get_acl: not redirected (see header comment). */
@@ -996,7 +1031,7 @@ index f326a9a..6420846 100644
  #if VNS_OVL_TIER_HAVE_POSIX_ACL_CLONE
  #define posix_acl_clone (*vns_ovl_vfsc_posix_acl_clone)
  #endif
-@@ -992,6 +1264,35 @@ static inline void vns_ovl_revert_creds_compat(const struct cred *revert_cred)
+@@ -992,6 +1536,35 @@ static inline void vns_ovl_revert_creds_compat(const struct cred *revert_cred)
  #define security_file_ioctl (*vns_ovl_vfsc_security_file_ioctl)
  #define iterate_dir (*vns_ovl_vfsc_iterate_dir)
  #define vfs_setpos (*vns_ovl_vfsc_vfs_setpos)
@@ -1032,7 +1067,7 @@ index f326a9a..6420846 100644
  #define d_tmpfile (*vns_ovl_vfsc_d_tmpfile)
  #define errseq_check (*vns_ovl_vfsc_errseq_check)
  #define lookup_positive_unlocked (*vns_ovl_vfsc_lookup_positive_unlocked)
-@@ -1004,6 +1305,9 @@ static inline void vns_ovl_revert_creds_compat(const struct cred *revert_cred)
+@@ -1004,6 +1606,9 @@ static inline void vns_ovl_revert_creds_compat(const struct cred *revert_cred)
  #endif /* MID */
  
  #if VNS_OVL_TIER_OLD
@@ -1042,7 +1077,7 @@ index f326a9a..6420846 100644
  #define mount_nodev (*vns_ovl_vfsc_mount_nodev)
  #define prepare_creds (*vns_ovl_vfsc_prepare_creds)
  #define errseq_sample (*vns_ovl_vfsc_errseq_sample)
-@@ -1045,15 +1349,19 @@ static inline void vns_ovl_revert_creds_compat(const struct cred *revert_cred)
+@@ -1045,15 +1653,19 @@ static inline void vns_ovl_revert_creds_compat(const struct cred *revert_cred)
  #define inode_owner_or_capable(idmap, inode) \
  	(*vns_ovl_vfsc_inode_owner_or_capable)((inode))
  /*
@@ -1069,7 +1104,7 @@ index f326a9a..6420846 100644
  #define exportfs_decode_fh (*vns_ovl_vfsc_exportfs_decode_fh)
  #define is_subdir (*vns_ovl_vfsc_is_subdir)
  #define vfs_getxattr(idmap, dentry, name, value, size) \
-@@ -1109,7 +1417,6 @@ static inline void vns_ovl_revert_creds_compat(const struct cred *revert_cred)
+@@ -1109,7 +1725,6 @@ static inline void vns_ovl_revert_creds_compat(const struct cred *revert_cred)
  #define vfs_iocb_iter_write (*vns_ovl_vfsc_vfs_iocb_iter_write)
  #define vfs_iter_write (*vns_ovl_vfsc_vfs_iter_write)
  #define iter_file_splice_write (*vns_ovl_vfsc_iter_file_splice_write)
@@ -1077,7 +1112,7 @@ index f326a9a..6420846 100644
  #define vfs_fallocate (*vns_ovl_vfsc_vfs_fallocate)
  #define dentry_open (*vns_ovl_vfsc_dentry_open)
  #define open_with_fake_path (*vns_ovl_vfsc_open_with_fake_path)
-@@ -1146,11 +1453,11 @@ static inline void vns_ovl_revert_creds_compat(const struct cred *revert_cred)
+@@ -1146,11 +1760,11 @@ static inline void vns_ovl_revert_creds_compat(const struct cred *revert_cred)
   * this forwards straight to the real symbol.
   */
  #define setattr_prepare(idmap, dentry, attr) \
@@ -1091,7 +1126,7 @@ index f326a9a..6420846 100644
  #define security_file_ioctl (*vns_ovl_vfsc_security_file_ioctl)
  #define vfs_fadvise (*vns_ovl_vfsc_vfs_fadvise)
  #define vfs_ioctl (*vns_ovl_vfsc_vfs_ioctl)
-@@ -1160,6 +1467,31 @@ static inline void vns_ovl_revert_creds_compat(const struct cred *revert_cred)
+@@ -1160,6 +1774,31 @@ static inline void vns_ovl_revert_creds_compat(const struct cred *revert_cred)
  #define vfs_path_lookup (*vns_ovl_vfsc_vfs_path_lookup)
  #define rw_verify_area (*vns_ovl_vfsc_rw_verify_area)
  #define d_tmpfile (*vns_ovl_vfsc_d_tmpfile)
@@ -1276,7 +1311,7 @@ index e8e465e..6693048 100644
  	../glue/vendor_kernel_trim_symbols.o \
  	../glue/lkm4ctr_main.o \
  	../glue/lkm4ctr_log.o \
-@@ -44,17 +59,6 @@ lkm4ctr-objs := \
+@@ -44,17 +74,6 @@ lkm4ctr-objs := \
  	../glue/vendor_kernel_ipc_compat.o \
  	../glue/vendor_kernel_ipc_callbacks.o \
  	fs/nsfs.o \
@@ -1294,7 +1329,7 @@ index e8e465e..6693048 100644
  	kernel/cgroup/namespace.o \
  	kernel/time/namespace.o \
  	../glue/vendor_kernel_module.o \
-@@ -68,6 +72,31 @@ lkm4ctr-objs := \
+@@ -68,6 +76,31 @@ lkm4ctr-objs := \
  	../glue/vendor_kernel_diag.o \
  	../glue/vendor_kernel_compat.o
  
@@ -1453,7 +1488,7 @@ index 0473ef5..e63e004 100644
  #undef SYSCALL_METADATA
  #define SYSCALL_METADATA(sname, nb, ...)
  
-@@ -923,7 +928,6 @@ static struct ext_wait_queue *wq_get_first_waiter(
+@@ -923,7 +933,6 @@ static struct ext_wait_queue *wq_get_first_waiter(
  	return list_entry(ptr, struct ext_wait_queue, list);
  }
  
@@ -1461,7 +1496,7 @@ index 0473ef5..e63e004 100644
  static inline void set_cookie(struct sk_buff *skb, char code)
  {
  	((char *)skb->data)[NOTIFY_COOKIE_LEN-1] = code;
-@@ -1940,8 +1944,9 @@ static int init_mqueue_fs(void)
+@@ -1940,8 +1948,9 @@ static int init_mqueue_fs(void)
  	spin_lock_init(&mq_lock);
  
  	error = mq_init_ns(&init_ipc_ns);
