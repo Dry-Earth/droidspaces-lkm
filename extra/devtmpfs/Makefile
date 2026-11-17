@@ -21,13 +21,13 @@ HFILES := hk/hk.o hk/hk_ptr.o hk/hk_patch.o hk/hk_inline.o \
 	  hk/hk_redir.o hk/hk_sighook.o hk/hk_flush.o
 
 devtmpfs_lkm-y := main.o devtmpfs.o $(HFILES) \
-	kr/core.o kr/access.o kr/discover.o kr/symbol.o kr/slide.o \
-	kr/fastboot.o kr/hint.o kr/variant.o kr/anchor.o
+	kallrecon/core.o kallrecon/access.o kallrecon/discover.o kallrecon/symbol.o kallrecon/slide.o \
+	kallrecon/fastboot.o kallrecon/hint.o kallrecon/variant.o kallrecon/anchor.o
 
 # -include compat_61.h: 插在 devtmpfs.c 所有 include 之前
 CFLAGS_devtmpfs.o := -include $(src)/compat_61.h
 
-ccflags-y += -I$(src) -I$(src)/hk -I$(src)/kr
+ccflags-y += -I$(src) -I$(src)/hk -I$(src)/kallrecon
 ccflags-y += -Wno-declaration-after-statement -Wno-unused-variable \
 	-Wno-unused-function -Wno-strict-prototypes -Wno-missing-prototypes \
 	-Wno-incompatible-function-pointer-types -Wno-gcc-compat

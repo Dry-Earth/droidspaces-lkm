@@ -12,8 +12,8 @@
 # 所以不能合并成一个 .ko —— 它们要能独立 insmod / rmmod。
 
 # 两个模块共用的 KallRecon 对象
-KR_OBJS := kr/core.o kr/access.o kr/discover.o kr/symbol.o kr/slide.o \
-	kr/fastboot.o kr/hint.o kr/variant.o kr/anchor.o
+KR_OBJS := kallrecon/core.o kallrecon/access.o kallrecon/discover.o kallrecon/symbol.o kallrecon/slide.o \
+	kallrecon/fastboot.o kallrecon/hint.o kallrecon/variant.o kallrecon/anchor.o
 
 # 默认两个都编；CI 传 MODULE=<name> 只编一个
 MODULE ?= all

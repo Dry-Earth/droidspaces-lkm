@@ -18,7 +18,7 @@
 /*
  * KallRecon 的解析入口。
  *
- * 注意类型：kallrecon_klp 是一个**函数指针变量**（kr/core.h 里
+ * 注意类型：kallrecon_klp 是一个**函数指针变量**（kallrecon/core.h 里
  * `extern unsigned long (*kallrecon_klp)(const char *name);`），
  * 不是函数。
  *

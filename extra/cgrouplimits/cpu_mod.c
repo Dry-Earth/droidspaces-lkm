@@ -50,7 +50,7 @@
 #include <linux/file.h>
 #include <linux/vmalloc.h>
 
-#include "kr/core.h"
+#include "kallrecon/core.h"
 #include "common.h"
 
 #define TAG "droid_lkm_cpu"

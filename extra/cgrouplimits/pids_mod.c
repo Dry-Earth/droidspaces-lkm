@@ -41,7 +41,7 @@
 #include <linux/version.h>
 #include <linux/smp.h>
 
-#include "kr/core.h"
+#include "kallrecon/core.h"
 #include "common.h"
 
 #define TAG "droid_lkm_pids"

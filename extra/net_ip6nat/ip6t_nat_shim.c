@@ -19,7 +19,7 @@
 #include <linux/netfilter_ipv6/ip6_tables.h>
 #include <net/net_namespace.h>
 #include <net/netfilter/nf_nat.h>
-#include "kr/core.h"
+#include "kallrecon/core.h"
 
 static unsigned long a_alloc_initial_table;
 static unsigned long a_register_table;
