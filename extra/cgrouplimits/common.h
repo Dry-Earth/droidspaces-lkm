@@ -38,6 +38,25 @@
 #include <linux/kprobes.h>
 #include <linux/types.h>
 
+/*
+ * 探针路由（module_param route）。
+ *
+ *   0 = auto     inline 优先，inline 装不上退回 kprobe（默认）
+ *   1 = inline   只用 inline；装不上就放弃该探针
+ *   2 = kprobe   只用 kprobe（改动前的行为）
+ *
+ * 存在意义：inline 命中是一条 b 指令（几十 ns），kprobe 命中要陷一次异常
+ * （约 1-3 us）。cgroup_can_fork 每次 fork 都命中，是唯一的热路径。
+ * 但 inline 需要精确的原函数签名，而 kprobe 的 pre_handler 只碰 regs、
+ * 天然跨版本。所以只在签名已确认的版本上开放 inline，其余一律 kprobe。
+ */
+extern unsigned int ctl_route;
+
+/* 引擎初始化：hk_init + 用 KallRecon 做 resolve 回调。失败返回负值。
+ * 由 pids 模块实现并调用（cpu 不链引擎）。 */
+int ctl_hk_init(void);
+void ctl_hk_exit(void);
+
 /* 布局锚点符号，运行时解析 */
 struct ctl_anchors {
 	unsigned long subsys;		/* cgroup_subsys[] */

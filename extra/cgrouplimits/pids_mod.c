@@ -42,6 +42,8 @@
 #include <linux/smp.h>
 
 #include "kallrecon/core.h"
+#include "hk/hk.h"
+#include "hk/hk_inline.h"
 #include "common.h"
 
 #define TAG "droid_lkm_pids"
@@ -353,6 +355,43 @@ static int ctl_subtree_pre(struct kprobe *p, struct pt_regs *regs)
 /* ---------------------------------------------------- B2 fork 拦截 --- */
 
 static struct kprobe ctl_can_fork_probe;
+static struct hk_inline ctl_can_fork_inline;
+static bool ctl_can_fork_inline_live;
+
+/*
+ * inline 路由的 wrapper，只在**签名已确认**的版本编译。
+ *
+ * kprobe 的 pre_handler 只从 regs 取参数，天然跨版本；inline wrapper 必须
+ * 逐字匹配原函数签名，签名一变就是错的参数。6.1 的 cgroup_can_fork 是
+ * (child, kargs)，这里按它写；其它版本一律走 kprobe（见 ctl_route 说明）。
+ */
+#if LINUX_VERSION_CODE == KERNEL_VERSION(6, 1, 0)
+#define CTL_CAN_FORK_INLINE 1
+typedef int (*ctl_can_fork_fn)(struct task_struct *, struct kernel_clone_args *);
+
+static ctl_can_fork_fn ctl_can_fork_orig;
+
+static __nocfi noinline int ctl_can_fork_wrap(struct task_struct *child,
+					      struct kernel_clone_args *kargs)
+{
+	struct cgroup *cgrp;
+
+	atomic_inc(&ctl_n_fork);
+	if (ctl_layout_ok) {
+		/* 与 pre_handler 同：entry 时 child->cgroups 还没填，
+		 * current 的 cgroup 就是 child 将继承的那个 */
+		cgrp = ctl_task_dfl_cgrp(current);
+		if (cgrp) {
+			atomic_inc(&ctl_n_charged);
+			if (pids_check(cgrp)) {
+				atomic_inc(&ctl_n_refused);
+				return -EAGAIN;
+			}
+		}
+	}
+	return ctl_can_fork_orig(child, kargs);
+}
+#endif /* 6.1 */
 
 static int ctl_can_fork_pre(struct kprobe *p, struct pt_regs *regs)
 {
@@ -732,6 +771,81 @@ static void ctl_unprobe(struct kprobe *h, bool live)
 		ctl_probe_unregister(h);
 }
 
+/*
+ * cgroup_can_fork 的安装：每次 fork 都命中，是唯一的热路径，所以优先 inline。
+ *
+ * route=0(auto)：inline 装不上就退回 kprobe
+ * route=1       ：只用 inline，装不上就放弃（该 KMI 上限额不生效）
+ * route=2       ：只用 kprobe（改动前行为）
+ */
+static void ctl_install_can_fork(void)
+{
+	int ret;
+
+#ifdef CTL_CAN_FORK_INLINE
+	if (ctl_route != 2) {
+		ret = hk_inline_hook(&ctl_can_fork_inline, "cgroup_can_fork",
+				     "ctl_can_fork_wrap");
+		if (!ret) {
+			ctl_can_fork_orig = ctl_can_fork_inline.orig;
+			ctl_can_fork_inline_live = true;
+			pids_info("cgroup_can_fork on the inline route\n");
+			return;
+		}
+		pids_warn("cgroup_can_fork inline failed %d%s\n", ret,
+			  ctl_route == 1 ? " (route=inline, giving up)"
+					 : ", falling back to kprobe");
+		if (ctl_route == 1)
+			return;
+	}
+#endif
+	ctl_probe_one(&ctl_can_fork_probe, "cgroup_can_fork",
+		      ctl_can_fork_pre, &ctl_live_can_fork);
+}
+
+/* ------------------------------------------------ hk 引擎（inline 路由）---
+ *
+ * 引擎的 resolve 回调直接用 KallRecon —— 它已经能查任意符号。write 传 NULL，
+ * 走内核自己的 aarch64_insn_patch_text（hk_write_kernel）：MTK 上模块自造的
+ * fixmap 直写会 fault，内核原语不会（zram_list 已实机证明这条路径可用）。
+ *
+ * 只有 pids 链入引擎：inline 路由只给 cgroup_can_fork（pids 的执行层），
+ * cpu 那边只有 cgroup_rmdir 一个冷路径探针，不背这几百 KB。
+ */
+unsigned int ctl_route = 0;
+module_param_named(route, ctl_route, uint, 0444);
+MODULE_PARM_DESC(ctl_route,
+		 "0 auto (inline 优先, kprobe 兜底), 1 inline only, 2 kprobe only");
+
+static unsigned long __nocfi ctl_hk_resolve_cb(const char *name)
+{
+	if (!kallrecon_klp)
+		return 0;
+	return kallrecon_klp(name);
+}
+
+int ctl_hk_init(void)
+{
+	static const struct hk_cfg cfg = {
+		.resolve = ctl_hk_resolve_cb,
+		.write = NULL,
+	};
+	int ret;
+
+	ret = hk_init(&cfg);
+	if (ret == -EALREADY)
+		return 0;
+	if (ret)
+		pids_warn("hk_init failed: %d (route falls back to kprobe)\n",
+			  ret);
+	return ret;
+}
+
+void ctl_hk_exit(void)
+{
+	hk_exit();
+}
+
 static int __init droid_lkm_pids_init(void)
 {
 	unsigned long mem_ss_addr;
@@ -743,6 +857,10 @@ static int __init droid_lkm_pids_init(void)
 		pids_err("kallsyms recovery failed\n");
 		return -ENODATA;
 	}
+
+	/* hk 引擎：给 can_fork 提供 inline 路由。失败不致命 —— 路由会退回
+	 * kprobe，限额功能照旧（只是每次 fork 多陷一次异常）。 */
+	ctl_hk_init();
 
 	/* memory 控制器：pids.max 挂在它上面 */
 	mem_ss_addr = kallrecon_klp("memory_cgrp_subsys");
@@ -770,8 +888,7 @@ static int __init droid_lkm_pids_init(void)
 
 	/* B2：fork 拦截，只在布局校验通过时装 */
 	if (ctl_layout_ok) {
-		ctl_probe_one(&ctl_can_fork_probe, "cgroup_can_fork",
-			      ctl_can_fork_pre, &ctl_live_can_fork);
+		ctl_install_can_fork();
 		ctl_probe_one(&ctl_fork_probe, "cgroup_post_fork",
 			      ctl_fork_pre, &ctl_live_fork);
 		ctl_probe_one(&ctl_exit_probe, "cgroup_exit", ctl_exit_pre,
@@ -853,6 +970,8 @@ static void __exit droid_lkm_pids_exit(void)
 	ctl_unprobe(&ctl_rmdir_probe, ctl_live_rmdir);
 	ctl_unprobe(&ctl_exit_probe, ctl_live_exit);
 	ctl_unprobe(&ctl_fork_probe, ctl_live_fork);
+	if (ctl_can_fork_inline_live)
+		hk_inline_unhook(&ctl_can_fork_inline);
 	ctl_unprobe(&ctl_can_fork_probe, ctl_live_can_fork);
 	ctl_unprobe(&ctl_subtree_probe, ctl_live_subtree);
 
@@ -869,6 +988,7 @@ static void __exit droid_lkm_pids_exit(void)
 		}
 	}
 	xa_destroy(&pids_xa);
+	ctl_hk_exit();
 	pids_info("unloaded\n");
 }
 

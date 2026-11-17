@@ -31,12 +31,14 @@ FAILED=()
 log() { echo ">>> $*"; }
 warn() { echo "::warning::$*"; FAILED+=("$*"); }
 
-# KallRecon 是公共源码（仓库里只维护 extra/kallrecon/ 一份），但 kbuild 的
-# M= 编译只接受模块目录内的对象，不能引用 ../kallrecon/*.o。所以编译前把
-# 源码复制进模块目录，构建结束随 .o 清理一起删掉（见 .gitignore）。
-stage_kallrecon() {
+# hk 引擎与 KallRecon 都是公共源码（仓库里只维护 extra/hk/ 与
+# extra/kallrecon/ 各一份），但 kbuild 的 M= 编译只接受模块目录内的对象，
+# 不能引用 ../*.o。所以编译前把源码复制进模块目录，构建结束随 .o 清理
+# 一起删掉（见 .gitignore）。
+stage_common() {
     local src="$1"
-    rm -rf "$src/kallrecon"
+    rm -rf "$src/hk" "$src/kallrecon"
+    cp -r "$WS/extra/hk"      "$src/hk"
     cp -r "$WS/extra/kallrecon" "$src/kallrecon"
 }
 
@@ -279,7 +281,7 @@ for m in devtmpfs net_ip6nat; do
     log "=== $m @ $KMI ==="
     find "$SRC" -name '*.o' -delete 2>/dev/null || true
     find "$SRC" -name '.*.cmd' -delete 2>/dev/null || true
-    stage_kallrecon "$SRC"
+    stage_common "$SRC"
     if make -C "$KDIR" M="$SRC" KCFLAGS="$GUARD_CFLAGS" modules -j"$NPROC"; then
         case "$m" in
             devtmpfs)   cp "$SRC"/devtmpfs_lkm.ko "$OUT/devtmpfs_lkm-$KMI.ko" ;;
@@ -305,7 +307,7 @@ for m in pids cpu; do
     [ -f "$SRC/Makefile" ] || continue
     log "=== droid_lkm_$m @ $KMI ==="
     find "$SRC" -name '*.o' -delete 2>/dev/null || true
-    stage_kallrecon "$SRC"
+    stage_common "$SRC"
     find "$SRC" -name '.*.cmd' -delete 2>/dev/null || true
     find "$SRC" -name '*.ko' -delete 2>/dev/null || true
     find "$SRC" -name '*.mod' -delete 2>/dev/null || true

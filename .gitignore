@@ -1,30 +1,23 @@
+
+!prebuilt/*.ko
+# KallRecon 公共源码的 staging 副本（见 scripts/build_modules.sh）
+# Python 字节码（scripts/*.py 被 import 时生成）
+# hk 引擎与 KallRecon 公共源码的 staging 副本（见 scripts/build_modules.sh）
 # kbuild 中间产物
-*.o
+# kernel build artifacts
+# 保留 prebuilt（WSL 验证过的产物）
 *.ko
 *.mod
 *.mod.c
-*.symvers
+*.o
+*.o.d
 *.order
+*.py[cod]
+*.symvers
 .*.cmd
 .tmp_versions/
 Module.symvers
-
-# 保留 prebuilt（WSL 验证过的产物）
-!prebuilt/*.ko
-
-# kernel build artifacts
-*.o
-*.o.d
-*.ko
-*.mod
-*.mod.c
-.*.cmd
-modules.order
-Module.symvers
-
-# Python 字节码（scripts/*.py 被 import 时生成）
 __pycache__/
-*.py[cod]
-
-# KallRecon 公共源码的 staging 副本（见 scripts/build_modules.sh）
+extra/*/hk/
 extra/*/kallrecon/
+modules.order
