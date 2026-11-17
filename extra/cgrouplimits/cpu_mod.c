@@ -776,7 +776,7 @@ static void cpu_install_rmdir_probe(void)
 	ctl_kn_priv_off = offsetof(struct kernfs_node, priv);
 	ctl_rmdir_probe.symbol_name = "cgroup_rmdir";
 	ctl_rmdir_probe.pre_handler = ctl_rmdir_pre;
-	ret = register_kprobe(&ctl_rmdir_probe);
+	ret = ctl_probe_register(&ctl_rmdir_probe);
 	if (ret) {
 		cpu_warn("cgroup_rmdir probe failed: %d "
 			 "(dead-entry check stays as the only guard)\n", ret);
@@ -930,7 +930,7 @@ static void __exit __nocfi droid_lkm_cpu_exit(void)
 		cpu_tick_running = false;
 	}
 	if (ctl_rmdir_live)
-		unregister_kprobe(&ctl_rmdir_probe);
+		ctl_probe_unregister(&ctl_rmdir_probe);
 	if (cpu_sysctl_hdr) {
 		unregister_sysctl_table(cpu_sysctl_hdr);
 		cpu_sysctl_hdr = NULL;

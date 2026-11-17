@@ -6,7 +6,8 @@
  * OPPO Find X7 / MT6989 / 6.1.157-android14-11 / KMI android14-6.1。
  *
  * 与 6.12 原版的差异：
- *   - 不依赖 HooKern / Type_info / KernCall 框架，用标准 register_kprobe()；
+ *   - 不依赖 HooKern / Type_info / KernCall 框架，探针用 KallRecon 解析后的
+ *     可选 register_kprobe()（见 common.c，解析不到就降级不装）；
  *   - hk_regs_return() 等价为 regs->pc = regs->regs[30]（arm64 LR）；
  *   - 显示层用 kretprobe 追加输出，不用 inline hook；
  *   - KallRecon 复用本仓库 net_ip6nat/kr/ 的 6.1 版。
@@ -716,7 +717,7 @@ static void ctl_probe_one(struct kprobe *h, const char *sym,
 
 	h->symbol_name = sym;
 	h->pre_handler = pre;
-	ret = register_kprobe(h);
+	ret = ctl_probe_register(h);
 	if (ret) {
 		pids_warn("probe %s failed: %d\n", sym, ret);
 		return;
@@ -728,7 +729,7 @@ static void ctl_probe_one(struct kprobe *h, const char *sym,
 static void ctl_unprobe(struct kprobe *h, bool live)
 {
 	if (live)
-		unregister_kprobe(h);
+		ctl_probe_unregister(h);
 }
 
 static int __init droid_lkm_pids_init(void)
@@ -809,14 +810,14 @@ static int __init droid_lkm_pids_init(void)
 	ctl_cgroupstats_krp.maxactive = 16;
 	ctl_cgroupstats_krp.data_size = sizeof(void *);
 
-	if (!register_kretprobe(&ctl_ctrl_show_krp) &&
-	    !register_kretprobe(&ctl_cgroupstats_krp)) {
+	if (!ctl_kretprobe_register(&ctl_ctrl_show_krp) &&
+	    !ctl_kretprobe_register(&ctl_cgroupstats_krp)) {
 		ctl_live_display = true;
 		pids_info("display hooks installed\n");
 	} else {
 		pids_warn("display hooks failed\n");
-		unregister_kretprobe(&ctl_ctrl_show_krp);
-		unregister_kretprobe(&ctl_cgroupstats_krp);
+		ctl_kretprobe_unregister(&ctl_ctrl_show_krp);
+		ctl_kretprobe_unregister(&ctl_cgroupstats_krp);
 	}
 
 	if (ctl_live_can_fork && ctl_live_fork && ctl_live_exit &&
@@ -844,8 +845,8 @@ static void __exit droid_lkm_pids_exit(void)
 		pids_reap_live = false;
 	}
 	if (ctl_live_display) {
-		unregister_kretprobe(&ctl_ctrl_show_krp);
-		unregister_kretprobe(&ctl_cgroupstats_krp);
+		ctl_kretprobe_unregister(&ctl_ctrl_show_krp);
+		ctl_kretprobe_unregister(&ctl_cgroupstats_krp);
 	}
 	if (ctl_live_files)
 		p_cgroup_rm_cftypes(pids_max_files);

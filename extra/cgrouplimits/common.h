@@ -35,6 +35,7 @@
 #ifndef DROID_LKM_CGROUPLIMITS_COMMON_H
 #define DROID_LKM_CGROUPLIMITS_COMMON_H
 
+#include <linux/kprobes.h>
 #include <linux/types.h>
 
 /* 布局锚点符号，运行时解析 */
@@ -62,6 +63,27 @@ bool __nocfi ctl_read_ptr(unsigned long addr, unsigned long *out);
 
 /* 判一个值像不像内核指针（0xffff.... 段且非 0） */
 bool ctl_is_kptr(unsigned long v);
+
+/*
+ * 可选 kprobe。
+ *
+ * register_kprobe / unregister_kprobe / register_kretprobe /
+ * unregister_kretprobe 原先是**静态链接**的：厂商内核只要没导出其中之一
+ * （或干脆没编 CONFIG_KPROBES），insmod 直接 Unknown symbol，整个
+ * droid_lkm_pids / droid_lkm_cpu 装不上 —— 连带文件层、显示层一起没了。
+ *
+ * 现在这 four 个改成经 KallRecon 运行时解析的函数指针：
+ *   - 解析不到时 ctl_probe_register 返回 -ENOSYS，调用方按既有 best-effort
+ *     语义跳过该探针，模块照常加载，只是限额/显示功能降级；
+ *   - 不再产生对内核 kprobe 符号的静态依赖，模块能在无 kprobe 的内核上加载。
+ *
+ * 首次使用时懒解析（与 ZR_SYM / ctl_anchors_resolve 同一模式），
+ * 必须在 find_kallsyms_base() 之后调用。
+ */
+int ctl_probe_register(struct kprobe *p);
+void ctl_probe_unregister(struct kprobe *p);
+int ctl_kretprobe_register(struct kretprobe *rp);
+void ctl_kretprobe_unregister(struct kretprobe *rp);
 
 /*
  * 解析四个锚点符号。缺任何一个就返回 -EOPNOTSUPP —— 调用方据此跳过所有
