@@ -53,6 +53,9 @@
 #   因为它只检查 /proc/filesystems 里有没有 devtmpfs。
 
 MODDIR=${0%/*}
+# 模块目录的绝对路径。多处需要判断模块目录下的开关文件（enable_vkms /
+# disable_pids / disable_cpu），而 $0 可能以相对路径传入，所以固定成绝对值。
+DSM_DIR="/data/adb/modules/droidspaces_lkm"
 [ "$MODDIR" = "$0" ] && MODDIR=.
 # ---------------------------------------------------------------------------
 # 日志：三处同时落
@@ -427,16 +430,14 @@ load_mod macvlan ""
 # ---------------------------------------------------------------------------
 # 平台判定
 #
-# MTK 用 Mali GPU，两件事都需要：
-#   vkms        厂商内核通常没开 CONFIG_DRM_VKMS，没有 /dev/dri/renderD128
-#   mali_nsfix  mali_kbase 的 find_get_pid 在 PID 命名空间内解析失败
-# 高通的 kgsl/Adreno 自带 render node，两者都不需要。
+# 这里只判定一件事：有没有 Mali GPU。判据用可观测的事实（/dev/mali0 或
+# mali_kbase 模块），不写死厂商名 —— 三星 Exynos、Google Tensor、海思麒麟
+# 都是 Mali，走的也是同一条路。
 #
-# 判据不写死厂商名，用可观测的事实：
-#   mali_nsfix  —— 有没有 mali_kbase（/dev/mali0）。这样三星等 Mali 机型也覆盖到，
-#                  它修的本来就是 Mali 驱动，不是 MTK 特有。
-#   vkms        —— 还没有 /dev/dri/renderD128 才需要。高通有原生 render node 时
-#                  自然跳过；缺少 render node 的高通机型仍然能拿到桌面。
+# mali_nsfix 只在 Mali 平台上加载：它修的本来就是 mali_kbase 的 find_get_pid，
+# 没有 Mali 的设备装上纯属浪费。
+#
+# vkms 不参与这个判定，见下面那段 —— 它已改成默认不加载、由用户显式开启。
 # ---------------------------------------------------------------------------
 GPU_HAS_MALI=0
 if [ -e /dev/mali0 ] || lsmod 2>/dev/null | grep -q '^mali_kbase'; then
@@ -445,45 +446,53 @@ fi
 
 dlog "platform: mali=${GPU_HAS_MALI} renderD128=$([ -e /dev/dri/renderD128 ] && echo present || echo absent)"
 
+# vkms —— 默认不加载，需要者显式开启
+# ------------------------------------
+# 判断依据从「有没有 render node」改成「用户要不要」。
+#
+# 实测（OPPO PHZ110 / MT6989 / 6.1.157）：
+#   卸掉 vkms -> /dev/dri/renderD128 消失 -> GL 客户端仍然渲染成功并正常上屏
+#   合成器 waylandbridge: libGLES_mali.so 已映射、/dev/mali0 fd=1、
+#                        /dev/dri/renderD128 fd=0 —— 从来没打开过
+#
+# 也就是说 anland 在 Mali 平台上直接用 /dev/mali0，不需要 renderD128。
+#
+# 为什么不按平台自动判断：能观测到的事实只有「有没有 /dev/mali0」和
+# 「有没有 renderD128」，而「某个第三方合成器 / 某个容器内程序是否要求
+# renderD128 存在」观测不到。高通有原生节点所以本来就不会走到这里；其余
+# 平台几乎都是 Mali，同样不需要。少数例外的代价是不对称的：
+#
+#   猜「需要」-> 多加载一个无 GPU 的虚拟设备，Mesa 落回 llvmpipe（CPU 软件
+#               渲染），用户会觉得卡但看不出原因
+#   猜「不需要」-> 依赖它的程序起不来，报错明确
+#
+# 后者更容易排查，所以默认不加载。
+#
+# 启用方式：在模块目录放一个空文件
+#   touch /data/adb/modules/droidspaces_lkm/enable_vkms
+# 然后重启设备或重启容器。
+#
 # vkms 依赖 drm.ko 导出的 drm_crtc_add_crc_entry。5.10 里这个符号是导出的，
 # 但它属于 drm.ko 的**模块依赖**：drm 还没加载时 insmod 只会报
-# "Unknown symbol"，而这里跑在 late_start，drm 未必已经就绪。
-# 所以失败后重试几次，而不是一次就放弃。
+# "Unknown symbol"，而这里跑在 late_start，drm 未必已经就绪。所以失败后
+# 重试几次。
 #
-# 为什么 Mali 平台不再加载 vkms
-# -----------------------------
-# 原先的判断是「没有 /dev/dri/renderD128 就装 vkms」，因为 older anland
-# 的合成器走 GBM。实测（OPPO PHZ110 / MT6989 / 6.1.157）推翻了这个前提：
-#
-#   卸掉 vkms → /dev/dri/renderD128 消失
-#   再跑 GL 客户端 → 仍然渲染成功，画面正常上屏（运行中 49.5% 品红，退出后 0%）
-#   合成器 waylandbridge: libGLES_mali.so 已映射，/dev/mali0 fd=1，
-#                        /dev/dri/renderD128 fd=0 —— 根本没打开过
-#
-# 也就是说 Mali 平台上合成器直接用 /dev/mali0，不经过 renderD128。
-# 而 vkms 背后没有 GPU，一旦被当作渲染后端，Mesa 只能落回 llvmpipe
-# （CPU 软件渲染，实测 1280x720 填充 461 fps / 6.80 Gpix/s）。把它留在
-# 加载列表里没有收益，反而多一个 card 节点和一条可能被误用的软件路径。
-#
-# 更麻烦的是卸载行为：容器运行期间 rmmod vkms，容器的 bind mount 会留下
-# 一个指向已删除 inode 的节点 —— ls 看得见、open() 报 EPERM。只做「节点
-# 是否存在」判断的程序会通过检查再失败，比节点干脆不存在更难排查。
-#
-# 所以：Mali 平台跳过 vkms；没有 Mali 且没有 render node 的平台仍然加载，
-# 那是它唯一还有意义的地方。
-if [ "$GPU_HAS_MALI" = 1 ]; then
-    dlog "[SKIP] ${M_SKIP_VKMS_MALI}"
-elif [ -e /dev/dri/renderD128 ]; then
-    dlog "[SKIP] ${M_SKIP_VKMS}"
-elif ! load_mod vkms ""; then
-    for _try in 1 2 3 4 5; do
-        sleep 2
-        if load_mod vkms ""; then
-            break
-        fi
-        # find_ko 每轮都会重新判断，但已加载的模块会被 [SKIP]，
-        # 这里只需处理"还没加载成功"的情况
-    done
+# 注意卸载行为：容器运行期间 rmmod vkms，容器的 bind mount 会留下指向已删除
+# inode 的节点 —— ls 看得见、open() 报 EPERM。只做「节点是否存在」判断的程序
+# 会通过检查再失败。这也是不该把它做成运行时自动决策的理由。
+# 用绝对路径：此处 MODDIR 还是 ${0%/*} 的相对形式，脚本被以相对路径调用时
+# 会解析错；下面 L499 那处也重新赋成了绝对值，这里保持一致。
+if [ -f "$DSM_DIR/enable_vkms" ]; then
+    if ! load_mod vkms ""; then
+        for _try in 1 2 3 4 5; do
+            sleep 2
+            if load_mod vkms ""; then
+                break
+            fi
+        done
+    fi
+else
+    dlog "[SKIP] ${M_SKIP_VKMS_OFF}"
 fi
 
 # cgroup 限流仿真（--cpus / --pids-limit）。
@@ -537,11 +546,16 @@ grep -q "^droid_lkm_cpu " /proc/modules 2>/dev/null \
     && dlog "[OK] cpu.max emulation" \
     || dlog "[--] cpu.max emulation not loaded"
 
-# vkms 提供的 render node: anland / wayland 合成器的前提
+# /dev/dri/renderD128 的状态。
+#
+# 不能说「缺失 = 有问题」：vkms 现在默认不加载，Mali 平台又不需要它，所以
+# absent 是正常状态。只在用户显式开了 enable_vkms 却没拿到节点时才算失败。
 if [ -e /dev/dri/renderD128 ]; then
-    dlog "[OK] /dev/dri/renderD128 (vkms)"
+    dlog "[OK] /dev/dri/renderD128"
+elif [ -f "$DSM_DIR/enable_vkms" ]; then
+    dlog "[FAIL] /dev/dri/renderD128 ${M_CAP_VKMS_NO} (enable_vkms is set)"
 else
-    dlog "[--] /dev/dri/renderD128 ${M_CAP_VKMS_NO}"
+    dlog "[--] /dev/dri/renderD128 absent (vkms off by default, not required on Mali)"
 fi
 
 # ---------------------------------------------------------------------------

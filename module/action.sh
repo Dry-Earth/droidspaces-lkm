@@ -175,9 +175,15 @@ else
     echo "  [--]   ${M_CAP_DEVTMPFS_NO}"
 fi
 
-[ -e /dev/dri/renderD128 ] \
-    && echo "  [OK]   ${M_CAP_VKMS}" \
-    || echo "  [--]   ${M_CAP_VKMS_NO}"
+# vkms 默认不加载，Mali 平台也不需要它，所以缺失是正常状态而不是失败。
+# 只有用户显式开了 enable_vkms 却没拿到节点时才标 FAIL。
+if [ -e /dev/dri/renderD128 ]; then
+    echo "  [OK]   ${M_CAP_VKMS}"
+elif [ -f "/data/adb/modules/droidspaces_lkm/enable_vkms" ]; then
+    echo "  [FAIL] ${M_CAP_VKMS_NO} (enable_vkms is set)"
+else
+    echo "  [--]   ${M_CAP_VKMS_NO} (vkms off by default)"
+fi
 
 # Mali：有 /dev/mali0 说明是 Mali 平台，这时 mali_nsfix 是否加载决定容器内能否
 # 创建 GPU context。没有 /dev/mali0 的设备直接标 [--]，不制造无关的 FAIL。
