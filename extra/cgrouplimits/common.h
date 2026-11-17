@@ -49,6 +49,13 @@
  * （约 1-3 us）。cgroup_can_fork 每次 fork 都命中，是唯一的热路径。
  * 但 inline 需要精确的原函数签名，而 kprobe 的 pre_handler 只碰 regs、
  * 天然跨版本。所以只在签名已确认的版本上开放 inline，其余一律 kprobe。
+ *
+ * 为什么不像 mali_nsfix 那样用 ftrace（extra/mali_nsfix/mali_nsfix.c）：
+ * 那个 thunk 是**完全替代** —— `regs->pc = nshf_get_pid`，根本不执行原函数，
+ * 因为它自带 find_get_pid 的实现。而 can_fork 的语义是「通过就执行原函数，
+ * 超限才拒绝」，必须能放行为原函数；ftrace 的 IPMODIFY 只能改 pc 重定向，
+ * 做不到「只跳过函数体、保留返回」这种 kprobe 式的 `pc = lr`。
+ * 所以这里只能 inline 或 kprobe，没有 ftrace 档。
  */
 extern unsigned int ctl_route;
 
