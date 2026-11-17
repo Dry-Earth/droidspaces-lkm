@@ -4,7 +4,7 @@ This is the English changelog. Entries before v0.1.23 exist only in Chinese;
 see [CHANGELOG.md](CHANGELOG.md). Version numbering rationale is documented
 there as well.
 
-## v0.1.24 (CI only, not released)
+## v0.1.24
 
 ### Fixed
 
@@ -50,6 +50,69 @@ overlay_override: off (running kernel's overlayfs in use)
 ### Changed
 
 `vns_ovl_exit()` guards `kmem_cache_destroy()` against NULL and clears the pointer.
+
+### Security audit fixes
+
+The whole-repo audit produced these hardening changes. None of them is a
+regression fix; they close paths that were reachable but had not been hit.
+
+**Refuse the overlayfs takeover when VFS symbol resolution failed.**
+`vns_ovl_vfs_compat_resolve()` deliberately continues past individual failures
+(the lite variant depends on that: an early return made `mq_init_ns` fail with
+`-ENOMEM`). But with `overlay_override=Y`, the `#define` form
+`(*vns_ovl_vfsc_notify_change)(...)` becomes a **NULL call** when a pointer did
+not resolve, and the same-name forwarders silently no-op the permission and
+attribute operations the vendored overlayfs relies on. Resolution stays
+non-fatal; only the *takeover* is now refused, falling back to the running
+kernel's own overlayfs. New accessor `vns_ovl_vfs_compat_resolve_failed()` lives
+in `glue/vendor_kernel_ovl_vfs_compat.c` (part of `LKM4CTR_BASE_OBJS`, so both
+the full and lite builds link it).
+
+**Never free a trampoline without a real grace period.** `hk_wait_tasks_rcu()`
+used to return `void` and merely warn when `synchronize_rcu_tasks` could not be
+resolved; its callers freed anyway. A core already running inside the trampoline
+then hit a use-after-free. It now returns whether a grace period actually
+elapsed, and all three release sites (`hk_inline_unhook`, `hk_inline_exit`,
+`shadow_inline_remove`) keep the trampoline instead — the pending entry also
+blocks `rmmod`, so the outcome is a bounded leak and a refused unload, never a
+dangling executable page. `shadow_inline_remove()` previously used plain
+`synchronize_rcu()`, which does not wait for a CPU that already fetched the
+detour; it uses the tasks-RCU helper like the rest of the engine. Applied to
+both engine copies (`extra/devtmpfs/hk/` and the `glue/hk/` copy in patch 0005).
+`hk_binder.c` was left alone — it is dead code, absent from every object list.
+
+**GPL source snapshot applied the local patches to the wrong path.**
+`git -C /tmp/src/lkm4ctr apply "PWD/$p"` was missing the `$` (literal `PWD`),
+and the trailing `2>/dev/null || true` swallowed every failure — so the source
+tarball shipped *without* the 0001–0010 patches while the `.ko` files came from
+patched sources, silently. Now resolves `"$PWD"/patches/*.patch` and fails the
+job on error.
+
+**A root script wrote through a world-writable path.**
+`action.sh`'s `/proc` mount probe used `/data/local/tmp/.dsp_proctest`, where any
+user could pre-create a symlink and have root's `mount` follow it onto an
+attacker-chosen target. Moved to `/mnt` (root-owned) with an explicit `-L` guard,
+and `rm -rf` replaced by `mkdir`/`rmdir`.
+
+**Reclaimed cgroup entries were removed after a stale check.**
+In both `pids_reap_fn()` and `cpu_tick()`, the "should reclaim" test ran outside
+the mutex while the writer (`pids_max_write` / `cpu_max_write`, holding that mutex
+throughout) can reactivate the very same entry — reuse keeps the same pointer and
+just clears `dead`, so the existing `xa_load(...) == p` recheck did not exclude
+it. The condition is now re-evaluated under the lock before erasing.
+
+**`msg()` rejects `%n`.** Templates are static in-repo strings, so `%n` could not
+reach the format position; the guard is defense in depth against a future
+template or an accidental external value.
+
+### Verified
+
+Full KMI matrix (all seven) builds green, including the aggregate module and the
+lite variant, confirming the new accessor links in both. Device smoke test on
+PHZ110 (MT6989, `6.1.157`): PID/IPC/UTS/user/net/cgroup namespaces, in-container
+`/proc` mount (214 nodes), devtmpfs, `/dev/dri/renderD128`, veth creation, binder
+nodes, emulated `pids.max`/`cpu.max`, and the export-symbol check (0 missing of
+781 rows) all pass, with no kernel anomalies in `dmesg`.
 
 ## v0.1.23
 

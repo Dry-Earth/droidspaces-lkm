@@ -18,7 +18,7 @@
 这一轮把「符号问题」从「出问题再修」推到三个方向。三条都经过 CI 全量矩阵和
 真机验证（Redmi Pad 2410CRP4CG / Qualcomm SM7675 / 6.1.138）。
 
-## v0.1.24（仅 CI，未发布）
+## v0.1.24
 
 ### 修复
 
@@ -61,6 +61,58 @@ overlay_override: off (running kernel's overlayfs in use)
 ### 变更
 
 `vns_ovl_exit()` 的 `kmem_cache_destroy()` 增加 NULL 保护并清空指针。
+
+### 安全性审计修复
+
+全仓库审计带来的一批加固。这些都不是回归修复，而是堵上「可达但尚未被触发」
+的路径。
+
+**符号解析失败时拒绝接管 overlayfs。**
+`vns_ovl_vfs_compat_resolve()` 刻意对单个符号失败继续执行（精简版依赖这一点：
+提前返回会让 `mq_init_ns` 以 `-ENOMEM` 失败）。但在 `overlay_override=Y` 下，
+宏形式 `(*vns_ovl_vfsc_notify_change)(...)` 在指针未解析时就是**对 NULL 的调用**，
+同名转发函数还会把 vendored overlayfs 依赖的权限/属性操作静默变成空操作。
+解析本身仍然非致命；现在只拒绝「接管」这一步，退回运行内核自带的 overlayfs。
+新增访问器 `vns_ovl_vfs_compat_resolve_failed()` 位于
+`glue/vendor_kernel_ovl_vfs_compat.c`（属 `LKM4CTR_BASE_OBJS`，full/lite 都能链接）。
+
+**没有真正等到宽限期就不释放 trampoline。**
+`hk_wait_tasks_rcu()` 原本返回 `void`，`synchronize_rcu_tasks` 解析不到时只警告，
+调用方照样释放——已跑进 trampoline 的 CPU 随即 use-after-free。现在它返回
+是否真的等到了宽限期，三处释放点（`hk_inline_unhook`、`hk_inline_exit`、
+`shadow_inline_remove`）改为保留该页；pending 条目同时会挡住 `rmmod`，所以结果
+是有界泄漏 + 拒绝卸载，绝不会留下悬空可执行页。`shadow_inline_remove()` 原来
+用普通 `synchronize_rcu()`，等不到已取跳板、还没被调度走的 CPU，现改用与引擎
+其余部分一致的 tasks-RCU helper。两份引擎副本（`extra/devtmpfs/hk/` 与
+0005 里的 `glue/hk/`）都改了。`hk_binder.c` 未动——它是死代码，不在任何 obj 列表里。
+
+**GPL 源码快照把本地补丁打到了错误路径。**
+`git -C /tmp/src/lkm4ctr apply "PWD/$p"` 少了 `$`（字面量 `PWD`），末尾的
+`2>/dev/null || true` 又吞掉全部失败——源码包实际**没带** 0001–0010 补丁，而
+`.ko` 来自打过补丁的源码，且毫无报错。现改为解析 `"$PWD"/patches/*.patch`，
+失败即中断任务。
+
+**root 脚本经由全局可写路径写入。**
+`action.sh` 的 `/proc` 挂载探针用 `/data/local/tmp/.dsp_proctest`，任何用户都能
+预置符号链接，让 root 的 `mount` 跟到攻击者选定的目标上。已移到 `/mnt`
+（root 独有）并加 `-L` 兜底检查，`rm -rf` 换成 `mkdir`/`rmdir`。
+
+**回收 cgroup 条目前用了过期判断。**
+`pids_reap_fn()` 与 `cpu_tick()` 的「该回收」判断都在 mutex 之外，而写方
+（`pids_max_write` / `cpu_max_write`，全程持同一把 mutex）可以把同一条目重新激活
+——复用沿用同一个指针、只清 `dead`，原有的 `xa_load(...) == p` 复校验挡不住它。
+现在改为拿锁后重算条件再 erase。
+
+**`msg()` 拒绝 `%n`。** 模板是仓库内静态字符串，`%n` 进不了格式位；这道守卫属于
+纵深防御，防将来有人塞入带 `%n` 的模板或误传外部值。
+
+### 验证
+
+全 KMI 矩阵（7 个）全部编译通过，含聚合模块与精简变体，证明新访问器在两种构建下
+都能链接。真机冒烟（PHZ110 / MT6989 / `6.1.157`）：PID/IPC/UTS/user/net/cgroup
+命名空间、容器内挂 `/proc`（214 节点）、devtmpfs、`/dev/dri/renderD128`、veth 创建、
+binder 节点、仿真 `pids.max`/`cpu.max`、导出符号检查（781 行中缺失 0）全部通过，
+`dmesg` 无内核异常。
 
 ## v0.1.23
 
