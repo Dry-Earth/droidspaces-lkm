@@ -291,9 +291,12 @@ cat $CG/pids.stats        # refused=N, layout=1
 
 Details, guarantees and limitations: [extra/cgrouplimits/README.md](extra/cgrouplimits/README.md).
 
-**Load them manually.** They install kprobes and resolve symbols at runtime;
-keeping them out of boot autostart means a bad interaction can never stop the
-device from booting.
+**Load them manually.** They hook `cgroup_can_fork` / `cgroup_post_fork` /
+`cgroup_exit` on the inline route first and fall back to kprobe when inline
+cannot be installed (`route=0`, the default). `route=1` forces inline and
+`route=2` forces kprobe, so a device can be compared and rolled back without
+recompiling. Keeping them out of boot autostart means a bad interaction can
+never stop the device from booting.
 
 ## Full coverage
 
@@ -303,7 +306,7 @@ impossible from a module:
 | Check | How |
 |-------|-----|
 | `CPU limit support` | `droid_lkm_cpu` emulates `cpu.max`, and registers the `sched_cfs_bandwidth_slice_us` sysctl the check also wants |
-| `Process limit support` | `droid_lkm_pids` emulates the pids controller with kprobes |
+| `Process limit support` | `droid_lkm_pids` emulates the pids controller, hooking `cgroup_can_fork`/`cgroup_post_fork`/`cgroup_exit` inline-first with a kprobe fallback |
 | `Sandboxing (user namespaces)` | `lkm4ctr` exposes `/proc/<pid>/ns/user` via `patches/0001-expose-ns-user.patch` |
 
 The CPU one has a second precondition that is easy to miss: Droidspaces also

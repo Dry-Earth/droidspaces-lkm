@@ -18,6 +18,46 @@
 这一轮把「符号问题」从「出问题再修」推到三个方向。三条都经过 CI 全量矩阵和
 真机验证（Redmi Pad 2410CRP4CG / Qualcomm SM7675 / 6.1.138）。
 
+## v0.1.25（未发布）
+
+### 修复
+
+**`register_kprobe` 系列改为可选。** 内核没导出这四个探针 API（或没编
+`CONFIG_KPROBES`）时，`droid_lkm_pids` / `droid_lkm_cpu` 会直接 Unknown symbol
+整个装不上。现在它们经 KallRecon 运行时解析，解析不到就按 best-effort 跳过
+探针 —— 模块照常加载，只是限额/显示功能降级。
+
+**回收循环在锁内重验条目状态。** `pids_reap_fn()` 与 `cpu_tick()` 原来在
+mutex 外判断"该回收"，而从判断到拿锁之间，写 `pids.max` / `cpu.max` 的一方
+（全程持锁）可能把同一条目重新激活；现在拿锁后重算条件再摘除。
+
+### 性能
+
+**`cgroup_can_fork` / `cgroup_post_fork` / `cgroup_exit` 改 inline 优先。**
+这三个每次 fork/exit 都命中，kprobe 每命中一次要陷一次异常（约 1-3 us），
+inline 是一条 `b` 指令。装不上 inline 时自动退回 kprobe。
+
+**新增 `route` 模块参数**（只读）：`0` auto（默认，inline 优先）、
+`1` inline only、`2` kprobe only（改动前行为）。用于同机 A/B 与一键回退。
+
+### 变更
+
+**KallRecon 三份副本合并为 `extra/kallrecon/`。** devtmpfs、net_ip6nat、
+cgrouplimits 原先各拷贝一份且已分叉，现在共用一份（构建期 staging 进各模块
+目录，因为 kbuild 的 `M=` 不接受跨目录对象）。
+
+**hk 引擎提升为公共目录 `extra/hk/`**，devtmpfs 与 cgrouplimits 共用。
+
+**mali_nsfix 增加 ftrace 后端**：auto 档优先 ftrace（无断点、无异常、无单步），
+失败落回 kprobe；新增 `nshf_backend` / `nshf_active` 两个只读参数。
+
+**死代码清理**：`hk_binder.c` / `hk_lsm.c` 未被任何 Makefile 链入，移除。
+
+### 验证
+
+全 KMI 矩阵编译通过。真机（PHZ110 / 6.1.157）确认三个 hook 实际走 inline
+路由，pids 记账与 kprobe 版行为一致。
+
 ## v0.1.24
 
 ### 修复

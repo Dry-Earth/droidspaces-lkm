@@ -268,8 +268,10 @@ cat $CG/pids.stats        # refused=N, layout=1
 
 实现细节、保证与限制：[extra/cgrouplimits/README.md](extra/cgrouplimits/README.md)。
 
-**请手动加载。** 它们会在运行时解析符号并安装 kprobe；不进开机自启，
-意味着任何异常交互都不可能让设备开不了机。
+**请手动加载。** 它们 hook `cgroup_can_fork` / `cgroup_post_fork` /
+`cgroup_exit` 时优先走 inline，装不上就退回 kprobe（`route=0`，默认）。
+`route=1` 强制 inline、`route=2` 强制 kprobe，同一台设备可以随时对比和回退，
+不用重编。不进开机自启，意味着任何异常交互都不可能让设备开不了机。
 
 ## 全覆盖
 
@@ -278,7 +280,7 @@ Droidspaces 的每一项检查现在都通过，包括三项看起来模块补�
 | 检查 | 做法 |
 |------|------|
 | `CPU limit support` | `droid_lkm_cpu` 仿真 `cpu.max` + 补注册 `sched_cfs_bandwidth_slice_us` sysctl |
-| `Process limit support` | `droid_lkm_pids` 用 kprobe 仿真 pids 控制器 |
+| `Process limit support` | `droid_lkm_pids` 仿真 pids 控制器，hook `cgroup_can_fork`/`cgroup_post_fork`/`cgroup_exit`，inline 优先、kprobe 兜底 |
 | `Sandboxing (user namespaces)` | `lkm4ctr` 通过 `patches/0001-expose-ns-user.patch` 暴露 `/proc/<pid>/ns/user` |
 
 userns 这一项要**三个修复叠加**，少任何一个都只会得到一个"检查全绿但用不了"

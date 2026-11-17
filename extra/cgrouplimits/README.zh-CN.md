@@ -33,10 +33,12 @@ droid_lkm_cpu.ko    时间片限流，自研实现
 |---|---|
 | 显示层 | kretprobe `cgroup_controllers_show` / `proc_cgroupstats_show`，追加 `"pids cpu"` |
 | 文件层 | `cgroup_add_dfl_cftypes(memory_cgrp_subsys, ...)` 挂载 `pids.max`、`pids.current`、`pids.stats` |
-| 执行层 | kprobe `cgroup_can_fork`：超限时置 `regs->pc = regs->regs[30]` 与 `x0 = -EAGAIN`，函数体不执行；`cgroup_post_fork` 计数 +1；`cgroup_exit` −1 |
+| 执行层 | `cgroup_can_fork` **inline 优先**：超限时 wrapper 直接返回 `-EAGAIN`，不执行原函数体；`cgroup_post_fork` 计数 +1；`cgroup_exit` −1。装不上 inline 时退回 kprobe（模块参数 `route`：`0` auto / `1` inline / `2` kprobe） |
 | 翻译层 | kprobe `cgroup_subtree_control_write`：抹除 `+pids` / `+cpu`，必要时替换为 `+memory` |
 
-fork 拒绝通过跳过被探测函数、经返回寄存器返回 `-EAGAIN` 送达，用户态得到的 errno 与真实控制器一致。
+fork 拒绝不经原函数体、直接给用户态返回 `-EAGAIN`，errno 与真实控制器一致。
+这三个执行层 hook 每次 fork/exit 都会命中，所以 inline 优先 —— kprobe 每次
+命中都要陷一次异常。
 
 约束：
 

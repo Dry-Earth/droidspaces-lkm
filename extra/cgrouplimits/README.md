@@ -35,11 +35,13 @@ Four layers, matching upstream structure:
 |---|---|
 | Visibility | kretprobe on `cgroup_controllers_show` / `proc_cgroupstats_show`, appending `"pids cpu"` |
 | Files | `cgroup_add_dfl_cftypes(memory_cgrp_subsys, ...)` to attach `pids.max`, `pids.current`, `pids.stats` |
-| Enforcement | kprobe on `cgroup_can_fork`: on limit, set `regs->pc = regs->regs[30]` and `x0 = -EAGAIN` so the function body never runs; `cgroup_post_fork` increments; `cgroup_exit` decrements |
+| Enforcement | **inline-first** on `cgroup_can_fork`: on limit the wrapper returns `-EAGAIN` without running the original body; `cgroup_post_fork` increments; `cgroup_exit` decrements. Falls back to kprobe when inline cannot be installed (module parameter `route`: `0` auto / `1` inline / `2` kprobe) |
 | Translation | kprobe on `cgroup_subtree_control_write`: strip `+pids` / `+cpu`, substitute `+memory` where required |
 
-Fork rejection is delivered by skipping the probed function and returning
-`-EAGAIN` through the return register, so userspace sees the same errno a real
+Fork rejection returns `-EAGAIN` to userspace without executing the original
+function, so the errno matches what a real controller would produce. The three
+enforcement hooks are hit on every fork/exit, which is why they are inline-first:
+a kprobe costs an exception round trip per hit.
 controller would produce.
 
 Constraints:

@@ -12,7 +12,7 @@
 #                   hk_patch(改只读段) -> hk_ptr -> hk.c(符号解析)
 #                   -> hk_redir / hk_sighook, 逐层补会一直缺符号,
 #                   因此整层全部链接。
-#                   hk_binder / hk_lsm 不参与 devtmpfs 且会引入额外内部结构, 排除。
+#                   hk_binder / hk_lsm 曾在此列出但从未链入，已删除。
 
 obj-m := devtmpfs_lkm.o
 

@@ -4,6 +4,54 @@ This is the English changelog. Entries before v0.1.23 exist only in Chinese;
 see [CHANGELOG.md](CHANGELOG.md). Version numbering rationale is documented
 there as well.
 
+## v0.1.25 (not released)
+
+### Fixed
+
+**The `register_kprobe` family is now optional.** When the kernel exports none of
+the four probe APIs (or has `CONFIG_KPROBES` disabled), `droid_lkm_pids` /
+`droid_lkm_cpu` used to fail to load with `Unknown symbol`, taking the limit and
+display layers down with them. They are now resolved at runtime through
+KallRecon; when resolution fails the probes are skipped best-effort and the
+module still loads.
+
+**The reclaim loops re-check entry state under the lock.** `pids_reap_fn()` and
+`cpu_tick()` tested "should reclaim" outside the mutex, while the writer
+(`pids.max` / `cpu.max`, holding that mutex) can reactivate the very entry in
+between. The condition is now re-evaluated after the lock is taken.
+
+### Performance
+
+**`cgroup_can_fork` / `cgroup_post_fork` / `cgroup_exit` are inline-first.**
+All three are hit on every fork/exit; a kprobe costs an exception round trip
+(~1-3 us) per hit, an inline detour is one `b` instruction. When inline cannot be
+installed it falls back to kprobe automatically.
+
+**New `route` module parameter** (read-only): `0` auto (default, inline first),
+`1` inline only, `2` kprobe only (the pre-change behaviour). For A/B on one
+device and one-command rollback.
+
+### Changed
+
+**The three KallRecon copies are consolidated into `extra/kallrecon/`.**
+devtmpfs, net_ip6nat and cgrouplimits had each carried a copy and they had
+diverged; they now share one (staged into each module directory at build time,
+because kbuild's `M=` rejects out-of-tree objects).
+
+**The hk engine moved to the shared `extra/hk/`**, used by both devtmpfs and
+cgrouplimits.
+
+**mali_nsfix gained an ftrace backend**: auto prefers ftrace (no breakpoint, no
+exception, no single-step) and falls back to kprobe; two read-only parameters
+`nshf_backend` / `nshf_active` were added.
+
+**Dead code removed**: `hk_binder.c` / `hk_lsm.c` were linked by no Makefile.
+
+### Verified
+
+Full KMI matrix builds green. On device (PHZ110 / 6.1.157) all three hooks are
+confirmed on the inline route, and pids accounting matches the kprobe build.
+
 ## v0.1.24
 
 ### Fixed
