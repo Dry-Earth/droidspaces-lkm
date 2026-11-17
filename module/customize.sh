@@ -48,6 +48,55 @@ esac
 ui_print "- ${M_COMPONENTS}: lkm4ctr / devtmpfs_lkm / macvlan / ip6table_nat / vkms"
 ui_print "-                droid_lkm_pids / droid_lkm_cpu"
 ui_print "- ${M_LOAD_STAGE}"
+
+# ---------------------------------------------------------------------------
+# 单 KMI 包的代际校验（5.10 / 5.15 各有两代共用同一个内核版本号）
+#
+# 5.10 上 android12-5.10 与 android13-5.10 的内核串都是 5.10.x，vermagic 只比到
+# 5.10 这一层（见 service.sh 的 ko_vermagic_ok），所以拿错包也会"装得上"。
+# 装错代的后果不是报错，而是模块在 namespace 路径上卡死（issue #1 的两位
+# 报告者都是拿了 android12 包装到出厂 API level=33 的 android13 设备上）。
+#
+# 判据用**出厂** API level（ro.board.first_api_level），不用会随 OTA 漂的
+# ro.build.version.release。全 KMI 包（ko/ 里有多代）不在这里校验，交给
+# service.sh 按同样的规则选。
+# ---------------------------------------------------------------------------
+pkg_android=""
+case "$(ls ko/*.ko 2>/dev/null | head -1)" in
+    *-android[0-9]*-*) pkg_android=$(ls ko/*.ko 2>/dev/null | head -1 | sed -E 's/.*-(android[0-9]+)-.*/\1/') ;;
+esac
+pkg_all_same=1
+for f in ko/*.ko; do
+    [ -f "$f" ] || continue
+    a=$(echo "$f" | sed -E 's/.*-(android[0-9]+)-.*/\1/')
+    [ "$a" = "$pkg_android" ] || pkg_all_same=0
+done
+
+dev_android=""
+api=$(getprop ro.board.first_api_level 2>/dev/null | grep -oE '^[0-9]+')
+[ -z "$api" ] && api=$(getprop ro.product.first_api_level 2>/dev/null | grep -oE '^[0-9]+')
+case "$api" in
+    31|32) dev_android=android12 ;;
+    33)    dev_android=android13 ;;
+    34)    dev_android=android14 ;;
+    35)    dev_android=android15 ;;
+    36)    dev_android=android16 ;;
+    37)    dev_android=android17 ;;
+    # 厂商有时把 first_api_level 写成 YYYYMM，按 2009 偏移折算
+    [0-9][0-9][0-9][0-9][0-9][0-9])
+        dev_android=android$(( ${api:0:4} - 2009 )) ;;
+esac
+
+if [ -n "$pkg_android" ] && [ "$pkg_all_same" = 1 ]; then
+    if [ -z "$dev_android" ]; then
+        ui_print "! ${M_KMI_UNKNOWN}"
+    elif [ "$pkg_android" != "$dev_android" ]; then
+        ui_print "! ${M_KMI_MISMATCH_HEAD}"
+        ui_print "!   $(msg "$M_KMI_MISMATCH" "$pkg_android" "$dev_android")"
+        ui_print "! ${M_KMI_MISMATCH_TAIL}"
+        abort "  ${M_INSTALL_ABORTED}"
+    fi
+fi
 ui_print " "
 ui_print "- ${M_RUNTIME_LOG}: /data/adb/droidspaces_lkm.log"
 ui_print "- ${M_HANG_REPORT}: /data/adb/droidspaces_lkm.d/hang-report.txt"

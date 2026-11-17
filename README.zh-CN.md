@@ -191,6 +191,11 @@ droidspaces check                          # 应显示 All required features fou
 
 `droidspaces-lkm-arm64-<version>.zip` 是**合并包**，里面包含全部 7 个 KMI 的产物，开机按内核版本 + `ro.board.first_api_level` 自动选对应那一份。想省空间可以只下按 KMI 分包的版本。
 
+> **5.10 / 5.15 各有两代 Android 共用同一个内核版本号。**
+> `android12-5.10` 和 `android13-5.10` 的内核串都是 `5.10.x`，vermagic 只比到
+> `5.10` 这一层，所以拿错代的包也装得上、不报错。不确定设备是哪一代就用合并包
+> （开机按 `ro.board.first_api_level` 选）；按 KMI 分包在安装时会校验代际，不一致直接中止。
+
 **仅 arm64。** 非 GKI 内核、非 ARM64 设备不受支持。
 
 每个模块都为每个 KMI 从 DDK 镜像里**该 KMI 自己的内核源码树**构建；

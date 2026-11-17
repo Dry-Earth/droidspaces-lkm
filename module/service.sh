@@ -248,6 +248,20 @@ find_ko() {
         dlog "[MISS] $base: $(msg "$M_LOG_KMI_AMBIG" "${KMI:-?}")"
         return 1
     fi
+    # 单文件回退还要核对**代际**。5.10/5.15 有两代共用同一个内核版本号，
+    # vermagic 只比到 5.10 这一层，所以拿错代的包也能装；装错代不会报错，
+    # 但模块在 namespace 路径上卡死（issue #1 的两位报告者都是拿了
+    # android12 包装到出厂 API level=33 的 android13 设备上）。
+    case "$KMI" in
+        android*-*)
+            f_android=$(echo "$all" | sed -E 's/.*-(android[0-9]+)-.*/\1/')
+            kmi_android=${KMI%%-*}
+            if [ -n "$f_android" ] && [ "$f_android" != "$kmi_android" ]; then
+                dlog "[MISS] $base: generation mismatch (package=$f_android device=$kmi_android)"
+                return 1
+            fi
+            ;;
+    esac
     if ! ko_vermagic_ok "$all"; then
         dlog "[MISS] $base: $(basename "$all") ${M_LOG_VERMAGIC} != $(uname -r)"
         return 1

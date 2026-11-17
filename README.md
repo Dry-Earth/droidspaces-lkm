@@ -210,6 +210,13 @@ droidspaces check                          # "All required features found!"
 
 `droidspaces-lkm-arm64-<version>.zip` is the combined package: it carries the build for all 7 KMIs and picks the right one at boot from the kernel release plus `ro.board.first_api_level`. Pick a per-KMI zip instead if you want a smaller download.
 
+> **5.10 / 5.15 each have two Android generations sharing one kernel release.**
+> `android12-5.10` and `android13-5.10` both report `5.10.x`, and the vermagic
+> check only goes as far as `5.10`, so a wrong-generation package still loads.
+> If you are not sure which generation the device is, use the combined package:
+> it selects the generation from `ro.board.first_api_level` at boot. A per-KMI
+> package whose generation does not match the device aborts at install time.
+
 **arm64 only.** Non-GKI kernels and non-ARM64 devices are not supported.
 
 Every module is built for every KMI from that KMI's own kernel source tree in
