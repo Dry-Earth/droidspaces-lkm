@@ -382,6 +382,17 @@ fi
 # 实验性：只编译，不进完整性断言；编译失败只警告，不阻断发布。
 # ---------------------------------------------------------------------------
 log "=== mali_nsfix @ $KMI ==="
+# ftrace 后端能否编译进去取决于构建树的 config。DDK 是构建树，设备内核是
+# 厂商自己编的 —— 两者 config 不一定相同，所以这里把实际值打出来。
+# CONFIG_DYNAMIC_FTRACE_WITH_REGS 决定 struct ftrace_regs / ftrace_get_regs
+# 是否存在；没有它整个 ftrace 路径会被 #if 编译掉，只剩 kprobe。
+if [ -f "$KDIR/.config" ]; then
+    _ft=$(grep -E '^#? ?CONFIG_(DYNAMIC_FTRACE|DYNAMIC_FTRACE_WITH_REGS|FUNCTION_TRACER|HAVE_DYNAMIC_FTRACE_WITH_REGS)' "$KDIR/.config" 2>/dev/null | tr '\n' ' ')
+    log "  ftrace config: ${_ft:-未找到相关项}"
+else
+    log "  ftrace config: 无 $KDIR/.config"
+fi
+
 MN="$WS/extra/mali_nsfix"
 if [ -d "$MN" ]; then
     find "$MN" -name '*.o' -delete 2>/dev/null || true
