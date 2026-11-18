@@ -77,12 +77,14 @@ for f in module/webroot/index.html module/webroot/index.js module/webroot/styles
     [ -f "$f" ] || die "缺少 $f"
 done
 grep -q 'auto' module/route || die "module/route 默认值应为 auto"
-# WebUI 结构：底栏四页签 + 四个视图
+# WebUI 结构：底栏四页签 + 四个视图 + 语言菜单
 for v in view-home view-route view-diag view-about; do
     grep -q "id=\"$v\"" module/webroot/index.html || die "WebUI 缺少视图 $v"
 done
-[ "$(grep -c 'class="nav-item' module/webroot/index.html)" -ge 4 ] \
+[ "$(grep -c 'class="tab' module/webroot/index.html)" -ge 4 ] \
     || die "WebUI 底栏不足四个页签"
+grep -q 'id="lang-menu"' module/webroot/index.html \
+    || die "WebUI 缺少语言菜单（md-menu）"
 grep -q 'route_keytest' module/customize.sh \
     || die "customize.sh 缺少安装期音量键选择 route_keytest"
 grep -q 'ROUTE=$(cat' module/service.sh \
