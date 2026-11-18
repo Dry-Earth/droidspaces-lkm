@@ -26,8 +26,8 @@ cgroup 控制器。多数厂商内核为了通过 GKI ABI 检查把这些都编�
 | Release 做什么 | 只在打 tag（`vX.Y.Z`）时运行，构建后发布**预览版**，附模块包、分 KMI 的 zip 和源码快照。 |
 | 去哪反馈 | [新建 issue](https://github.com/misaka5202/droidspaces-lkm/issues/new/choose)，表单会直接要够定位问题的那几项数据。 |
 
-`update.json` 只在"这次发布要让 KernelSU 更新器推给用户"时才改，所以它现在指向
-尚未发布的 `v0.1.0`。
+`update.json` 只在「这次发布要让 KernelSU 更新器推给用户」时才改；它指向最近一次
+pre-release，并由发布工作流自动生成（本次发布会同步到 `v0.1.27`）。
 
 ## 它修好什么
 
@@ -110,8 +110,9 @@ tty 保护。想"装但不加载"某个，在模块目录放 `disable_pids` / `d
 > 是 API 34 才引入的符号，Android 13 上 daemon 加载失败）。
 > 详见 <https://github.com/misaka5202/Droidspaces-anland6-rootfs#support-matrix>。
 
-`vkms` 默认完全不加载。它提供的 `/dev/dri/renderD128` 背后没有 GPU，Mesa 只能
-落回 llvmpipe，也就是 CPU 软件渲染。它服务的是**自带标准 Wayland 合成器的桌面
+`vkms` / `mali_nsfix` 的加载组合由 `module/route` 决定（见[显示路线](#显示路线route)）。
+在 `auto` 下，`vkms` 默认不加载：它提供 `/dev/dri/renderD128`，背后没有 GPU——Mesa
+只能回退到 llvmpipe（CPU 软件渲染）。它服务的是**自带标准 Wayland 合成器的桌面
 镜像**（Anland 5.x 路线：KDE Plasma / KDE Plasma Mobile / GNOME / Hyprland /
 Niri / Mango / Denial，镜像环境里带 `ANLAND_DRM_DEVICE=/dev/dri/renderD128`）：
 Mali 厂商驱动只给 `/dev/mali0`，没有 DRM render node，这类镜像不开 `vkms`
@@ -170,6 +171,10 @@ updateJson=https://cdn.jsdelivr.net/gh/misaka5202/droidspaces-lkm@master/update.
 
 模块会按 `/proc/sys/kernel/osrelease` 自动选择匹配当前 KMI 的 `.ko`。
 
+MediaTek 设备在**没有旧配置**时，安装/更新会用音量键提示选择显示路线
+（上 = Anland 6.x，下 = 标准桌面 5.x；读不到键则用 `auto`）。升级默认保留原
+选择。装完可在 KernelSU 模块页打开 WebUI 复核或修改（重启生效）。
+
 ### 方式二：手动 insmod
 
 ```sh
@@ -194,6 +199,11 @@ hook。Droidspaces 只看 `/proc/filesystems` 里有没有 `devtmpfs`；默认�
 cat /proc/filesystems | grep devtmpfs      # 应出现 devtmpfs
 unshare -pf true && echo "PID ns OK"
 droidspaces check                          # 应显示 All required features found!
+
+# 显示路线与显示链路状态
+cat /data/adb/modules/droidspaces_lkm/route            # auto | anland6 | desktop5
+sh /data/adb/modules/droidspaces_lkm/action.sh doctor  # 一屏式状态
+# 或在 KernelSU 模块页打开本模块 WebUI：主页 / 切换路线 / 诊断 / 关于
 ```
 
 ## 支持的内核
@@ -238,9 +248,9 @@ droidspaces check                          # 应显示 All required features fou
 - **命令行**：`action.sh route auto|anland6|desktop5`。
 
 WebUI（`webroot/`，Material You 风格 + 底栏四页签：主页 / 切换路线 / 诊断 /
-关于，中英双语）随时可改路线；主页显示模块加载情况，诊断页给 route、
-`/dev/mali0`、`mali_kbase`、`nshf_*`、render node 与日志，关于页放仓库与两个
-懒人包入口：
+关于；MD3 与 MIUIx 两套主题，19 个语言 locale）随时可改路线；主页显示模块加载
+情况，诊断页给 route、`/dev/mali0`、`mali_kbase`、`nshf_*`、render node 与日志，
+关于页放仓库与两个懒人包入口：
 
 - 5.x RootFS 构建仓库：https://github.com/misaka5202/Droidspaces-rootfs-Desktop-builder
 - 6.x Anland RootFS 仓库：https://github.com/misaka5202/droidspaces-anland6-rootfs
@@ -408,6 +418,14 @@ Droidspaces 实际使用的探测方式。
   引擎拒绝跨函数边界的窗口、拒绝无法重定位的指令，并且只清除恢复点所在页的
   BTI 守卫属性、卸载时还原。它创建设备节点时，驱动没给 mode 就用 `0600` + root。
 - 模块参数全部是 `0444`，运行期不可写。
+- `droid_lkm_pids` 的 kprobe 处理器在原子上下文执行，绝不能睡眠。v0.1.27 去掉了
+  该路径上最后一处睡眠调用（subtree_control 上的 `kernfs_find_and_get`）；memory
+  是否启用的判断改为 `spin_lock_irqsave` 保护的原子观测表。旧版本若打出
+  `BUG: scheduling while atomic ... ctl_subtree_pre [droid_lkm_pids]`，升级即可。
+- `mali_nsfix` 装钩子前会自校验 `struct module` 布局（错位会把无关的
+  `find_get_pid` 调用也重定向掉），且运行期不解析任何符号；校验不过直接拒绝加载。
+- WebUI 是纯本地页面：`ksu.exec` 都以 root 执行，但只写 `module/route` 一个文件
+  （不做热 insmod/rmmod），除包内 locale 外不访问网络。
 
 每个版本修了什么见 [CHANGELOG.md](docs/CHANGELOG.md)。
 
@@ -451,6 +469,24 @@ Droidspaces 实际使用的探测方式。
 
 另外注意开机保护：连续三次开机都没走到 `boot-completed.sh`，模块会自动禁用自己，
 并把原因写进 `/data/adb/droidspaces_lkm.log` 和 `/data/adb/droidspaces_lkm.d/`。
+
+### 显示路线问题
+
+**A. 自带合成器的桌面报 `no usable DRM render device`（或黑屏）。** 这是 5.x
+路线：合成器要打开 `/dev/dri/renderD128`，而 Mali 不提供。把 route 设为
+`desktop5`（WebUI「切换路线」页，或 `action.sh route desktop5`）并重启；
+`auto` 下只有存在 `enable_vkms` 文件时才会加载 vkms。
+
+**B. Anland 6.x 会话报 `Failed to get pid pointer` / `eglInitialize()` 返回
+`0x3001`。** 这是 Mali GPU context 路径。把 route 设为 `anland6`（挂上
+`mali_nsfix`）并重启，然后在 WebUI「诊断」或 `action.sh doctor` 里确认。
+
+两条路线互斥，不要同时安装 5.x 与 6.x 的宿主组件。
+
+### `BUG: scheduling while atomic` 出现在 `droid_lkm_pids`
+
+v0.1.27 已修复（见「安全说明」）。更早的版本在容器启动、systemd 写
+`cgroup.subtree_control` 时可能 panic，升级到 v0.1.27+。
 
 ## 重要提醒
 
@@ -496,8 +532,8 @@ anland 桌面部署记录：[ANLAND-DEPLOY.md](docs/ANLAND-DEPLOY.md)。
 发一个预览版：
 
 ```sh
-git tag v0.1.0
-git push origin v0.1.0
+git tag v0.1.27
+git push origin v0.1.27
 ```
 
 只想试构建、不想打 tag：在 Actions 那一次运行里下载 `ko-*` artifact。
@@ -509,12 +545,21 @@ git push origin v0.1.0
 
 ```
 module/
-├── module.prop      元数据；version 就是更新器比较的那个
-├── customize.sh     安装期：架构检查、KMI 提示、ui_print
-├── service.sh       late_start：按 KMI 加载 .ko
-├── uninstall.sh     清理；刻意不 rmmod（原因见下）
-└── action.sh        「操作」按钮：一屏给出状态与能力自检
+├── module.prop        元数据；version 就是更新器比较的那个
+├── route              显示路线：auto | anland6 | desktop5（安装期写入）
+├── customize.sh       安装期：架构/代际校验、音量键选路线、ui_print
+├── service.sh         late_start：按 route 决定加载哪些 .ko
+├── post-fs-data.sh    开机循环保护 + pstore 现场捕获
+├── boot-completed.sh  真正开机成功后才清零计数器
+├── uninstall.sh       清理；刻意不 rmmod（原因见下）
+├── action.sh          「操作」按钮；另有 route / doctor 子命令
+├── i18n.sh            安装/操作/服务脚本文案
+├── webroot/           KernelSU WebUI（主页 / 切换路线 / 诊断 / 关于）
+└── ko/                各 KMI 的 .ko + symcheck-*.txt
 ```
+
+发布 zip 还带 `validation.json`：每个 `.ko` 的 SHA256/大小/vermagic、源码树
+指纹与产出 commit，拿到包不翻 git 也能核对。
 
 脚本用 `MODDIR=${0%/*}` 取自身目录，不硬编码 `/data/adb/modules/<id>`，
 所以装在别处也能正常工作。

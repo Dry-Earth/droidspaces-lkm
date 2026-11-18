@@ -18,6 +18,51 @@
 这一轮把「符号问题」从「出问题再修」推到三个方向。三条都经过 CI 全量矩阵和
 真机验证（Redmi Pad 2410CRP4CG / Qualcomm SM7675 / 6.1.138）。
 
+## v0.1.27
+
+### 修复
+
+**`droid_lkm_pids` 不再在 kprobe 原子上下文里睡眠（修 `scheduling while atomic`
+重启）。** `ctl_subtree_pre()` 是 pre-handler，却用 `kernfs_find_and_get()` 判断
+memory 是否已启用；该调用会 `down_read(&kernfs_rwsem)`，一旦有竞争就 `schedule`。
+实测（PHZ110 / Anland 5.x / 6.1.157）在 systemd 写 `cgroup.subtree_control` 时打出
+`BUG: scheduling while atomic ... ctl_subtree_pre [droid_lkm_pids]`，随后 preempt
+计数被破坏，连锁看门狗重启。改为**原子观测表**：见过 `+memory` 的 cgroup 记进
+`ctl_mem_seen[]`（`spin_lock_irqsave`），`-memory` 与 `cgroup_rmdir` 清条目；盲区只有
+「模块加载前就已启用 memory 的 cgroup」，退回老行为（rewrite 后 `-EFAULT`），不再
+panic。
+
+### 新增
+
+**显示路线（route）三态**：`auto` / `anland6` / `desktop5`。MediaTek 且无旧配置
+时，安装/更新用音量键选择（上 = Anland 6.x，下 = 标准桌面 5.x；读不到键 =
+`auto`）；升级默认保留原选择。可用 WebUI 或 `action.sh route auto|anland6|
+desktop5` 随时修改，重启生效；非 MTK 设备一律 `auto`，WebUI 隐藏「切换路线」
+页签。语义：`anland6` 挂 `mali_nsfix` 且不装 vkms；`desktop5` 强制装 vkms 且不装
+`mali_nsfix`。
+
+**WebUI 重做**：Material You 风格 + 底栏四页签（主页 / 切换路线 / 诊断 / 关于），
+MD3 与 MIUIx 两套主题、19 个语言 locale、内联图标；关于页放仓库与 5.x / 6.x 两个
+懒人包跳转。配套 `action.sh` 增加显示链路诊断（`/dev/mali0`、`mali_kbase`、render
+node、`nshf_*`）与机器可读 `nshf_status`。
+
+### 文档与说明
+
+- README（中英）明确 vkms / mali_nsfix 的适用路线与 5.x / 6.x 差异，补齐安装期
+  路线提示、WebUI 验证、`route` 文件与安全约束（pids 原子上下文、布局绊线、
+  WebUI 只做本地 root exec）。
+- 排障新增「显示路线问题」与历史 `scheduling while atomic` 条目。
+
+### CI
+
+- 静态检查覆盖 route 链路（安装器/加载器/操作页/WebUI）与既有 pids 睡眠调用回归
+  守卫；构建矩阵与打包流程不变。
+
+### 验证
+
+- 7 个 KMI 全量构建 + 打包通过；小测（单桌面 × 双架构 × 双语言）通过。
+- pids 修复与 route/WebUI 在 OPPO PHZ110（MTK）与 2410CRP4CG（Qualcomm）上核对。
+
 ## v0.1.26
 
 ### 修复

@@ -1,7 +1,7 @@
 id=droidspaces_lkm
 name=Droidspaces LKM
-version=v0.1.25
-versionCode=2026111800
+version=v0.1.27
+versionCode=2026111900
 author=misaka5202
-description=Stock GKI: PID/IPC/UTS/user ns, devtmpfs, macvlan, IPv6 NAT, vkms, cgroup cpu.max/pids emu.
+description=Stock GKI: PID/IPC/UTS/user ns, devtmpfs, macvlan, IPv6 NAT, vkms, cgroup limits, display route (vkms/mali_nsfix) with WebUI.
 updateJson=https://raw.githubusercontent.com/misaka5202/droidspaces-lkm/master/update.json

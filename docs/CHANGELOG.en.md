@@ -4,6 +4,59 @@ This is the English changelog. Entries before v0.1.23 exist only in Chinese;
 see [CHANGELOG.md](CHANGELOG.md). Version numbering rationale is documented
 there as well.
 
+## v0.1.27
+
+### Fixed
+
+**`droid_lkm_pids` no longer sleeps inside a kprobe handler (fixes the
+`scheduling while atomic` reboot).** `ctl_subtree_pre()` is a pre-handler but used
+`kernfs_find_and_get()` to check whether memory was already enabled; that call takes
+`down_read(&kernfs_rwsem)` and can schedule under contention. Measured on PHZ110 /
+Anland 5.x / 6.1.157: systemd writes `cgroup.subtree_control`, the kernel prints
+`BUG: scheduling while atomic ... ctl_subtree_pre [droid_lkm_pids]`, the preempt
+counter is corrupted, and the watchdog reboots. It now uses an atomic observation
+table (`ctl_mem_seen[]` guarded by `spin_lock_irqsave`, cleared by `-memory` and
+`cgroup_rmdir`). Only blind spot: cgroups where memory was enabled before this module
+loaded fall back to the old behaviour (`-EFAULT`), never a panic.
+
+### Added
+
+**Display route with three values**: `auto` / `anland6` / `desktop5`. On MediaTek
+devices without an existing config, install/update asks with a volume-key prompt
+(VolUp = Anland 6.x, VolDown = standard desktop 5.x; no key read = `auto`), and
+upgrades keep the previous choice. The route can be changed any time from the WebUI
+or `action.sh route auto|anland6|desktop5`; reboot to apply. Non-MTK devices always
+use `auto` and the Route tab is hidden. Semantics: `anland6` arms `mali_nsfix` and
+never loads vkms; `desktop5` forces vkms and does not load `mali_nsfix`.
+
+**WebUI redesign**: Material You style with a four-tab bottom bar (Home / Route /
+Diagnostics / About), MD3 and MIUIx themes, 19 locales and inline icons; About links
+the repository and both one-click packs. `action.sh` gained display-chain
+diagnostics (`/dev/mali0`, `mali_kbase`, render node, `nshf_*`) and a machine-
+readable `nshf_status` line.
+
+### Documentation
+
+- README (EN + ZH) now spells out which route uses vkms vs mali_nsfix, the 5.x/6.x
+  split, the install-time prompt, WebUI verification, the `route` file, and the
+  safety constraints (atomic-context pids handlers, layout tripwire, WebUI only
+  doing local root exec).
+- Troubleshooting gains "display route problems" and the historical
+  `scheduling while atomic` entry.
+
+### CI
+
+- Static checks cover the route chain (installer/loader/action/WebUI) plus the
+  regression guard against sleeping calls in pids handlers. Build matrix and
+  packaging are unchanged.
+
+### Verified
+
+- Full 7-KMI build + package green; small test (one desktop × two architectures ×
+  two languages) green.
+- pids fix and route/WebUI checked on OPPO PHZ110 (MediaTek) and 2410CRP4CG
+  (Qualcomm).
+
 ## v0.1.26
 
 ### Fixed
