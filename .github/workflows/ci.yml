@@ -1,5 +1,5 @@
 name: Continuous Integration
-run-name: CI · ${{ github.head_ref || github.ref_name }} @ ${{ github.sha }}
+run-name: CI · ${{ github.ref_name }}
 
 # 持续集成：推代码、开 PR 时验证"能不能编过"。
 #
