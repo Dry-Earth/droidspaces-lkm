@@ -4,6 +4,46 @@ This is the English changelog. Entries before v0.1.23 exist only in Chinese;
 see [CHANGELOG.md](CHANGELOG.md). Version numbering rationale is documented
 there as well.
 
+## v0.1.26
+
+### Fixed
+
+**Fixed the unconditional CFI failure on `unshare()` (issue #1: "running
+`droidspaces check` hangs the phone").**
+
+`patches/0003` added an indirect call through the runtime-resolved pointer
+`vns_copy_cgroup_ns_fn` (the real `copy_cgroup_ns`) in `vns_copy_cgroup_ns()`,
+but omitted `__nocfi`. Official GKI and vendor kernels both build with
+`CONFIG_CFI_CLANG=y`, so **every `unshare()`** failed kCFI at
+`create_new_namespaces → vns_copy_cgroup_ns`:
+
+```
+Kernel panic - not syncing: CFI failure (target: copy_cgroup_ns+0x0/0x608)
+  vns_copy_cgroup_ns+0x44/0x118 [lkm4ctr]
+  create_new_namespaces+0x254/0x548 [lkm4ctr]
+  vendor_kernel_hook_unshare+0x188/0x2e4 [lkm4ctr]
+```
+
+The first MUST HAVE probe of `droidspaces check` is
+`fork() + unshare(CLONE_NEWPID)`, so it died immediately. This release adds the
+missing `__nocfi`, matching how upstream treats the same class of call
+(`vns_copy_mnt_ns_fn`, `vns_real_copy_pid_ns_fn`, ...).
+
+**Per-KMI packages now check the 5.10/5.15 generation at install time.**
+`customize.sh` compares `ro.board.first_api_level` with the `androidNN` in the
+package name and aborts on a mismatch; `service.sh`'s single-file fallback got
+the same check; the README documents the two-generation caveat. (This is
+defensive; it is not the cause of the hang above.)
+
+### Verified
+
+- Full KMI matrix builds green (`ci.yml`, `full_matrix=true`, 7/7).
+- Official unmodified GKI android12-5.10 Image under QEMU: the panic above is
+  reproducible before the fix; after the fix the mount / pid / user namespace
+  probes all pass and the guest powers off cleanly.
+- On-device regression pending from the reporter (the custom kernel's
+  `.config` matches the DDK).
+
 ## v0.1.25
 
 ### Fixed
