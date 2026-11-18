@@ -69,6 +69,13 @@ on:
         required: false
         type: string
         default: 'lkm4ctr'
+      # 手动跑全量时通常也想要 zip 产物；这个开关只影响是否打包，
+      # 不发布 —— 发布始终走 release.yml 打 tag。
+      package:
+        description: '是否打包模块 zip 与源码快照（只产出 artifact，不发布）'
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
