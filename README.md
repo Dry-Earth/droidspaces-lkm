@@ -113,6 +113,11 @@ but not load one, drop a `disable_pids` / `disable_cpu` / `disable_uart_guard` /
 `mali_nsfix` loads automatically on Mali platforms and is skipped elsewhere. The
 decision is made from what the device reports, not from a list of vendor names.
 
+> **本表的 Android 版本是内核模块（KMI）一侧的**，与 anland6 用户态无关：
+> anland6 的 `waylandbridge` 需要 **Android 14（API 34）+**（`ANativeWindow_readFromParcel`
+> 是 API 34 才引入的符号，Android 13 上 daemon 加载失败）。
+> 详见 <https://github.com/misaka5202/Droidspaces-anland6-rootfs#support-matrix>。
+
 `vkms` is not loaded by default at all. It provides `/dev/dri/renderD128` backed
 by no GPU — Mesa can only fall back to llvmpipe, i.e. CPU software rendering.
 Measured on this device (OPPO PHZ110 / MT6989 / 6.1.157): with `vkms` removed,
@@ -209,13 +214,6 @@ droidspaces check                          # "All required features found!"
 | `droidspaces-lkm-android16-6.12-arm64-<version>.zip` | Android 16 / 6.12 |
 
 `droidspaces-lkm-arm64-<version>.zip` is the combined package: it carries the build for all 7 KMIs and picks the right one at boot from the kernel release plus `ro.board.first_api_level`. Pick a per-KMI zip instead if you want a smaller download.
-
-> **5.10 / 5.15 each have two Android generations sharing one kernel release.**
-> `android12-5.10` and `android13-5.10` both report `5.10.x`, and the vermagic
-> check only goes as far as `5.10`, so a wrong-generation package still loads.
-> If you are not sure which generation the device is, use the combined package:
-> it selects the generation from `ro.board.first_api_level` at boot. A per-KMI
-> package whose generation does not match the device aborts at install time.
 
 **arm64 only.** Non-GKI kernels and non-ARM64 devices are not supported.
 
