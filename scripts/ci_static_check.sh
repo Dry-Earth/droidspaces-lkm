@@ -17,11 +17,18 @@ die() {
     fail=1
 }
 
-# 1) shell 语法
+# 1) shell 语法。按 shebang 选解释器：module/*.sh 是 /system/bin/sh
+#   （POSIX），而 scripts/build_modules.sh 用了 bash 特性，用 sh -n 会误报。
 for f in module/*.sh scripts/*.sh; do
     [ -f "$f" ] || continue
-    if ! sh -n "$f"; then
-        die "shell 语法错误: $f"
+    shebang=$(head -n 1 "$f" 2>/dev/null)
+    shell=sh
+    case "$shebang" in
+        *bash*) shell=bash ;;
+    esac
+    command -v "$shell" >/dev/null 2>&1 || shell=sh
+    if ! "$shell" -n "$f"; then
+        die "shell 语法错误 ($shell): $f"
     fi
 done
 
