@@ -112,6 +112,16 @@ jobs:
           echo "ddk_release=${{ inputs.ddk_release }}" >> "$GITHUB_OUTPUT"
           echo "KMI 列表: $kmis"
 
+  static-check:
+    name: Static checks
+    runs-on: ubuntu-latest
+    steps:
+      - name: 检出
+        uses: actions/checkout@v6
+
+      - name: 运行静态检查
+        run: sh scripts/ci_static_check.sh
+
   build:
     name: Build (${{ matrix.kmi }})
     needs: prepare

@@ -84,6 +84,8 @@ cat $P/nshf_layout_valid# 1 = struct module 布局自校验通过
 cat $P/nshf_driver      # 绑定的驱动模块名，未找到时为 "(none)"
 cat $P/nshf_seen        # 加载以来的拦截次数（近似值）
 cat $P/nshf_hits        # 真正被重定向的次数（近似值）
+cat $P/nshf_prefix      # 调用者模块名前缀（默认 mali_kbase）
+cat $P/nshf_resolve_left # 剩余惰性解析次数（0 = 已放弃）
 ```
 
 模块包已经接好：开机前 `touch <模块目录>/mali_nsfix_dryrun` 就会以

@@ -94,6 +94,8 @@ cat $P/nshf_layout_valid# 1 = struct module layout self-check passed
 cat $P/nshf_driver      # bound module name, "(none)" if not loaded yet
 cat $P/nshf_seen        # intercepted calls since load (approximate)
 cat $P/nshf_hits        # calls actually redirected (approximate)
+cat $P/nshf_prefix      # caller module-name prefix (default mali_kbase)
+cat $P/nshf_resolve_left # lazy driver lookups left (0 = gave up)
 ```
 
 The module package wires this up: `touch <module dir>/mali_nsfix_dryrun`
