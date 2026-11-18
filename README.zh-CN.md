@@ -104,6 +104,11 @@ tty 保护。想"装但不加载"某个，在模块目录放 `disable_pids` / `d
 `mali_nsfix` 在 Mali 平台上自动加载，其余平台跳过。判断依据是设备实际报告的
 状态，不是厂商名列表。
 
+> **本表的 Android 版本说的是内核模块（KMI）那一侧**，与 anland6 用户态无关：
+> anland6 的 `waylandbridge` 需要 **Android 14（API 34）+**（`ANativeWindow_readFromParcel`
+> 是 API 34 才引入的符号，Android 13 上 daemon 加载失败）。
+> 详见 <https://github.com/misaka5202/Droidspaces-anland6-rootfs#support-matrix>。
+
 `vkms` 默认完全不加载。它提供的 `/dev/dri/renderD128` 背后没有 GPU，Mesa 只能
 落回 llvmpipe，也就是 CPU 软件渲染。本机实测（OPPO PHZ110 / MT6989 / 6.1.157）：
 卸掉 `vkms` 后 GL 客户端照常渲染、画面照常上屏，而合成器映射的是
@@ -190,11 +195,6 @@ droidspaces check                          # 应显示 All required features fou
 | `droidspaces-lkm-android16-6.12-arm64-<version>.zip` | Android 16 / 6.12 |
 
 `droidspaces-lkm-arm64-<version>.zip` 是**合并包**，里面包含全部 7 个 KMI 的产物，开机按内核版本 + `ro.board.first_api_level` 自动选对应那一份。想省空间可以只下按 KMI 分包的版本。
-
-> **5.10 / 5.15 各有两代 Android 共用同一个内核版本号。**
-> `android12-5.10` 和 `android13-5.10` 的内核串都是 `5.10.x`，vermagic 只比到
-> `5.10` 这一层，所以拿错代的包也装得上、不报错。不确定设备是哪一代就用合并包
-> （开机按 `ro.board.first_api_level` 选）；按 KMI 分包在安装时会校验代际，不一致直接中止。
 
 **仅 arm64。** 非 GKI 内核、非 ARM64 设备不受支持。
 
