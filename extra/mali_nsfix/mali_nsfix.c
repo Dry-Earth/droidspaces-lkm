@@ -303,12 +303,21 @@ static bool nshf_layout_ok(void)
 		return false;
 
 	/*
-	 * Third check: core_layout.size must be a plausible allocation. Both
+	 * Third check: the core text size must be a plausible allocation. Both
 	 * functions above living "inside" a module whose recorded size is 0 or
 	 * 4 GB means the offset is pointing at something that merely happens to
 	 * bracket our addresses by luck.
+	 *
+	 * The field moved in 6.4: struct module_layout { core_layout,
+	 * init_layout, ... } became struct module_memory mem[] indexed by
+	 * enum mod_mem_type (commit "module: replace module_layout with
+	 * module_memory"). MOD_TEXT is the core text slot in the new layout.
 	 */
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 4, 0)
+	size = THIS_MODULE->mem[MOD_TEXT].size;
+#else
 	size = THIS_MODULE->core_layout.size;
+#endif
 	if (size < 4096 || size > (64UL << 20))
 		return false;
 

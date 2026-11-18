@@ -194,9 +194,13 @@ Mali 无关的 `find_get_pid(nr)` 会被改写成「调用者自己的 group lea
 调用方据此对错误的进程动作。
 
 `nshf_layout_ok()` 在装钩子前拦这一道：本模块自己的两个地址必须被判为落在
-`THIS_MODULE` 内，且 `core_layout.size` 必须是合理的分配大小。它**证明不了布局
+`THIS_MODULE` 内，且核心代码段大小必须是合理的分配值。它**证明不了布局
 逐字节正确** —— 部分错位的结构体仍可能通过 —— 所以它是绊线，不是证明。结果记在
 `nshf_layout_valid` 里。
+
+大小读数跟随构建头文件用的是哪种布局：6.4 之前是 `core_layout`，6.4 起是
+`mem[MOD_TEXT]`（上游把 `struct module_layout` 换成了 `mem[]` 数组）。所以这道
+校验本身在所有受支持 KMI 上都能编译，运行时再判断它是否成立。
 
 ### mali_kbase 编进 vmlinux
 

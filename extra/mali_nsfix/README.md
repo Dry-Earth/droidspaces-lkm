@@ -217,10 +217,15 @@ redirect off. A false positive is the dangerous one: an unrelated
 caller acts on the wrong process.
 
 `nshf_layout_ok()` guards this before the probe is armed: two of the module's own
-addresses must classify as inside `THIS_MODULE`, and `core_layout.size` must be a
+addresses must classify as inside `THIS_MODULE`, and the core text size must be a
 plausible allocation. It cannot prove the layout is byte-exact - a partially
 shifted struct could still pass - so it is a tripwire, not a proof. It is
 recorded in `nshf_layout_valid`.
+
+The size read follows whichever layout the build headers use: `core_layout`
+before 6.4, `mem[MOD_TEXT]` from 6.4 on (upstream replaced `struct
+module_layout` with the `mem[]` array). The guard therefore compiles on every
+supported KMI; the runtime tripwire decides whether it holds.
 
 ### mali_kbase built into vmlinux
 
