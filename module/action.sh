@@ -13,6 +13,12 @@ MODDIR=${0%/*}
 LOG=/data/adb/droidspaces_lkm.log
 STATE_DIR=/data/adb/droidspaces_lkm.d
 
+# `action.sh doctor`：只输出诊断段（状态/加载/导出/能力），不打日志尾部。
+# 借鉴 live-gpu-driver 的 doctor 子命令；KernelSU 的「操作」按钮不带参数
+# 调用本脚本，默认路径与原来完全一致。
+_DOCTOR=0
+[ "${1:-}" = "doctor" ] && _DOCTOR=1
+
 # shellcheck source=i18n.sh
 [ -f "$MODDIR/i18n.sh" ] && . "$MODDIR/i18n.sh"
 
@@ -187,15 +193,42 @@ fi
 
 # Mali：有 /dev/mali0 说明是 Mali 平台，这时 mali_nsfix 是否加载决定容器内能否
 # 创建 GPU context。没有 /dev/mali0 的设备直接标 [--]，不制造无关的 FAIL。
-if [ -e /dev/mali0 ]; then
-    if lsmod | grep -q '^mali_nsfix'; then
-        echo "  [OK]   ${M_CAP_MALI}"
+#
+# 除了 [OK]/[FAIL]，把模块自己的状态参数摊开报：armed / 探针可用性 / 布局校验 /
+# 绑定的驱动 / 拦截计数。用户贴一段就能定位「没生效」到底是哪一环。
+if [ -e /dev/mali0 ] || lsmod | grep -q '^mali_kbase'; then
+    if ! lsmod | grep -q '^mali_nsfix'; then
+        echo "  [FAIL] ${M_MALI_NOT_LOADED}"
     else
-        echo "  [FAIL] ${M_CAP_MALI_NO}"
+        _p=/sys/module/mali_nsfix/parameters
+        _act=$(cat "$_p/nshf_active" 2>/dev/null)
+        _probe=$(cat "$_p/nshf_probe_ok" 2>/dev/null)
+        _lay=$(cat "$_p/nshf_layout_valid" 2>/dev/null)
+        _drv=$(cat "$_p/nshf_driver" 2>/dev/null)
+        _seen=$(cat "$_p/nshf_seen" 2>/dev/null)
+        _hits=$(cat "$_p/nshf_hits" 2>/dev/null)
+        case "$_act" in
+            1) echo "  [OK]   ${M_MALI_ACTIVE} (${M_MALI_DRIVER}=${_drv:-?})" ;;
+            *) echo "  [FAIL] ${M_MALI_DRY}" ;;
+        esac
+        case "$_probe" in
+            1) echo "  [OK]   ${M_MALI_PROBE_OK}" ;;
+            *) echo "  [FAIL] ${M_MALI_PROBE_NO}" ;;
+        esac
+        case "$_lay" in
+            1) : ;;
+            *) echo "  [FAIL] ${M_MALI_LAYOUT_BAD}" ;;
+        esac
+        printf "         %s\n" "$(printf "$M_MALI_COUNT" "${_seen:-?}" "${_hits:-?}")"
+        # 机器可读一行：脚本和 Issue 模板可以直接 grep，不受语言影响
+        echo "  nshf_status active=${_act:-?} probe_ok=${_probe:-?} layout=${_lay:-?} driver=${_drv:-?} seen=${_seen:-?} hits=${_hits:-?}"
     fi
 else
-    echo "  [--]   ${M_CAP_MALI_NA}"
+    echo "  [--]   ${M_MALI_NA}"
 fi
+
+# doctor 到这里就够了；默认路径继续往下打日志尾部。
+[ "$_DOCTOR" = "1" ] && exit 0
 echo
 
 echo "=== ${M_SEC_LOG} ==="

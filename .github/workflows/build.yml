@@ -197,9 +197,44 @@ jobs:
           path: out/
           if-no-files-found: warn
 
+  validate:
+    name: Validation evidence
+    needs: [prepare, build]
+    # 与 package 同一门槛：构建被取消就不做；失败也照实记录已有产物，
+    # 这样 validation.json 反映的是「实际产出了什么」，不是「本该产出什么」。
+    if: always() && needs.build.result != 'cancelled'
+    runs-on: ubuntu-latest
+    steps:
+      - name: 检出
+        uses: actions/checkout@v6
+
+      - name: 下载所有产物
+        uses: actions/download-artifact@v8
+        with:
+          pattern: ko-*
+          path: ko-all
+          merge-multiple: true
+
+      - name: 生成 validation.json
+        run: |
+          set -euo pipefail
+          python3 scripts/gen_validation.py \
+            --ko-dir ko-all \
+            --out validation.json \
+            --commit "$GITHUB_SHA" \
+            --source-root "$GITHUB_WORKSPACE"
+          cat validation.json
+
+      - name: 上传
+        uses: actions/upload-artifact@v7
+        with:
+          name: droidspaces-lkm-validation
+          path: validation.json
+          if-no-files-found: error
+
   package:
     name: Package
-    needs: [prepare, build]
+    needs: [prepare, build, validate]
     # CI 只用 ko-* artifact 做汇总，不需要模块 zip 和源码快照；
     # 打包只在发布时做，省掉 CI 关键路径上的一次压缩。
     if: always() && needs.build.result != 'cancelled' && inputs.package
@@ -214,6 +249,13 @@ jobs:
           pattern: ko-*
           path: ko-all
           merge-multiple: true
+
+      - name: 下载验证证据
+        uses: actions/download-artifact@v8
+        continue-on-error: true
+        with:
+          name: droidspaces-lkm-validation
+          path: dist
 
       - name: 整理
         run: |
@@ -276,6 +318,8 @@ jobs:
           cp dist/symcheck-*.txt "$STAGE/ko/" 2>/dev/null || echo "::warning::没有 symcheck 清单"
           cp module/module.prop module/customize.sh module/post-fs-data.sh module/service.sh \
           module/uninstall.sh module/action.sh module/boot-completed.sh module/i18n.sh "$STAGE/"
+          # 验证证据随包走：用户拿到 zip 就能核对二进制哈希与产出 commit。
+          cp dist/validation.json "$STAGE/" 2>/dev/null || echo "::warning::没有 validation.json"
           chmod 755 "$STAGE"/*.sh
           sed -i 's/\r$//' "$STAGE"/*.sh "$STAGE/module.prop" "$STAGE"/ko/symcheck-*.txt 2>/dev/null || true
           # 把本次构建的版本号写进 module.prop。
@@ -335,7 +379,7 @@ jobs:
           # 按 KMI 拆分单包
           for f in dist/*.ko; do
             [ -f "$f" ] || continue
-            kmi=$(basename "$f" | sed -E 's/^(lkm4ctr|devtmpfs_lkm|macvlan|ip6table_nat|vkms|droid_lkm_pids|droid_lkm_cpu|uart_guard)-(.*)\.ko$/\2/')
+            kmi=$(basename "$f" | sed -E 's/^(lkm4ctr|devtmpfs_lkm|macvlan|ip6table_nat|vkms|droid_lkm_pids|droid_lkm_cpu|uart_guard|mali_nsfix)-(.*)\.ko$/\2/')
             case "$kmi" in
               android*) ;;
               *) continue ;;
@@ -346,6 +390,7 @@ jobs:
             cp "dist/symcheck-$kmi.txt" "$S/ko/" 2>/dev/null || true
             cp module/module.prop module/customize.sh module/post-fs-data.sh module/service.sh \
             module/uninstall.sh module/action.sh module/boot-completed.sh module/i18n.sh "$S/"
+            cp dist/validation.json "$S/" 2>/dev/null || echo "::warning::没有 validation.json"
             chmod 755 "$S"/*.sh
             sed -i 's/\r$//' "$S"/*.sh "$S/module.prop" "$S"/ko/symcheck-*.txt 2>/dev/null || true
             if [ -n "${{ inputs.version }}" ]; then

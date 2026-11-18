@@ -79,6 +79,15 @@
  * -----
  * This only unblocks GPU context creation. Userspace still has to load the
  * vendor driver into the container (libhybris) and provide a render node.
+ *
+ * Dry run
+ * -------
+ * insmod mali_nsfix.ko nshf_activate=0 keeps the module resident but unarmed:
+ * it validates struct module, register/unregister-probes find_get_pid to prove
+ * the hook point exists, resolves mali_kbase if present, and exports the
+ * outcome through nshf_active / nshf_probe_ok / nshf_layout_valid /
+ * nshf_driver. Nothing is redirected, so it is safe to use as a first-install
+ * preflight on an unverified device.
  */
 
 #include <linux/module.h>
@@ -124,6 +133,43 @@ MODULE_PARM_DESC(nshf_hits, "calls redirected to the group leader (approximate)"
 static bool nshf_layout_valid;
 module_param(nshf_layout_valid, bool, 0444);
 MODULE_PARM_DESC(nshf_layout_valid, "struct module layout self-check result");
+
+/*
+ * Dry-run control, borrowed from the activate= convention other Droidspaces
+ * LKM targets use for their self-test builds.
+ *
+ * 1 (default): validate the layout, arm the kprobe, stay resident.
+ * 0:          validate the layout, prove the probe point exists by
+ *             register/unregister-ing it, resolve the driver, export all
+ *             diagnostics -- and change nothing about kernel behaviour.
+ *             The module stays loaded and removable, so a first install can
+ *             answer "would this work here?" before committing to a hook.
+ *
+ * Read-only on purpose: flipping it after load would not disarm anything.
+ */
+static int nshf_activate = 1;
+module_param(nshf_activate, int, 0444);
+MODULE_PARM_DESC(nshf_activate,
+		 "1 = arm the kprobe (default), 0 = validate only, stay unarmed");
+
+/* 1 once the kprobe is actually installed; 0 in dry-run or after failure. */
+static int nshf_active;
+module_param(nshf_active, int, 0444);
+MODULE_PARM_DESC(nshf_active, "1 = kprobe armed, 0 = not armed");
+
+/* Result of the register/unregister probe; meaningful in both modes. */
+static bool nshf_probe_ok;
+module_param(nshf_probe_ok, bool, 0444);
+MODULE_PARM_DESC(nshf_probe_ok, "kprobe registration on find_get_pid succeeded");
+
+/*
+ * Which module the redirect is bound to, for the doctor output. "(none)"
+ * means mali_kbase was not present at load time (the handler still resolves
+ * lazily on an armed module).
+ */
+static char nshf_driver[64] = "(none)";
+module_param_string(nshf_driver, nshf_driver, sizeof(nshf_driver), 0444);
+MODULE_PARM_DESC(nshf_driver, "module whose find_get_pid() calls are redirected");
 
 /*
  * Replacement reached only through the redirect, so it never has to call the
@@ -337,15 +383,40 @@ static int __init nshf_init(void)
 	}
 	nshf_layout_valid = true;
 
-	ret = nshf_arm_kprobe();
-	if (ret)
-		return ret;
+	if (nshf_activate) {
+		ret = nshf_arm_kprobe();
+		if (ret)
+			return ret;
+		nshf_active = 1;
+		nshf_probe_ok = true;
+	} else {
+		/*
+		 * Dry run. Registering proves the probe point exists on this
+		 * kernel (it fails with -ENODEV when CONFIG_KPROBES is off or
+		 * find_get_pid is not a kallsyms-resolvable name); unregistering
+		 * immediately leaves no trace. Nothing is redirected.
+		 */
+		ret = nshf_arm_kprobe();
+		if (ret) {
+			pr_warn("mali_nsfix: dry-run: register_kprobe"
+				"(find_get_pid) = %d\n", ret);
+		} else {
+			nshf_disarm_kprobe();
+			nshf_probe_ok = true;
+			pr_info("mali_nsfix: dry-run: find_get_pid probe "
+				"registered and released\n");
+		}
+	}
 
 	/* Resolve eagerly when the driver is already loaded (the usual case on a
-	 * booted device); the handler falls back to lazy resolution otherwise. */
+	 * booted device); an armed handler falls back to lazy resolution. */
 	nshf_mali_mod = nshf_resolve_mali();
+	if (nshf_mali_mod)
+		scnprintf(nshf_driver, sizeof(nshf_driver), "%s",
+			  nshf_mali_mod->name);
 
-	pr_info("mali_nsfix: redirecting callers in '%s*', layout verified%s\n",
+	pr_info("mali_nsfix: %s; redirecting callers in '%s*', layout verified%s\n",
+		nshf_active ? "kprobe armed" : "dry-run (not armed)",
 		mali_prefix,
 		nshf_mali_mod ? " (driver already loaded)" : " (driver not loaded yet)");
 	return 0;
@@ -353,7 +424,8 @@ static int __init nshf_init(void)
 
 static void __exit nshf_exit(void)
 {
-	nshf_disarm_kprobe();
+	if (nshf_active)
+		nshf_disarm_kprobe();
 
 	if (nshf_mali_mod) {
 		module_put(nshf_mali_mod);
@@ -370,4 +442,4 @@ module_exit(nshf_exit);
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("misaka5202");
 MODULE_DESCRIPTION("Redirect find_get_pid() calls made by the Mali kbase driver so GPU contexts work inside a PID namespace");
-MODULE_VERSION("0.3.0");
+MODULE_VERSION("0.4.0");

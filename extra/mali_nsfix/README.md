@@ -39,6 +39,21 @@ the `dmesg` line above.
 Android's own processes are unaffected: for them both values name the same
 task.
 
+The failure chain is indirect, which is why it gets misread as a userspace or
+EGL problem:
+
+```
+mali: Failed to get pid pointer for <comm>/<pid>     (dmesg)
+  -> kbase_create_context() = -ESRCH
+  -> kbase_file_create_kctx() maps it to -ENOMEM
+  -> eglInitialize()/Vulkan init fails (EGL_NOT_INITIALIZED / no context)
+  -> compositor starts with no GPU and dies or shows a blank screen
+```
+
+Checking `/proc/config.gz` will not tell you this: it can be stale, and the
+relevant question ("does the running driver resolve pids in the caller's
+namespace?") is a runtime property. Verify on the device, as above.
+
 ## Fix
 
 A kprobe on `find_get_pid()`. When the caller's return address lies inside a
@@ -54,6 +69,37 @@ namespace test: it is a no-op on the host and the fix in a container.
 Caller attribution uses `within_module()`, a `static inline` in `module.h`
 that resolves `struct module` layout at compile time. No symbol lookups, no
 dependency on the vendor module's own symbols.
+
+## Dry run (first-install preflight)
+
+`nshf_activate=0` loads the module **without arming anything**:
+
+```sh
+insmod mali_nsfix.ko nshf_activate=0
+```
+
+It still validates `struct module`, proves the hook point exists by
+registering and immediately unregistering a kprobe on `find_get_pid()`,
+resolves `mali_kbase` if it is present, and exports what it found. Nothing is
+redirected, so this is the safe way to answer "would this work here?" on an
+unverified device. The module stays resident and removable.
+
+State is readable without unloading:
+
+```sh
+P=/sys/module/mali_nsfix/parameters
+cat $P/nshf_active      # 1 = kprobe armed, 0 = dry-run / not armed
+cat $P/nshf_probe_ok    # 1 = find_get_pid probe registration succeeded
+cat $P/nshf_layout_valid# 1 = struct module layout self-check passed
+cat $P/nshf_driver      # bound module name, "(none)" if not loaded yet
+cat $P/nshf_seen        # intercepted calls since load (approximate)
+cat $P/nshf_hits        # calls actually redirected (approximate)
+```
+
+The module package wires this up: `touch <module dir>/mali_nsfix_dryrun`
+before boot loads `nshf_activate=0`; `action.sh doctor` prints the same state
+plus a machine-readable `nshf_status ...` line. Default (`nshf_activate=1`)
+is unchanged behaviour.
 
 ## Why not rebuild `mali_kbase.ko`
 
@@ -122,6 +168,34 @@ it compiled to nothing on every one of them. It was removed rather than shipped
 as dead code. Revisit only if a target kernel has `CONFIG_FUNCTION_TRACER=y` -
 and note that the measured kprobe cost above makes that unlikely to be worth
 the complexity.
+
+## Prior art
+
+The bug and the source-level fix are not new. What is new here is the delivery:
+a standalone module that fixes a stock driver at runtime.
+
+- **Droidian / Halium porting notes** (public 2026-07-28),
+  [porting-notes.md §3](https://github.com/note10lite-droidian/docs/blob/main/docs/research/porting-notes.md):
+  documents the same `find_get_pid(kctx->tgid)` failure for Waydroid/Anbox on
+  Mali and the source fix `get_pid(task_tgid(current))`, which they report is
+  present in some vendor DDK drops (`bv_r26p0`/`bv_r32p1`/`bv_r38p1`).
+  If your device's driver already contains that fix, this module redirects
+  calls that would have succeeded anyway - harmless, but also unnecessary.
+- **shr-distribution/meta-smartphone** (2026-10-18),
+  [commit 1c9d86e](https://github.com/shr-distribution/meta-smartphone/commit/1c9d86e1e8af42483507e1e894f8c75ad6f8692a):
+  rebuilds `mali_kbase_mt6789.ko` and loads it from a `vendor_dlkm-override`
+  directory ahead of the container, so the vendor init finds it already
+  loaded. Same bug; still needs driver source, matching CRCs and a rebuilt
+  `.ko`.
+- **[live-gpu-driver](https://github.com/insterbridge/live-gpu-driver)**:
+  a KernelSU/APatch module that swaps *userspace* GPU drivers with bind mounts.
+  Its limitation section states the kernel-side driver cannot be swapped live -
+  which is exactly why redirecting the call is the practical route on Mali.
+- **[Shikochin/Droidspaces-LKM](https://github.com/Shikochin/Droidspaces-LKM)**:
+  the other Droidspaces LKM. It supplies PID/IPC namespaces, devtmpfs and user
+  namespaces, but nothing for Mali. The dry-run convention, fingerprint gating
+  idea and `validation.json` release evidence were borrowed from it (see
+  `ORIGIN`).
 
 ## Risks and limits
 

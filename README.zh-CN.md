@@ -97,7 +97,8 @@ cgroup 控制器。多数厂商内核为了通过 GKI ABI 检查把这些都编�
 三个补充模块（`droid_lkm_pids` / `droid_lkm_cpu` / `uart_guard`）排在最后，
 不会挡住前面五个：它们失败时设备照常开机、照常跑容器，只是少了对应的限额或
 tty 保护。想"装但不加载"某个，在模块目录放 `disable_pids` / `disable_cpu` /
-`disable_uart_guard` / `disable_mali` 文件即可。
+`disable_uart_guard` / `disable_mali` 文件即可；放 `mali_nsfix_dryrun` 则以
+不挂钩的干跑模式（`nshf_activate=0`）加载 mali_nsfix，用于预检。
 
 ### 按平台条件加载的模块
 
@@ -136,6 +137,11 @@ touch /data/adb/modules/droidspaces_lkm/enable_vkms
 （PHZ110 / MT6989 / 6.1.157）为 **0.000008% - 0.000025% CPU** —— 全系统每分钟
 约 5 次 `find_get_pid()` 拦截；计数不用卸载模块就能读，在
 `/sys/module/mali_nsfix/parameters/` 下的 `nshf_seen` / `nshf_hits`。
+在没验证过的设备上可以先不挂钩加载（`mali_nsfix_dryrun`，即
+`nshf_activate=0`），读 `nshf_active` / `nshf_probe_ok` / `nshf_layout_valid` /
+`nshf_driver`；KernelSU「操作」按钮（`action.sh doctor`）会打印同一份状态，
+并给一行机器可读的 `nshf_status`。先例与完整失败链见
+[模块说明](extra/mali_nsfix/README.zh-CN.md)。
 
 Mali 容器还需要什么（Android 侧合成器配置、`dma-buf` 处理），见 RootFS 仓库的
 [桌面与 Anland 指南](https://github.com/misaka5202/Droidspaces-anland6-rootfs/blob/main/docs/zh/桌面与Anland.md)。

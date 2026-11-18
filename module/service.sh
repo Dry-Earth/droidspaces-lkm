@@ -320,6 +320,31 @@ ko_load_error() {
     fi
 }
 
+# 判断是否已加载: 用模块名而不是文件名, 因为文件名带 KMI 后缀。
+#
+# /proc/modules 里的名字把 '-' 换成 '_'。按带连字符的 base 或文件名去 grep
+# 会漏判, 而漏判的后果是重复 insmod（内核拒绝, 日志里多一条假失败）。
+mod_loaded() {
+    local n
+    n=$(echo "$1" | tr '-' '_')
+    grep -q "^${n} " /proc/modules 2>/dev/null
+}
+
+# 有界重试加载。给"依赖别的模块先就绪"的模块用（vkms 依赖 drm.ko 导出,
+# mali_nsfix 依赖 find_get_pid 可解析）。每趟之间 sleep, 日志沿用 load_mod
+# 的 [OK]/[TRY]/[FAIL] 标记; tries<=0 时退化成一次, 等同 load_mod。
+load_mod_retry() {
+    local base="$1" params="$2" tries="${3:-1}" i=1
+    while [ "$i" -le "$tries" ]; do
+        if load_mod "$base" "$params"; then
+            return 0
+        fi
+        [ "$i" -lt "$tries" ] && sleep 2
+        i=$((i + 1))
+    done
+    return 1
+}
+
 load_mod() {
     local base="$1" params="$2"
     local ko
@@ -354,7 +379,7 @@ load_mod() {
     fi
 
     # 判断是否已加载: 用模块名而不是文件名, 因为文件名带 KMI 后缀
-    if grep -q "^${base} " /proc/modules 2>/dev/null; then
+    if mod_loaded "$base"; then
         dlog "[SKIP] $base already loaded"
         return 0
     fi
@@ -393,7 +418,7 @@ load_mod() {
             o=$(insmod "$k" 2>&1)
         fi
         out="$o"
-        grep -q "^${base} " /proc/modules 2>/dev/null
+        mod_loaded "$base"
     }
 
     if _try_load "$ko"; then
@@ -425,11 +450,11 @@ dlog "${M_LOG_LOADING}"
 # 先试完整版；失败且 lite 存在时回退。lite 至少保住 PID/IPC/UTS namespace，
 # 也就是 Droidspaces 的硬性前提。
 load_mod lkm4ctr ""
-if ! lsmod 2>/dev/null | grep -q '^lkm4ctr '; then
+if ! mod_loaded lkm4ctr; then
     if [ -f "$MODDIR/ko/lkm4ctr-lite-$KMI.ko" ]; then
         dlog "$M_LITE_FALLBACK"
         load_mod lkm4ctr-lite ""
-        if lsmod 2>/dev/null | grep -q '^lkm4ctr_lite '; then
+        if mod_loaded lkm4ctr-lite; then
             dlog "$M_LITE_OK"
         else
             dlog "$M_LITE_FAIL"
@@ -497,14 +522,9 @@ dlog "platform: mali=${GPU_HAS_MALI} renderD128=$([ -e /dev/dri/renderD128 ] && 
 # 用绝对路径：此处 MODDIR 还是 ${0%/*} 的相对形式，脚本被以相对路径调用时
 # 会解析错；下面 L499 那处也重新赋成了绝对值，这里保持一致。
 if [ -f "$DSM_DIR/enable_vkms" ]; then
-    if ! load_mod vkms ""; then
-        for _try in 1 2 3 4 5; do
-            sleep 2
-            if load_mod vkms ""; then
-                break
-            fi
-        done
-    fi
+    # 原来是 load_mod + for 1..5 重试（共 6 次）。改用统一的有界重试，
+    # 次数保持一致（tries=6），日志标记不变。
+    load_mod_retry vkms "" 6 || true
 else
     dlog "[SKIP] ${M_SKIP_VKMS_OFF}"
 fi
@@ -530,9 +550,34 @@ MODDIR="/data/adb/modules/droidspaces_lkm"
 # 没有 mali_kbase 的设备装上纯属浪费。
 # 它在 GPU context 创建路径上，失败不影响容器本身。
 if [ "$GPU_HAS_MALI" = "1" ]; then
-    [ -f "$MODDIR/disable_mali" ] || load_mod mali_nsfix ""
+    if [ -f "$MODDIR/disable_mali" ]; then
+        dlog "[SKIP] ${M_SKIP_MALI_DISABLE}"
+    elif [ -f "$MODDIR/mali_nsfix_dryrun" ]; then
+        # 干跑：模块留在内核里但不挂钩，用来在没验证过的设备上先回答
+        # 「这里能不能生效」。判据看 nshf_active / nshf_probe_ok /
+        # nshf_layout_valid，见 extra/mali_nsfix/README.md。
+        if load_mod mali_nsfix "nshf_activate=0"; then
+            dlog "[INFO] mali_nsfix dry-run: ${M_MALI_DRYRUN_OK}"
+        fi
+    else
+        load_mod mali_nsfix ""
+    fi
 else
     dlog "[SKIP] ${M_SKIP_MALI}"
+fi
+
+# mali_nsfix 的状态面：armed / 干跑 / 探针可用性 / 绑定的驱动。
+# 只报事实，不替用户下结论。
+if mod_loaded mali_nsfix; then
+    _ns_act=$(cat /sys/module/mali_nsfix/parameters/nshf_active 2>/dev/null)
+    _ns_probe=$(cat /sys/module/mali_nsfix/parameters/nshf_probe_ok 2>/dev/null)
+    _ns_drv=$(cat /sys/module/mali_nsfix/parameters/nshf_driver 2>/dev/null)
+    case "$_ns_act" in
+        1) dlog "[OK]   mali_nsfix armed (driver=${_ns_drv:-?})" ;;
+        *) dlog "[WARN] mali_nsfix loaded, not armed ${M_MALI_NOT_ARMED} (probe_ok=${_ns_probe:-?}, driver=${_ns_drv:-?})" ;;
+    esac
+else
+    dlog "[--]   mali_nsfix not loaded"
 fi
 
 # 注意：这里**不清零**开机计数器。
@@ -553,10 +598,10 @@ unshare -i true 2>/dev/null \
 grep -q devtmpfs /proc/filesystems 2>/dev/null \
     && dlog "[OK] devtmpfs" \
     || dlog "[--] ${M_CAP_DEVTMPFS_NO}"
-grep -q "^droid_lkm_pids " /proc/modules 2>/dev/null \
+mod_loaded droid_lkm_pids \
     && dlog "[OK] pids controller emulation" \
     || dlog "[--] pids controller emulation not loaded"
-grep -q "^droid_lkm_cpu " /proc/modules 2>/dev/null \
+mod_loaded droid_lkm_cpu \
     && dlog "[OK] cpu.max emulation" \
     || dlog "[--] cpu.max emulation not loaded"
 
@@ -594,7 +639,7 @@ snapshot_once() {
         printf -- '-- uptime: %s\n' "$(cut -d' ' -f1 /proc/uptime 2>/dev/null)"
         printf -- '-- load  : %s\n' "$(cut -d' ' -f1-3 /proc/loadavg 2>/dev/null)"
         printf -- '-- droidspaces 模块:\n'
-        grep -E '^(lkm4ctr|devtmpfs_lkm|ip6table_nat|macvlan|vkms|droid_lkm_pids|droid_lkm_cpu|uart_guard) ' \
+        grep -E '^(lkm4ctr|devtmpfs_lkm|ip6table_nat|macvlan|vkms|droid_lkm_pids|droid_lkm_cpu|uart_guard|mali_nsfix) ' \
             /proc/modules 2>/dev/null \
             | awk '{printf "   %-14s ref=%-4s size=%s\n", $1, $3, $2}'
         printf -- '-- renderD128: %s\n' "$([ -e /dev/dri/renderD128 ] && echo 有 || echo 无)"

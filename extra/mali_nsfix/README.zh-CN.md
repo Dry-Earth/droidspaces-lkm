@@ -34,6 +34,20 @@ if (unlikely(err))
 
 Android 自身进程不受影响：对它们而言两个值是同一个任务。
 
+失败链是间接的，所以经常被误读成用户态或 EGL 的问题：
+
+```
+mali: Failed to get pid pointer for <comm>/<pid>     （dmesg）
+  -> kbase_create_context() = -ESRCH
+  -> kbase_file_create_kctx() 映射成 -ENOMEM
+  -> eglInitialize()/Vulkan 初始化失败（EGL_NOT_INITIALIZED / 拿不到 context）
+  -> 合成器没有 GPU 可用，崩溃或黑屏
+```
+
+看 `/proc/config.gz` 判断不了这件事：它可能是旧的，而真正的问题（运行中的
+驱动是否在调用者的命名空间里解析 pid）是运行时属性。请按上面的方法在设备上
+实测。
+
 ## 修法
 
 在 `find_get_pid()` 上挂 kprobe。当调用者的返回地址位于名称以 `mali_kbase`
@@ -46,6 +60,35 @@ Android 自身进程不受影响：对它们而言两个值是同一个任务。
 
 调用者归属判定使用 `within_module()`，这是 `module.h` 中的 `static inline`，
 在编译期解析 `struct module` 布局。不需要符号查找，也不依赖厂商模块自身的符号。
+
+## 干跑（首次安装前的预检）
+
+`nshf_activate=0` 会加载模块但**不挂任何钩子**：
+
+```sh
+insmod mali_nsfix.ko nshf_activate=0
+```
+
+它仍然会校验 `struct module`、用「注册后立刻注销」的方式证明 `find_get_pid()`
+这个探针点存在、并在驱动已加载时解析 `mali_kbase`，把结果导出。全程不做任何
+重定向，所以这是在没验证过的设备上回答「这里能不能生效」的安全做法。模块留在
+内核里且可以卸载。
+
+状态不用卸载就能读：
+
+```sh
+P=/sys/module/mali_nsfix/parameters
+cat $P/nshf_active      # 1 = 已挂钩，0 = 干跑 / 未挂钩
+cat $P/nshf_probe_ok    # 1 = find_get_pid 探针注册成功
+cat $P/nshf_layout_valid# 1 = struct module 布局自校验通过
+cat $P/nshf_driver      # 绑定的驱动模块名，未找到时为 "(none)"
+cat $P/nshf_seen        # 加载以来的拦截次数（近似值）
+cat $P/nshf_hits        # 真正被重定向的次数（近似值）
+```
+
+模块包已经接好：开机前 `touch <模块目录>/mali_nsfix_dryrun` 就会以
+`nshf_activate=0` 加载；`action.sh doctor` 会打印同一份状态，并额外给一行
+机器可读的 `nshf_status ...`。默认值（`nshf_activate=1`）行为不变。
 
 ## 为什么不重新构建 `mali_kbase.ko`
 
@@ -108,6 +151,30 @@ dynamic ftrace 无处可改。`CONFIG_HAVE_DYNAMIC_FTRACE_WITH_REGS=y` 只说明
 与其作为死代码发布，不如删掉。只有目标内核确实开了 `CONFIG_FUNCTION_TRACER`
 时才值得重新考虑 —— 而上面测出的 kprobe 开销说明，那时候也大概率不值得
 为此增加复杂度。
+
+## 先例
+
+这个 bug 和源码级修法都不新；新的是交付形态——用一个独立模块在运行时修好
+stock 驱动。
+
+- **Droidian / Halium 移植笔记**（2026-07-28 公开），
+  [porting-notes.md 第 3 节](https://github.com/note10lite-droidian/docs/blob/main/docs/research/porting-notes.md)：
+  记录了 Mali 上 Waydroid/Anbox 的同一个 `find_get_pid(kctx->tgid)` 失败与
+  源码修法 `get_pid(task_tgid(current))`，并称部分厂商 DDK 副本
+  （`bv_r26p0`/`bv_r32p1`/`bv_r38p1`）已含该修复。如果你设备的驱动本来就有
+  这个修复，本模块重定向的都是本来就会成功的调用——无害，但也多余。
+- **shr-distribution/meta-smartphone**（2026-10-18），
+  [commit 1c9d86e](https://github.com/shr-distribution/meta-smartphone/commit/1c9d86e1e8af42483507e1e894f8c75ad6f8692a)：
+  重新编译 `mali_kbase_mt6789.ko`，放进 `vendor_dlkm-override` 目录抢在容器前
+  加载，让厂商 init 发现它已在内核里。同一个 bug，但仍需要驱动源码、匹配的
+  CRC 和一个重编的 `.ko`。
+- **[live-gpu-driver](https://github.com/insterbridge/live-gpu-driver)**：
+  KernelSU/APatch 模块，用 bind mount 换掉**用户态** GPU 驱动。它的限制一节
+  明确写着 kernel-side 驱动不能热替换——这正是 Mali 上选择「改调用」的原因。
+- **[Shikochin/Droidspaces-LKM](https://github.com/Shikochin/Droidspaces-LKM)**：
+  另一条 Droidspaces LKM 路线，补 PID/IPC namespace、devtmpfs 与 user
+  namespace，但不含 Mali。干跑惯例、指纹门禁思路与 `validation.json` 发布
+  证据都借鉴自它（见 `ORIGIN`）。
 
 ## 风险与边界
 

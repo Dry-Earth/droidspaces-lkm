@@ -106,7 +106,8 @@ modules (`droid_lkm_pids`, `droid_lkm_cpu`, `uart_guard`) go last and cannot
 block the five above them: a failure there leaves a device that still boots and
 runs containers, just without the corresponding limit or tty guard. To install
 but not load one, drop a `disable_pids` / `disable_cpu` / `disable_uart_guard` /
-`disable_mali` file in the module directory.
+`disable_mali` file in the module directory. A `mali_nsfix_dryrun` file loads
+`mali_nsfix` unarmed (`nshf_activate=0`) for preflight diagnostics.
 
 ### Platform-dependent modules
 
@@ -151,6 +152,12 @@ the container. Measured overhead on PHZ110 / MT6989 / 6.1.157 is
 **0.000008% - 0.000025% CPU** (about five intercepted `find_get_pid()` calls per
 minute system-wide), and the counters can be read without unloading:
 `nshf_seen` / `nshf_hits` under `/sys/module/mali_nsfix/parameters/`.
+For an unverified device, load it unarmed first (`mali_nsfix_dryrun`, i.e.
+`nshf_activate=0`) and read `nshf_active` / `nshf_probe_ok` /
+`nshf_layout_valid` / `nshf_driver`; the KernelSU Action button
+(`action.sh doctor`) prints the same state plus a machine-readable
+`nshf_status` line. Prior art and the full failure chain are listed in the
+[module README](extra/mali_nsfix/README.md).
 
 What else a Mali container needs — the Android-side compositor settings and the
 `dma-buf` handling — is in the RootFS repository's
