@@ -56,6 +56,17 @@ body:
       required: true
 
   - type: dropdown
+    id: display_route
+    attributes:
+      label: Display route (fill in for desktop/display problems)
+      options:
+        - Anland 6.x (waylandbridge: /dev/mali0 + mali_nsfix, no vkms)
+        - Anland 5.x / self-composited desktop (KDE/GNOME/Hyprland/Niri/Mango/Denial: needs vkms for /dev/dri/renderD128)
+        - No desktop / not sure
+    validations:
+      required: false
+
+  - type: dropdown
     id: symptom
     attributes:
       label: Symptom
@@ -65,7 +76,7 @@ body:
         - Installs but the module does not load
         - Loads but container capabilities are unavailable (PID/IPC namespace)
         - Cannot mount /proc or other filesystems inside the container
-        - No /dev/dri/renderD128 (Wayland desktop fails to start)
+        - No /dev/dri/renderD128 (Wayland desktop fails to start; 5.x / self-composited desktops need vkms)
         - Boot hangs / reboots / drops to safe mode
         - Other
     validations:

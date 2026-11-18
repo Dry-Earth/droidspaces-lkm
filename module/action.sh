@@ -181,14 +181,32 @@ else
     echo "  [--]   ${M_CAP_DEVTMPFS_NO}"
 fi
 
-# vkms 默认不加载，Mali 平台也不需要它，所以缺失是正常状态而不是失败。
+# 显示链路的两个不同要素，别混：
+#   /dev/mali0        —— Droidspaces --hw-access 映射的设备节点；mali_nsfix
+#                        只负责让容器内进程能用它建 GPU context。
+#   /dev/dri/renderD128 —— DRM render node，标准 Wayland 合成器（5.x / 自带
+#                        合成器的桌面）才要，由 vkms 提供；6.x waylandbridge
+#                        直接用 /dev/mali0，不需要它。
+if [ -e /dev/mali0 ]; then
+    echo "  [OK]   ${M_DISP_MALI0}"
+else
+    echo "  [--]   ${M_DISP_MALI0_NO}"
+fi
+if lsmod | grep -q '^mali_kbase'; then
+    echo "  [OK]   ${M_DISP_KBASE}"
+else
+    echo "  [--]   ${M_DISP_KBASE_NO}"
+fi
+
+# vkms 默认不加载。缺不缺取决于走哪条桌面路线（6.x waylandbridge 不需要，
+# 5.x / 自带合成器的桌面需要），所以缺失本身不算失败。
 # 只有用户显式开了 enable_vkms 却没拿到节点时才标 FAIL。
 if [ -e /dev/dri/renderD128 ]; then
     echo "  [OK]   ${M_CAP_VKMS}"
 elif [ -f "/data/adb/modules/droidspaces_lkm/enable_vkms" ]; then
     echo "  [FAIL] ${M_CAP_VKMS_NO} (enable_vkms is set)"
 else
-    echo "  [--]   ${M_CAP_VKMS_NO} (vkms off by default)"
+    echo "  [--]   ${M_CAP_VKMS_NO} (${M_VKMS_HINT})"
 fi
 
 # Mali：有 /dev/mali0 说明是 Mali 平台，这时 mali_nsfix 是否加载决定容器内能否

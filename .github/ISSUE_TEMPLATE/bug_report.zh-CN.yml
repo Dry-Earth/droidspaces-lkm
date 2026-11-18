@@ -54,6 +54,17 @@ body:
       required: true
 
   - type: dropdown
+    id: display_route
+    attributes:
+      label: 显示路线（有桌面显示问题时填写）
+      options:
+        - Anland 6.x（waylandbridge：/dev/mali0 + mali_nsfix，不需要 vkms）
+        - Anland 5.x / 自带合成器桌面（KDE/GNOME/Hyprland/Niri/Mango/Denial：需 vkms 提供 /dev/dri/renderD128）
+        - 没跑桌面 / 不确定
+    validations:
+      required: false
+
+  - type: dropdown
     id: symptom
     attributes:
       label: 现象
@@ -63,7 +74,7 @@ body:
         - 装上了但模块没加载
         - 加载了但容器能力不可用（PID/IPC namespace）
         - 容器内无法挂载 /proc 或其他文件系统
-        - 没有 /dev/dri/renderD128（Wayland 桌面起不来）
+        - 没有 /dev/dri/renderD128（Wayland 桌面起不来；5.x / 自带合成器需 vkms）
         - 开机卡住 / 重启 / 进安全模式
         - 其他
     validations:

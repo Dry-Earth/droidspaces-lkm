@@ -111,10 +111,18 @@ tty 保护。想"装但不加载"某个，在模块目录放 `disable_pids` / `d
 > 详见 <https://github.com/misaka5202/Droidspaces-anland6-rootfs#support-matrix>。
 
 `vkms` 默认完全不加载。它提供的 `/dev/dri/renderD128` 背后没有 GPU，Mesa 只能
-落回 llvmpipe，也就是 CPU 软件渲染。本机实测（OPPO PHZ110 / MT6989 / 6.1.157）：
-卸掉 `vkms` 后 GL 客户端照常渲染、画面照常上屏，而合成器映射的是
-`libGLES_mali.so`、打开的是 `/dev/mali0`，`/dev/dri/renderD128` 的 fd 数是 0。
-anland 在 Mali 平台上不需要它。确有别的程序需要时，显式开启：
+落回 llvmpipe，也就是 CPU 软件渲染。它服务的是**自带标准 Wayland 合成器的桌面
+镜像**（Anland 5.x 路线：KDE Plasma / KDE Plasma Mobile / GNOME / Hyprland /
+Niri / Mango / Denial，镜像环境里带 `ANLAND_DRM_DEVICE=/dev/dri/renderD128`）：
+Mali 厂商驱动只给 `/dev/mali0`，没有 DRM render node，这类镜像不开 `vkms`
+合成器会直接拒绝启动（日志例：`kwin_backend_anland: no usable DRM render
+device; cannot bring up OpenGL compositing`）。
+
+**Anland 6.x 的 `waylandbridge` 会话不受此限制**：本机实测（OPPO PHZ110 /
+MT6989 / 6.1.157）卸掉 `vkms` 后 GL 客户端照常渲染、画面照常上屏，合成器映射
+`libGLES_mali.so`、打开 `/dev/mali0`，`/dev/dri/renderD128` 的 fd 数是 0；那条
+链路只需要 `mali_nsfix`。一句话：**6.x 用 `mali_nsfix`，5.x / 自带合成器的
+桌面用 `vkms`**。确有别的程序需要时，显式开启：
 
 ```sh
 touch /data/adb/modules/droidspaces_lkm/enable_vkms
@@ -213,12 +221,13 @@ droidspaces check                          # 应显示 All required features fou
 ## 配合它跑 Linux 桌面（Anland 6.x）
 
 这个模块只负责「让容器能跑」。想在手机上看到真正的 Linux 窗口，还需要
-**Anland 6.x** 那一套 —— 而 `vkms` 正是两边的接口：厂商内核通常没开
-`CONFIG_DRM_VKMS`，只有 `card0` 没有 `renderD128`，Wayland 合成器会直接拒绝启动。
+**Anland 6.x** 那一套。Mali 设备上这条链路走 libhybris + `/dev/mali0`，宿主侧
+的 `mali_nsfix` 是它的前提；**不需要 `vkms`**（`vkms` 是给 5.x / 自带标准
+Wayland 合成器的桌面镜像准备的，见上一节）。
 
 ```
 droidspaces-lkm（本项目）
-  └─ vkms.ko  →  /dev/dri/renderD128        ← 没有它，合成器起不来
+  └─ mali_nsfix.ko → 容器内可用 /dev/mali0 建 GPU context
         │
         ▼
 Droidspaces-anland6-rootfs（镜像）
@@ -246,15 +255,19 @@ adb shell su -c 'sh /data/local/tmp/setup-anland6-host.sh'
 adb shell su -c 'sh /data/local/tmp/verify-anland6-host.sh'
 ```
 
-它会按「宿主 → 容器 → 显示」三层逐项打勾。**其中「render node」一项对应的就是
-本项目的 `vkms.ko`** —— 如果那一项失败，回到上面确认 `vkms` 是否加载。
+它会按「宿主 → 容器 → 应用」三层逐项打勾（模块 / 守护进程 / socket / binder /
+容器 / 应用）。Mali 上还有一项不在该脚本里、但同样关键的检查：`mali_nsfix`
+是否已加载并挂钩——没挂钩时容器内 `eglInitialize()` 会返回 `0x3001`，
+`dmesg` 出现 `Failed to get pid pointer`；可用本模块的「操作」按钮
+（`action.sh doctor`）或干跑模式确认。
 
 完整的宿主侧步骤、常见断点和排错表见
 [桌面与 Anland](https://github.com/misaka5202/Droidspaces-anland6-rootfs/blob/main/docs/zh/桌面与Anland.md)。
 
 > **不要装 Anland 5.x 那一套**（`virtual-drm-daemon.zip` / `app-debug.apk` /
-> `/run/display.sock` 绑定）。5.x 用私有显示协议 + 打过补丁的合成器，6.x 用
-> Wayland 本身做帧交换，两套路由同时存在会互相打断。
+> `/run/display.sock` 绑定）。5.x 用私有显示协议 + 自带合成器（KWin/GNOME 等），
+> Mali 上那条路必须开 `vkms` 才有 render node；6.x 用 Wayland 本身做帧交换，
+> 两条路由同时存在会互相打断。
 
 ## cgroup 限制
 
@@ -432,8 +445,10 @@ Droidspaces 实际使用的探测方式。
 
 - 高通 Adreno：`/dev/kgsl-3d0` + 用户态 Turnip 可用 —— anland 桌面方案可行，
   且不需要 `vkms`。
-- ARM Mali：`/dev/mali0` 是私有 ioctl 接口，Linux Mesa 需要
-  `CONFIG_DRM_PANFROST`（内核编译期选项）。此时由 `vkms` 提供 render node。
+- ARM Mali：`/dev/mali0` 是私有 ioctl 接口，标准 Wayland 合成器（KDE/GNOME/
+  Hyprland/Niri/Mango/Denial，即 5.x 路线）走 DRM，需要 `vkms` 提供 render
+  node。**Anland 6.x（waylandbridge）是例外**：它经 libhybris 直接驱动
+  `/dev/mali0`，只需 `mali_nsfix`，不需要 `vkms`。
 
 anland 桌面部署记录：[ANLAND-DEPLOY.md](docs/ANLAND-DEPLOY.md)。
 

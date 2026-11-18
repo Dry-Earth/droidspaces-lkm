@@ -121,11 +121,21 @@ decision is made from what the device reports, not from a list of vendor names.
 
 `vkms` is not loaded by default at all. It provides `/dev/dri/renderD128` backed
 by no GPU — Mesa can only fall back to llvmpipe, i.e. CPU software rendering.
-Measured on this device (OPPO PHZ110 / MT6989 / 6.1.157): with `vkms` removed,
-the GL client still rendered and the frame still reached the screen, while the
-compositor mapped `libGLES_mali.so` and opened `/dev/mali0` — the
-`/dev/dri/renderD128` file descriptor count was zero. Anland does not need it on
-Mali. Enable it explicitly if something else does:
+It exists for **desktop images that ship their own standard Wayland compositor**
+(the Anland 5.x route: KDE Plasma / KDE Plasma Mobile / GNOME / Hyprland /
+Niri / Mango / Denial, whose environment carries
+`ANLAND_DRM_DEVICE=/dev/dri/renderD128`). The Mali vendor driver only exposes
+`/dev/mali0`, not a DRM render node, so on those images the compositor refuses
+to start without `vkms` (e.g. `kwin_backend_anland: no usable DRM render device;
+cannot bring up OpenGL compositing`).
+
+**The Anland 6.x `waylandbridge` session is exempt**: measured on this device
+(OPPO PHZ110 / MT6989 / 6.1.157), with `vkms` removed the GL client still
+rendered and the frame still reached the screen; the compositor mapped
+`libGLES_mali.so`, opened `/dev/mali0`, and the `/dev/dri/renderD128` fd count
+was zero. That path only needs `mali_nsfix`. Rule of thumb: **6.x uses
+`mali_nsfix`; 5.x / self-composited desktops use `vkms`**. Enable it explicitly
+if something else does:
 
 ```sh
 touch /data/adb/modules/droidspaces_lkm/enable_vkms
@@ -235,13 +245,14 @@ matrix and the per-KMI build traps.
 ## Running a Linux desktop (Anland 6.x)
 
 This project only makes containers *work*. To actually see Linux windows on the
-phone you need **Anland 6.x** — and `vkms` is the seam between the two. Vendor
-kernels normally ship without `CONFIG_DRM_VKMS`, so there is a `card0` but no
-`renderD128`, and Wayland compositors refuse to start.
+phone you need **Anland 6.x**. On Mali that chain goes through libhybris +
+`/dev/mali0`, and the host-side `mali_nsfix` is its prerequisite; **`vkms` is not
+needed** (`vkms` exists for the 5.x / self-composited desktop images, see the
+previous section).
 
 ```
 droidspaces-lkm (this project)
-  └─ vkms.ko  →  /dev/dri/renderD128        <- without it the compositor cannot start
+  └─ mali_nsfix.ko → GPU contexts can be created in-container via /dev/mali0
         │
         ▼
 Droidspaces-anland6-rootfs (image)
@@ -269,17 +280,21 @@ Then verify the chain:
 adb shell su -c 'sh /data/local/tmp/verify-anland6-host.sh'
 ```
 
-It checks host, container and display layers in turn. **Its "render node" check is
-exactly this project's `vkms.ko`** — if that line fails, come back and confirm
-that `vkms` loaded.
+It checks the host, container and app layers in turn (module / daemon / socket /
+binder / container / app). On Mali there is one more check that script does not
+cover but matters just as much: whether `mali_nsfix` is loaded and armed — without
+it, `eglInitialize()` inside the container returns `0x3001` and `dmesg` shows
+`Failed to get pid pointer`. Use this module's Action button (`action.sh
+doctor`) or dry-run mode to confirm.
 
 Full host-side steps, failure table and troubleshooting:
 [Desktop and Anland](https://github.com/misaka5202/Droidspaces-anland6-rootfs/blob/main/docs/en/desktop-and-anland.md).
 
 > **Do not install the Anland 5.x set** (`virtual-drm-daemon.zip` /
 > `app-debug.apk` / the `/run/display.sock` bind mount). 5.x exchanges frames over
-> a private display protocol with patched compositors; 6.x makes Wayland itself
-> the protocol. Both routes at once break each other.
+> a private display protocol with its own compositors (KWin/GNOME and friends);
+> on Mali that route needs `vkms` for a render node. 6.x makes Wayland itself the
+> protocol. Both routes at once break each other.
 
 ## cgroup limits
 
@@ -489,9 +504,11 @@ actually use the GPU depends on the driver stack:
 
 - Qualcomm Adreno: `/dev/kgsl-3d0` plus Turnip in userspace works — a Wayland
   desktop over anland is viable, and needs no `vkms`.
-- ARM Mali: `/dev/mali0` is a private ioctl interface; Linux Mesa needs
-  `CONFIG_DRM_PANFROST`, which is a kernel build option. `vkms` supplies the
-  render node instead.
+- ARM Mali: `/dev/mali0` is a private ioctl interface; standard Wayland
+  compositors (KDE/GNOME/Hyprland/Niri/Mango/Denial, i.e. the 5.x route) work
+  over DRM and need `vkms` to supply the render node. **Anland 6.x
+  (waylandbridge) is the exception**: it drives `/dev/mali0` through libhybris
+  and only needs `mali_nsfix`, not `vkms`.
 
 Deployment notes for a Wayland desktop over anland:
 [docs/ANLAND-DEPLOY.md](docs/ANLAND-DEPLOY.en.md).
