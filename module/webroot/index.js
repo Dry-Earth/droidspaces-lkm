@@ -1,9 +1,11 @@
-// Droidspaces LKM 模块页：显示路线切换 + 诊断 + 懒人包跳转
+// Droidspaces LKM 模块页（Material You / M3，底栏四页签）
 //
-// WebUI 调用走管理器注入的全局 ksu.exec（与 nomount 模块相同的调用方式）。
-// 所有命令都在 root shell 里执行，写操作只动 module/route 一个文件。
+// 视觉与组件衍生自 misaka5202/nomount 的模块 WebUI（GPL-3.0）；
+// 业务逻辑、页面结构与文案为本项目的自写代码。
+// exec 走管理器注入的全局 ksu.exec（与 nomount 相同）。
 
 const MOD = '/data/adb/modules/droidspaces_lkm';
+const LOG = '/data/adb/droidspaces_lkm.log';
 const PACK5 = 'https://github.com/misaka5202/Droidspaces-rootfs-Desktop-builder';
 const PACK6 = 'https://github.com/misaka5202/droidspaces-anland6-rootfs';
 
@@ -29,112 +31,236 @@ function exec(cmd) {
   });
 }
 
-const I18N = {
-  zh: {
-    title: 'Droidspaces LKM',
-    subtitle: '显示路线 / 诊断',
-    route_label: '显示路线',
-    route_desc: '控制 Mali 上是走 waylandbridge（6.x）还是标准合成器（5.x）。改动重启后生效。',
-    r_auto: '自动（保持现状）',
-    r_a6: 'Anland 6.x：/dev/mali0 + mali_nsfix',
-    r_d5: '标准桌面 5.x：vkms render node',
-    apply: '应用（重启后生效）',
-    diag_label: '诊断',
-    pack_label: '懒人包',
-    pack5: '5.x RootFS 构建仓库',
-    pack6: '6.x Anland RootFS 仓库',
-    toast_ok: '已写入 route，重启后生效。',
-    toast_fail: '写入失败',
-    open_fail: '打开链接失败'
-  },
-  en: {
-    title: 'Droidspaces LKM',
-    subtitle: 'Display route / Diagnostics',
-    route_label: 'Display route',
-    route_desc: 'Choose waylandbridge (6.x) or a standard compositor (5.x) on Mali. Takes effect after reboot.',
-    r_auto: 'Auto (current behaviour)',
-    r_a6: 'Anland 6.x: /dev/mali0 + mali_nsfix',
-    r_d5: 'Standard desktop 5.x: vkms render node',
-    apply: 'Apply (reboot required)',
-    diag_label: 'Diagnostics',
-    pack_label: 'One-click packs',
-    pack5: '5.x RootFS builder repo',
-    pack6: '6.x Anland RootFS repo',
-    toast_ok: 'route written, applies after reboot.',
-    toast_fail: 'Failed to write route',
-    open_fail: 'Failed to open link'
-  }
-};
+/* ---------------- i18n ---------------- */
 
-const locale = (navigator.language || 'zh').toLowerCase().startsWith('zh') ? 'zh' : 'en';
-const t = (k) => (I18N[locale][k] ?? I18N.en[k] ?? k);
+const LOCALE_KEY = 'dsl_locale';
+let lang = localStorage.getItem(LOCALE_KEY) ||
+  ((navigator.language || 'zh').toLowerCase().startsWith('zh') ? 'zh' : 'en');
+let strings = {};
+const TPL_RE = /{{\s*([^\s}]+)\s*}}/g;
+
+function t(key, reps) {
+  let s = strings[key] ?? key;
+  if (reps) s = String(s).replace(TPL_RE, (_, k) => (reps[k] ?? ''));
+  return s;
+}
+
+async function loadLocale(newLang) {
+  lang = newLang === 'zh' || newLang === 'en' ? newLang : 'en';
+  try {
+    const r = await fetch(`./locales/${lang}.json`);
+    strings = r.ok ? await r.json() : {};
+  } catch {
+    strings = {};
+  }
+  localStorage.setItem(LOCALE_KEY, lang);
+  document.documentElement.lang = lang === 'zh' ? 'zh-CN' : 'en';
+}
 
 function applyI18n() {
   document.querySelectorAll('[data-i18n]').forEach((el) => {
     el.textContent = t(el.dataset.i18n);
   });
-  document.documentElement.lang = locale === 'zh' ? 'zh-CN' : 'en';
 }
 
-const DIAG = [
+/* ---------------- 数据命令 ---------------- */
+
+const MODULES = [
+  'lkm4ctr', 'devtmpfs_lkm', 'ip6table_nat', 'macvlan',
+  'droid_lkm_pids', 'droid_lkm_cpu', 'uart_guard', 'mali_nsfix', 'vkms'
+];
+
+const HOME_CMD = [
   `echo "route=$(cat ${MOD}/route 2>/dev/null || echo auto)"`,
   `echo "kernel=$(uname -r)"`,
+  `echo "model=$(getprop ro.product.model 2>/dev/null)"`,
+  `echo "version=$(grep -m1 '^version=' ${MOD}/module.prop 2>/dev/null | cut -d= -f2)"`,
   `[ -e /dev/mali0 ] && echo mali0=yes || echo mali0=no`,
-  `lsmod | grep -q '^mali_kbase' && echo mali_kbase=loaded || echo mali_kbase=no`,
-  `for p in nshf_active nshf_probe_ok nshf_layout_valid nshf_driver nshf_seen nshf_hits; do echo "$p=$(cat /sys/module/mali_nsfix/parameters/$p 2>/dev/null)"; done`,
-  `[ -e /dev/dri/renderD128 ] && echo renderD128=yes || echo renderD128=no`,
-  `lsmod | grep -q '^vkms ' && echo vkms=loaded || echo vkms=no`
+  `lsmod | grep -q '^mali_kbase' && echo kbase=yes || echo kbase=no`,
+  `[ -e /dev/dri/renderD128 ] && echo render=yes || echo render=no`,
+  ...MODULES.map((m) =>
+    `grep -q '^${m} ' /proc/modules && echo "mod:${m}:yes" || echo "mod:${m}:no"`
+  )
 ].join('; ');
 
-async function load() {
-  const r = await exec(DIAG);
-  document.getElementById('diag').textContent =
-    r.stdout || r.stderr || `exec failed (errno ${r.errno})`;
+const DIAG_CMD = [
+  `echo "route=$(cat ${MOD}/route 2>/dev/null || echo auto)"`,
+  `echo "kernel=$(uname -r)"`,
+  `echo "model=$(getprop ro.product.model 2>/dev/null)"`,
+  `echo`,
+  `echo "[modules]"`,
+  `lsmod | grep -E '^(lkm4ctr|devtmpfs_lkm|ip6table_nat|macvlan|vkms|droid_lkm_pids|droid_lkm_cpu|uart_guard|mali_nsfix) '`,
+  `echo`,
+  `echo "[mali_nsfix]"`,
+  ...['nshf_active', 'nshf_probe_ok', 'nshf_layout_valid', 'nshf_driver', 'nshf_seen', 'nshf_hits']
+    .map((p) => `echo "${p}=$(cat /sys/module/mali_nsfix/parameters/${p} 2>/dev/null)"`),
+  `echo`,
+  `echo "[nodes]"`,
+  `[ -e /dev/mali0 ] && echo mali0=yes || echo mali0=no`,
+  `[ -e /dev/dri/renderD128 ] && echo renderD128=yes || echo renderD128=no`,
+  `echo`,
+  `echo "[log tail]"`,
+  `tail -n 40 ${LOG} 2>/dev/null`,
+  `echo`,
+  `echo "[dmesg]"`,
+  `dmesg 2>/dev/null | grep -aE 'mali_nsfix|vkms|droid_lkm' | tail -n 20`
+].join('; ');
 
-  const m = /^route=(.*)$/m.exec(r.stdout || '');
-  const route = m ? m[1].trim() : 'auto';
-  const badge = document.getElementById('routeNow');
-  badge.textContent = route;
-  badge.classList.toggle('on', route !== 'auto');
-  document.querySelectorAll('input[name="route"]').forEach((el) => {
-    el.checked = el.value === route;
+function parseLines(stdout) {
+  const map = {};
+  (stdout || '').split('\n').forEach((line) => {
+    const i = line.indexOf('=');
+    if (i > 0) map[line.slice(0, i).trim()] = line.slice(i + 1).trim();
+  });
+  return map;
+}
+
+/* ---------------- 视图渲染 ---------------- */
+
+const $ = (id) => document.getElementById(id);
+
+function renderHome(d) {
+  const route = d.route || 'auto';
+  $('routeNow').textContent = route;
+  $('routeText').textContent = route;
+
+  const anyLoaded = MODULES.some((m) => d[`mod:${m}`] === 'yes');
+  $('status-title').textContent = anyLoaded ? t('status_ok') : t('status_idle');
+  $('status-indicator').textContent =
+    `${t('route_label')}: ${route} · ${t('kernel_label')}: ${d.kernel || '?'}`;
+
+  $('kernel-version').textContent = d.kernel || '…';
+  $('device-model').textContent = d.model || '…';
+
+  $('node-mali0').textContent = d.mali0 === 'yes' ? t('yes') : t('no');
+  $('node-mali0').classList.toggle('ok', d.mali0 === 'yes');
+  $('node-kbase').textContent = d.kbase === 'yes' ? t('loaded') : t('not_loaded');
+  $('node-kbase').classList.toggle('ok', d.kbase === 'yes');
+  $('node-render').textContent = d.render === 'yes' ? t('yes') : t('no');
+  $('node-render').classList.toggle('ok', d.render === 'yes');
+
+  $('module-list').innerHTML = MODULES.map((m) => {
+    const on = d[`mod:${m}`] === 'yes';
+    return `<span class="md-chip ${on ? 'status-active' : 'status-inactive'}">${m}</span>`;
+  }).join('');
+
+  $('about-version').textContent = d.version || '…';
+}
+
+function renderRoute(d) {
+  const route = d.route || 'auto';
+  document.querySelectorAll('.route-opt').forEach((el) => {
+    const active = el.dataset.route === route;
+    el.classList.toggle('active', active);
+    const chip = el.querySelector('[data-chip]');
+    if (chip) {
+      chip.textContent = active ? t('selected') : '—';
+      chip.className = 'md-chip ' + (active ? 'status-active' : 'status-inactive');
+    }
   });
 }
 
-let _toastTimer;
-function toast(msg, ok) {
-  const el = document.getElementById('toast');
-  el.textContent = msg;
-  el.className = 'toast ' + (ok ? 'ok' : 'fail');
-  clearTimeout(_toastTimer);
-  _toastTimer = setTimeout(() => {
-    el.textContent = '';
-    el.className = 'toast';
-  }, 4000);
+let selectedRoute = 'auto';
+
+function markSelected(route) {
+  selectedRoute = route;
+  document.querySelectorAll('.route-opt').forEach((el) => {
+    const active = el.dataset.route === route;
+    el.classList.toggle('active', active);
+    const chip = el.querySelector('[data-chip]');
+    if (chip) {
+      chip.textContent = active ? t('selected') : '—';
+      chip.className = 'md-chip ' + (active ? 'status-active' : 'status-inactive');
+    }
+  });
 }
 
-async function apply() {
-  const sel = document.querySelector('input[name="route"]:checked');
-  if (!sel) return;
-  const r = await exec(
-    `mkdir -p ${MOD} && printf '%s\\n' '${sel.value}' > ${MOD}/route`
-  );
-  toast(
-    r.errno === 0 ? t('toast_ok') : t('toast_fail') + (r.stderr ? '\n' + r.stderr : ''),
-    r.errno === 0
-  );
-  await load();
+async function refreshHome() {
+  const r = await exec(HOME_CMD);
+  const d = parseLines(r.stdout);
+  renderHome(d);
+  renderRoute(d);
+  selectedRoute = d.route || 'auto';
+  return d;
+}
+
+async function refreshDiag() {
+  const r = await exec(DIAG_CMD);
+  $('diag-out').textContent = r.stdout || r.stderr || `exec failed (${r.errno})`;
+}
+
+/* ---------------- 交互 ---------------- */
+
+let toastTimer;
+function toast(msg) {
+  const el = $('toast');
+  el.textContent = msg;
+  el.classList.add('show');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => el.classList.remove('show'), 2600);
+}
+
+async function applyRoute() {
+  const r = await exec(`mkdir -p ${MOD} && printf '%s\\n' '${selectedRoute}' > ${MOD}/route`);
+  toast(r.errno === 0 ? t('toast_ok') : t('toast_fail'));
+  await refreshHome();
+}
+
+async function copyDiag() {
+  const text = $('diag-out').textContent || '';
+  try {
+    await navigator.clipboard.writeText(text);
+    toast(t('copied'));
+  } catch {
+    toast('clipboard unavailable');
+  }
 }
 
 async function openLink(url) {
   const r = await exec(`am start -a android.intent.action.VIEW -d '${url}'`);
-  if (r.errno !== 0) toast(t('open_fail') + '\n' + r.stderr, false);
+  if (r.errno !== 0) toast('open failed');
 }
 
-window.addEventListener('DOMContentLoaded', () => {
+function switchView(target) {
+  document.querySelectorAll('.view-content').forEach((el) => {
+    el.classList.toggle('active', el.id === target);
+  });
+  document.querySelectorAll('.nav-item').forEach((el) => {
+    el.classList.toggle('active', el.dataset.target === target);
+  });
+  const tab = target.replace('view-', '');
+  $('top-app-bar-title').textContent = t('nav_' + tab);
+  if (target === 'view-diag') refreshDiag();
+  if (target === 'view-home') refreshHome();
+}
+
+/* ---------------- 启动 ---------------- */
+
+(async function init() {
+  await loadLocale(lang);
   applyI18n();
-  document.getElementById('apply').addEventListener('click', apply);
-  document.getElementById('pack5').addEventListener('click', () => openLink(PACK5));
-  document.getElementById('pack6').addEventListener('click', () => openLink(PACK6));
-  load();
-});
+
+  document.querySelectorAll('.nav-item').forEach((el) => {
+    el.addEventListener('click', () => switchView(el.dataset.target));
+  });
+  document.querySelectorAll('.route-opt').forEach((el) => {
+    el.addEventListener('click', () => markSelected(el.dataset.route));
+  });
+  $('apply-route').addEventListener('click', applyRoute);
+  $('copy-diag').addEventListener('click', copyDiag);
+  $('pack5').addEventListener('click', () => openLink(PACK5));
+  $('pack6').addEventListener('click', () => openLink(PACK6));
+
+  const setLang = async (l) => {
+    await loadLocale(l);
+    applyI18n();
+    await refreshHome();
+    switchView('view-about');
+  };
+  $('lang-zh').addEventListener('click', () => setLang('zh'));
+  $('lang-en').addEventListener('click', () => setLang('en'));
+
+  await refreshHome();
+  $('top-app-bar-title').textContent = t('nav_home');
+  document.body.classList.remove('loading');
+})();

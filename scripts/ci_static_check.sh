@@ -73,10 +73,16 @@ grep -q 'ctl_obs_lock' extra/cgrouplimits/pids_mod.c \
 
 # 7) 显示路线（route）链路完整：安装器、加载器、操作页、WebUI、README
 for f in module/webroot/index.html module/webroot/index.js module/webroot/styles.css \
-         module/route; do
+         module/webroot/locales/zh.json module/webroot/locales/en.json module/route; do
     [ -f "$f" ] || die "缺少 $f"
 done
 grep -q 'auto' module/route || die "module/route 默认值应为 auto"
+# WebUI 结构：底栏四页签 + 四个视图
+for v in view-home view-route view-diag view-about; do
+    grep -q "id=\"$v\"" module/webroot/index.html || die "WebUI 缺少视图 $v"
+done
+[ "$(grep -c 'class="nav-item' module/webroot/index.html)" -ge 4 ] \
+    || die "WebUI 底栏不足四个页签"
 grep -q 'route_keytest' module/customize.sh \
     || die "customize.sh 缺少安装期音量键选择 route_keytest"
 grep -q 'ROUTE=$(cat' module/service.sh \

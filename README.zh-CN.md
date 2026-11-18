@@ -235,8 +235,10 @@ droidspaces check                          # 应显示 All required features fou
 - **随时**：KernelSU 模块页打开本模块的 WebUI，单选后点「应用」，重启生效。
 - **命令行**：`action.sh route auto|anland6|desktop5`。
 
-WebUI（`webroot/`）同时给诊断（route、`/dev/mali0`、`mali_kbase`、`nshf_*`、
-render node）和两个懒人包入口：
+WebUI（`webroot/`，Material You 风格 + 底栏四页签：主页 / 切换路线 / 诊断 /
+关于，中英双语）随时可改路线；主页显示模块加载情况，诊断页给 route、
+`/dev/mali0`、`mali_kbase`、`nshf_*`、render node 与日志，关于页放仓库与两个
+懒人包入口：
 
 - 5.x RootFS 构建仓库：https://github.com/misaka5202/Droidspaces-rootfs-Desktop-builder
 - 6.x Anland RootFS 仓库：https://github.com/misaka5202/droidspaces-anland6-rootfs

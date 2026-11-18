@@ -262,8 +262,11 @@ How to change it:
   value and press Apply; takes effect after reboot.
 - **CLI**: `action.sh route auto|anland6|desktop5`.
 
-The WebUI (`webroot/`) also shows diagnostics (route, `/dev/mali0`,
-`mali_kbase`, `nshf_*`, render node) and one-click pack links:
+The WebUI (`webroot/`, Material You style with a four-tab bottom bar: Home /
+Route / Diagnostics / About, English + Chinese) lets you change the route any
+time. Home shows loaded modules, Diagnostics prints route, `/dev/mali0`,
+`mali_kbase`, `nshf_*`, the render node and recent logs, and About carries the
+repository plus both one-click pack links:
 
 - 5.x RootFS builder: https://github.com/misaka5202/Droidspaces-rootfs-Desktop-builder
 - 6.x Anland RootFS: https://github.com/misaka5202/droidspaces-anland6-rootfs

@@ -1,45 +1,167 @@
 <!DOCTYPE html>
-<html lang="zh-CN">
+<html lang="en">
 <head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover">
-<meta name="color-scheme" content="light dark">
-<title>Droidspaces LKM</title>
-<link rel="stylesheet" href="styles.css">
-<script src="index.js" type="module"></script>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover, interactive-widget=overlays-content">
+    <meta name="color-scheme" content="light dark">
+    <meta name="theme-color" content="#fffbff">
+    <title>Droidspaces LKM</title>
+    <link rel="stylesheet" href="styles.css">
+    <script src="index.js" type="module"></script>
 </head>
-<body>
-<header class="topbar">
-  <span class="topbar-title" data-i18n="title">Droidspaces LKM</span>
-  <span class="topbar-sub" data-i18n="subtitle">显示路线 / 诊断</span>
-</header>
+<body class="loading">
+    <div class="root_layout">
+        <div class="top-app-bar" id="top-app-bar" aria-hidden="true">
+            <div class="top-app-bar-title" id="top-app-bar-title">Droidspaces LKM</div>
+        </div>
 
-<main>
-  <section class="card">
-    <div class="card-title-row">
-      <span class="card-title" data-i18n="route_label">显示路线</span>
-      <span class="badge" id="routeNow">…</span>
+        <div class="page-container">
+            <!-- ============ 主页：加载情况 ============ -->
+            <div id="view-home" class="view-content active">
+                <div class="header-title">Droidspaces LKM</div>
+
+                <div class="home-status-card">
+                    <md-icon id="status-icon" class="status-icon">check_circle</md-icon>
+                    <div class="status-text-col">
+                        <div class="status-title-row">
+                            <h2 id="status-title">…</h2>
+                            <span id="routeNow" class="mode-badge">…</span>
+                        </div>
+                        <div id="status-indicator" class="status-label">…</div>
+                    </div>
+                </div>
+
+                <div class="segment-section-label" data-i18n="modules_label">Loaded modules</div>
+                <div class="card">
+                    <div id="module-list" class="module-chips">
+                        <span class="md-chip status-inactive">…</span>
+                    </div>
+                </div>
+
+                <div class="segment-section-label" data-i18n="nodes_label">Key nodes</div>
+                <div class="card">
+                    <div class="dsl-kv"><span class="k">/dev/mali0</span><span class="v" id="node-mali0">…</span></div>
+                    <div class="dsl-kv"><span class="k">mali_kbase</span><span class="v" id="node-kbase">…</span></div>
+                    <div class="dsl-kv"><span class="k">/dev/dri/renderD128</span><span class="v" id="node-render">…</span></div>
+                </div>
+
+                <div class="segment-section-label" data-i18n="device_label">Device</div>
+                <div class="card">
+                    <div class="dsl-kv"><span class="k" data-i18n="kernel_label">Kernel</span><span class="v" id="kernel-version">…</span></div>
+                    <div class="dsl-kv"><span class="k" data-i18n="model_label">Model</span><span class="v" id="device-model">…</span></div>
+                    <div class="dsl-kv"><span class="k" data-i18n="route_label">Route</span><span class="v" id="routeText">…</span></div>
+                    <div class="dsl-kv"><span class="k" data-i18n="log_label">Log</span><span class="v">/data/adb/droidspaces_lkm.log</span></div>
+                </div>
+            </div>
+
+            <!-- ============ 切换路线 ============ -->
+            <div id="view-route" class="view-content">
+                <div class="header-title" data-i18n="route_title">Display route</div>
+                <p style="margin: 0 4px 12px; color: var(--md-sys-color-on-surface-variant); font-size: 14px;" data-i18n="route_desc">
+                    Choose the rendering path on Mali. Takes effect after reboot.
+                </p>
+
+                <div class="settings-segment-group" id="route-options">
+                    <div class="segment-card setting-item route-opt" data-route="auto">
+                        <div class="segment-icon"><md-icon>auto_mode</md-icon></div>
+                        <div class="setting-text">
+                            <h3 data-i18n="r_auto">Auto (current behaviour)</h3>
+                            <p data-i18n="r_auto_desc">Load mali_nsfix automatically; load vkms only with enable_vkms.</p>
+                        </div>
+                        <span class="md-chip status-inactive" data-chip>—</span>
+                    </div>
+
+                    <div class="segment-card setting-item route-opt" data-route="anland6">
+                        <div class="segment-icon"><md-icon>widgets</md-icon></div>
+                        <div class="setting-text">
+                            <h3 data-i18n="r_a6">Anland 6.x</h3>
+                            <p data-i18n="r_a6_desc">/dev/mali0 + mali_nsfix; never loads vkms.</p>
+                        </div>
+                        <span class="md-chip status-inactive" data-chip>—</span>
+                    </div>
+
+                    <div class="segment-card setting-item route-opt" data-route="desktop5">
+                        <div class="segment-icon"><md-icon>desktop_windows</md-icon></div>
+                        <div class="setting-text">
+                            <h3 data-i18n="r_d5">Standard desktop 5.x</h3>
+                            <p data-i18n="r_d5_desc">Loads vkms render node; does not load mali_nsfix.</p>
+                        </div>
+                        <span class="md-chip status-inactive" data-chip>—</span>
+                    </div>
+                </div>
+
+                <button class="custom-tonal-btn" id="apply-route" style="width:100%; margin-top:14px; padding:0 14px;"
+                        data-i18n="apply">Apply (reboot required)</button>
+            </div>
+
+            <!-- ============ 诊断 ============ -->
+            <div id="view-diag" class="view-content">
+                <div class="header-title" data-i18n="diag_title">Diagnostics</div>
+                <p style="margin: 0 4px 12px; color: var(--md-sys-color-on-surface-variant); font-size: 14px;" data-i18n="diag_desc">
+                    Route, kernel, loaded modules, mali_nsfix state, render node and recent log lines.
+                </p>
+                <pre id="diag-out" class="dsl-diag">…</pre>
+                <button class="custom-tonal-btn" id="copy-diag" style="width:100%; margin-top:12px; padding:0 14px;"
+                        data-i18n="copy">Copy</button>
+            </div>
+
+            <!-- ============ 关于 ============ -->
+            <div id="view-about" class="view-content">
+                <div class="header-title" data-i18n="about_title">About</div>
+
+                <div class="card">
+                    <div class="dsl-kv"><span class="k" data-i18n="version_label">Module</span><span class="v" id="about-version">…</span></div>
+                    <div class="dsl-kv"><span class="k" data-i18n="author_label">Author</span><span class="v">misaka5202</span></div>
+                    <div class="dsl-kv"><span class="k" data-i18n="repo_label">Repository</span><span class="v">misaka5202/droidspaces-lkm</span></div>
+                </div>
+
+                <div class="segment-section-label" data-i18n="language_label">Language</div>
+                <div class="card">
+                    <div class="dsl-kv">
+                        <span class="k" data-i18n="language_label">Language</span>
+                        <span class="v">
+                            <button class="md-chip" id="lang-zh" type="button">中文</button>
+                            <button class="md-chip" id="lang-en" type="button">English</button>
+                        </span>
+                    </div>
+                </div>
+
+                <div class="segment-section-label" data-i18n="packs_label">One-click packs</div>
+                <div class="card">
+                    <button class="custom-tonal-btn dsl-link" id="pack5" type="button">
+                        <span data-i18n="pack5">5.x RootFS builder</span><md-icon>open_in_new</md-icon>
+                    </button>
+                    <button class="custom-tonal-btn dsl-link" id="pack6" type="button" style="margin-top:8px;">
+                        <span data-i18n="pack6">6.x Anland RootFS</span><md-icon>open_in_new</md-icon>
+                    </button>
+                </div>
+
+                <p style="margin: 12px 4px 0; color: var(--md-sys-color-on-surface-variant); font-size: 12px;" data-i18n="license_text">
+                    WebUI derived from the nomount module (GPL-3.0); the rest of this module is GPL-2.0.
+                </p>
+            </div>
+        </div>
+
+        <div class="bottom-nav">
+            <div class="nav-item active" data-target="view-home">
+                <div class="nav-icon"><md-icon>home</md-icon></div>
+                <span data-i18n="nav_home">Home</span>
+            </div>
+            <div class="nav-item" data-target="view-route">
+                <div class="nav-icon"><md-icon>swap_horiz</md-icon></div>
+                <span data-i18n="nav_route">Route</span>
+            </div>
+            <div class="nav-item" data-target="view-diag">
+                <div class="nav-icon"><md-icon>troubleshoot</md-icon></div>
+                <span data-i18n="nav_diag">Diagnostics</span>
+            </div>
+            <div class="nav-item" data-target="view-about">
+                <div class="nav-icon"><md-icon>info</md-icon></div>
+                <span data-i18n="nav_about">About</span>
+            </div>
+        </div>
     </div>
-    <p class="desc" data-i18n="route_desc">控制 Mali 上是走 waylandbridge（6.x）还是标准合成器（5.x）。改动重启后生效。</p>
-    <div class="options" id="routeOptions">
-      <label class="option"><input type="radio" name="route" value="auto"><span data-i18n="r_auto">自动（保持现状）</span></label>
-      <label class="option"><input type="radio" name="route" value="anland6"><span data-i18n="r_a6">Anland 6.x：/dev/mali0 + mali_nsfix</span></label>
-      <label class="option"><input type="radio" name="route" value="desktop5"><span data-i18n="r_d5">标准桌面 5.x：vkms render node</span></label>
-    </div>
-    <button id="apply" type="button" data-i18n="apply">应用（重启后生效）</button>
-    <div id="toast" class="toast" role="status"></div>
-  </section>
 
-  <section class="card">
-    <div class="card-title-row"><span class="card-title" data-i18n="diag_label">诊断</span></div>
-    <pre id="diag" class="diag">…</pre>
-  </section>
-
-  <section class="card">
-    <div class="card-title-row"><span class="card-title" data-i18n="pack_label">懒人包</span></div>
-    <button class="link" id="pack5" type="button" data-i18n="pack5">5.x RootFS 构建仓库</button>
-    <button class="link" id="pack6" type="button" data-i18n="pack6">6.x Anland RootFS 仓库</button>
-  </section>
-</main>
+    <div id="toast" class="dsl-toast" role="status"></div>
 </body>
 </html>
