@@ -71,5 +71,25 @@ grep -q 'ctl_memory_seen' extra/cgrouplimits/pids_mod.c \
 grep -q 'ctl_obs_lock' extra/cgrouplimits/pids_mod.c \
     || die "pids_mod.c 缺少观测表锁 ctl_obs_lock"
 
+# 7) 显示路线（route）链路完整：安装器、加载器、操作页、WebUI、README
+for f in module/webroot/index.html module/webroot/index.js module/webroot/styles.css \
+         module/route; do
+    [ -f "$f" ] || die "缺少 $f"
+done
+grep -q 'auto' module/route || die "module/route 默认值应为 auto"
+grep -q 'route_keytest' module/customize.sh \
+    || die "customize.sh 缺少安装期音量键选择 route_keytest"
+grep -q 'ROUTE=$(cat' module/service.sh \
+    || die "service.sh 缺少 route 解析"
+grep -q 'route=anland6' module/service.sh \
+    || die "service.sh 缺少 anland6 路线分支"
+grep -q 'route=desktop5' module/service.sh \
+    || die "service.sh 缺少 desktop5 路线分支"
+grep -q 'route)' module/action.sh || die "action.sh 缺少 route 子命令"
+grep -q 'Droidspaces-rootfs-Desktop-builder' README.md \
+    || die "README.md 缺少 5.x 懒人包链接"
+grep -q 'droidspaces-anland6-rootfs' README.md \
+    || die "README.md 缺少 6.x 懒人包链接"
+
 [ "$fail" -eq 0 ] && echo "static-check: all checks passed"
 exit "$fail"

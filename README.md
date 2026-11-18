@@ -242,6 +242,32 @@ matrix and the per-KMI build traps.
 > tag in `uname -r` first, and read `/data/adb/droidspaces_lkm.log` after
 > installing.
 
+## Display route
+
+`module/route` picks the rendering path on Mali, three values:
+
+| route | Meaning | Mali behaviour |
+|---|---|---|
+| `auto` (default) | Current behaviour | Loads `mali_nsfix`; loads `vkms` only when `enable_vkms` exists |
+| `anland6` | Anland 6.x / waylandbridge | Loads `mali_nsfix`; **never loads vkms** |
+| `desktop5` | Self-composited desktops (Anland 5.x route) | **Loads vkms**; does not load `mali_nsfix` |
+
+How to change it:
+
+- **At install/update**: on MediaTek devices without an existing config, the
+  installer asks for a volume-key choice - VolUp = Anland 6.x, VolDown =
+  standard desktop 5.x. If no key is read, it falls back to `auto`. Existing
+  installs keep their previous choice.
+- **Any time**: open this module's WebUI from the KernelSU module page, pick a
+  value and press Apply; takes effect after reboot.
+- **CLI**: `action.sh route auto|anland6|desktop5`.
+
+The WebUI (`webroot/`) also shows diagnostics (route, `/dev/mali0`,
+`mali_kbase`, `nshf_*`, render node) and one-click pack links:
+
+- 5.x RootFS builder: https://github.com/misaka5202/Droidspaces-rootfs-Desktop-builder
+- 6.x Anland RootFS: https://github.com/misaka5202/droidspaces-anland6-rootfs
+
 ## Running a Linux desktop (Anland 6.x)
 
 This project only makes containers *work*. To actually see Linux windows on the

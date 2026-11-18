@@ -335,6 +335,10 @@ jobs:
           cp dist/symcheck-*.txt "$STAGE/ko/" 2>/dev/null || echo "::warning::没有 symcheck 清单"
           cp module/module.prop module/customize.sh module/post-fs-data.sh module/service.sh \
           module/uninstall.sh module/action.sh module/boot-completed.sh module/i18n.sh "$STAGE/"
+          # WebUI（KernelSU 模块页）：页面与脚本一起进包
+          cp -R module/webroot "$STAGE/"
+          # 默认显示路线配置
+          cp module/route "$STAGE/route"
           # 验证证据随包走：用户拿到 zip 就能核对二进制哈希与产出 commit。
           cp dist/validation.json "$STAGE/" 2>/dev/null || echo "::warning::没有 validation.json"
           chmod 755 "$STAGE"/*.sh
@@ -407,6 +411,8 @@ jobs:
             cp "dist/symcheck-$kmi.txt" "$S/ko/" 2>/dev/null || true
             cp module/module.prop module/customize.sh module/post-fs-data.sh module/service.sh \
             module/uninstall.sh module/action.sh module/boot-completed.sh module/i18n.sh "$S/"
+            cp -R module/webroot "$S/"
+            cp module/route "$S/route"
             cp dist/validation.json "$S/" 2>/dev/null || echo "::warning::没有 validation.json"
             chmod 755 "$S"/*.sh
             sed -i 's/\r$//' "$S"/*.sh "$S/module.prop" "$S"/ko/symcheck-*.txt 2>/dev/null || true

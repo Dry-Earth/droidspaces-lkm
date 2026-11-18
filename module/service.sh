@@ -183,6 +183,26 @@ if [ -z "$KMI" ]; then
 fi
 dlog "kmi:     ${KMI:-unknown}"
 
+# ---------------------------------------------------------------------------
+# 显示路线（route）：auto / anland6 / desktop5
+#
+#   auto      现状：Mali 自动装 mali_nsfix；vkms 仅 enable_vkms 存在时装
+#   anland6   Anland 6.x / waylandbridge：装 mali_nsfix，强制不装 vkms
+#   desktop5  自带标准合成器的桌面（Anland 5.x 路线）：Mali 强制装 vkms，
+#             不装 mali_nsfix；高通不装 vkms（Adreno 有原生 render node）
+#
+# 配置文件 module/route 由安装器写入；老安装缺失时回落 auto。
+# ---------------------------------------------------------------------------
+ROUTE=$(cat "$MODDIR/route" 2>/dev/null)
+case "$ROUTE" in
+    auto|anland6|desktop5) ;;
+    *)
+        [ -n "$ROUTE" ] && dlog "[WARN] route '$ROUTE' 非法，回落 auto"
+        ROUTE=auto
+        ;;
+esac
+dlog "route:   $ROUTE"
+
 # 选 ko: 优先精确 KMI, 否则退回目录里唯一的一组
 # 读 .ko 的 vermagic，和 uname -r 比"主版本.次版本"。只在无法确定 KMI
 # 时用，作为最后一道防线 —— 版本对不上的模块 insmod 必然失败。
@@ -484,6 +504,7 @@ if [ -e /dev/mali0 ] || lsmod 2>/dev/null | grep -q '^mali_kbase'; then
 fi
 
 dlog "platform: mali=${GPU_HAS_MALI} renderD128=$([ -e /dev/dri/renderD128 ] && echo present || echo absent)"
+dlog "route:    $ROUTE$( [ -f "$MODDIR/route" ] || echo ' (默认，无配置文件)')"
 
 # vkms —— 默认不加载，需要者显式开启
 # ------------------------------------
@@ -521,13 +542,29 @@ dlog "platform: mali=${GPU_HAS_MALI} renderD128=$([ -e /dev/dri/renderD128 ] && 
 # 会通过检查再失败。这也是不该把它做成运行时自动决策的理由。
 # 用绝对路径：此处 MODDIR 还是 ${0%/*} 的相对形式，脚本被以相对路径调用时
 # 会解析错；下面 L499 那处也重新赋成了绝对值，这里保持一致。
-if [ -f "$DSM_DIR/enable_vkms" ]; then
-    # 原来是 load_mod + for 1..5 重试（共 6 次）。改用统一的有界重试，
-    # 次数保持一致（tries=6），日志标记不变。
-    load_mod_retry vkms "" 6 || true
-else
-    dlog "[SKIP] ${M_SKIP_VKMS_OFF}"
-fi
+case "$ROUTE" in
+    anland6)
+        dlog "[SKIP] vkms: route=anland6（6.x waylandbridge 直接用 /dev/mali0，不需 render node）"
+        ;;
+    desktop5)
+        if [ "$GPU_HAS_MALI" = "1" ]; then
+            dlog "[INFO] vkms: route=desktop5，强制提供 /dev/dri/renderD128"
+            load_mod_retry vkms "" 6 || true
+        else
+            dlog "[SKIP] vkms: route=desktop5 但非 Mali（Adreno 有原生 render node）"
+        fi
+        ;;
+    *)
+        # auto：沿用 enable_vkms 开关
+        if [ -f "$DSM_DIR/enable_vkms" ]; then
+            # 原来是 load_mod + for 1..5 重试（共 6 次）。改用统一的有界重试，
+            # 次数保持一致（tries=6），日志标记不变。
+            load_mod_retry vkms "" 6 || true
+        else
+            dlog "[SKIP] ${M_SKIP_VKMS_OFF}"
+        fi
+        ;;
+esac
 
 # cgroup 限流仿真（--cpus / --pids-limit）。
 # 装 kprobe 并在运行时解析符号，最坏表现是加载失败；
@@ -550,18 +587,25 @@ MODDIR="/data/adb/modules/droidspaces_lkm"
 # 没有 mali_kbase 的设备装上纯属浪费。
 # 它在 GPU context 创建路径上，失败不影响容器本身。
 if [ "$GPU_HAS_MALI" = "1" ]; then
-    if [ -f "$MODDIR/disable_mali" ]; then
-        dlog "[SKIP] ${M_SKIP_MALI_DISABLE}"
-    elif [ -f "$MODDIR/mali_nsfix_dryrun" ]; then
-        # 干跑：模块留在内核里但不挂钩，用来在没验证过的设备上先回答
-        # 「这里能不能生效」。判据看 nshf_active / nshf_probe_ok /
-        # nshf_layout_valid，见 extra/mali_nsfix/README.md。
-        if load_mod mali_nsfix "nshf_activate=0"; then
-            dlog "[INFO] mali_nsfix dry-run: ${M_MALI_DRYRUN_OK}"
-        fi
-    else
-        load_mod mali_nsfix ""
-    fi
+    case "$ROUTE" in
+        desktop5)
+            dlog "[SKIP] mali_nsfix: route=desktop5（走 vkms，不用 /dev/mali0）"
+            ;;
+        *)
+            if [ -f "$MODDIR/disable_mali" ]; then
+                dlog "[SKIP] ${M_SKIP_MALI_DISABLE}"
+            elif [ -f "$MODDIR/mali_nsfix_dryrun" ]; then
+                # 干跑：模块留在内核里但不挂钩，用来在没验证过的设备上先回答
+                # 「这里能不能生效」。判据看 nshf_active / nshf_probe_ok /
+                # nshf_layout_valid，见 extra/mali_nsfix/README.md。
+                if load_mod mali_nsfix "nshf_activate=0"; then
+                    dlog "[INFO] mali_nsfix dry-run: ${M_MALI_DRYRUN_OK}"
+                fi
+            else
+                load_mod mali_nsfix ""
+            fi
+            ;;
+    esac
 else
     dlog "[SKIP] ${M_SKIP_MALI}"
 fi

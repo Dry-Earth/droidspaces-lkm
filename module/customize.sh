@@ -114,5 +114,78 @@ if [ -n "$M_DESC" ] && [ -f "${MODPATH:-.}/module.prop" ]; then
     fi
 fi
 
+# ---------------------------------------------------------------------------
+# 显示路线（route）：auto / anland6 / desktop5
+#
+# 老安装升级时优先保留原选择；没有旧配置且是 MTK 平台就弹音量键选项。
+# 管理器只拦 UI 层按键，这里读 evdev 原始事件；读不到不阻塞安装。
+# ---------------------------------------------------------------------------
+ROUTE_FILE="${MODPATH:-.}/route"
+ROUTE_OLD=/data/adb/modules/droidspaces_lkm/route
+
+route_valid() {
+    case "$1" in
+        auto|anland6|desktop5) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+route_soc_is_mtk() {
+    _p="$(getprop ro.board.platform 2>/dev/null)$(getprop ro.soc.model 2>/dev/null)$(getprop ro.hardware 2>/dev/null)"
+    _p=$(printf '%s' "$_p" | tr '[:upper:]' '[:lower:]')
+    case "$_p" in
+        *mtk*|*mediatek*|*mt[0-9]*) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+route_keytest() {
+    command -v timeout >/dev/null 2>&1 || { echo none; return; }
+    _out=$(timeout 8 getevent -ql 2>/dev/null | grep -m1 -E 'KEY_VOLUMEUP|KEY_VOLUMEDOWN|KEY_VOLUME')
+    if [ -z "$_out" ]; then
+        # 兜底：逐个输入设备各听 1 秒
+        for _d in /dev/input/event*; do
+            [ -r "$_d" ] || continue
+            _out=$(timeout 1 getevent -ql "$_d" 2>/dev/null | grep -m1 -E 'KEY_VOLUMEUP|KEY_VOLUMEDOWN|KEY_VOLUME')
+            [ -n "$_out" ] && break
+        done
+    fi
+    case "$_out" in
+        *KEY_VOLUMEUP*) echo up ;;
+        *KEY_VOLUMEDOWN*) echo down ;;
+        *) echo none ;;
+    esac
+}
+
+ROUTE=""
+if [ -f "$ROUTE_OLD" ] && [ "$ROUTE_OLD" != "$ROUTE_FILE" ]; then
+    ROUTE=$(cat "$ROUTE_OLD" 2>/dev/null)
+fi
+if route_valid "$ROUTE"; then
+    ui_print "- $(printf "$M_ROUTE_KEEP" "$ROUTE")"
+else
+    if route_soc_is_mtk; then
+        ui_print "! ${M_ROUTE_NEED}"
+        ui_print "  ${M_ROUTE_OPT6}"
+        ui_print "  ${M_ROUTE_OPT5}"
+        ui_print "  ${M_ROUTE_WAIT}"
+        case "$(route_keytest)" in
+            up)   ROUTE=anland6 ;;
+            down) ROUTE=desktop5 ;;
+            *)    ROUTE=auto ;;
+        esac
+        [ "$ROUTE" = auto ] && ui_print "! ${M_ROUTE_NO_KEY}"
+    else
+        ROUTE=auto
+        ui_print "- ${M_ROUTE_QUALCOMM}"
+    fi
+fi
+printf '%s\n' "$ROUTE" > "$ROUTE_FILE" 2>/dev/null
+ui_print "- $(printf "$M_ROUTE_SET" "$ROUTE")"
+ui_print "- ${M_ROUTE_WEBUI}"
+ui_print "- ${M_PACKAGES}"
+ui_print "  5.x: https://github.com/misaka5202/Droidspaces-rootfs-Desktop-builder"
+ui_print "  6.x: https://github.com/misaka5202/droidspaces-anland6-rootfs"
+
 ui_print "${M_REBOOT_AFTER}"
 ui_print " "

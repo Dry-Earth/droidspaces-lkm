@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="light dark">
+<title>Droidspaces LKM</title>
+<link rel="stylesheet" href="styles.css">
+<script src="index.js" type="module"></script>
+</head>
+<body>
+<header class="topbar">
+  <span class="topbar-title" data-i18n="title">Droidspaces LKM</span>
+  <span class="topbar-sub" data-i18n="subtitle">显示路线 / 诊断</span>
+</header>
+
+<main>
+  <section class="card">
+    <div class="card-title-row">
+      <span class="card-title" data-i18n="route_label">显示路线</span>
+      <span class="badge" id="routeNow">…</span>
+    </div>
+    <p class="desc" data-i18n="route_desc">控制 Mali 上是走 waylandbridge（6.x）还是标准合成器（5.x）。改动重启后生效。</p>
+    <div class="options" id="routeOptions">
+      <label class="option"><input type="radio" name="route" value="auto"><span data-i18n="r_auto">自动（保持现状）</span></label>
+      <label class="option"><input type="radio" name="route" value="anland6"><span data-i18n="r_a6">Anland 6.x：/dev/mali0 + mali_nsfix</span></label>
+      <label class="option"><input type="radio" name="route" value="desktop5"><span data-i18n="r_d5">标准桌面 5.x：vkms render node</span></label>
+    </div>
+    <button id="apply" type="button" data-i18n="apply">应用（重启后生效）</button>
+    <div id="toast" class="toast" role="status"></div>
+  </section>
+
+  <section class="card">
+    <div class="card-title-row"><span class="card-title" data-i18n="diag_label">诊断</span></div>
+    <pre id="diag" class="diag">…</pre>
+  </section>
+
+  <section class="card">
+    <div class="card-title-row"><span class="card-title" data-i18n="pack_label">懒人包</span></div>
+    <button class="link" id="pack5" type="button" data-i18n="pack5">5.x RootFS 构建仓库</button>
+    <button class="link" id="pack6" type="button" data-i18n="pack6">6.x Anland RootFS 仓库</button>
+  </section>
+</main>
+</body>
+</html>

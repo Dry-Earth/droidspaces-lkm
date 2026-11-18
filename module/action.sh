@@ -13,6 +13,25 @@ MODDIR=${0%/*}
 LOG=/data/adb/droidspaces_lkm.log
 STATE_DIR=/data/adb/droidspaces_lkm.d
 
+# 子命令：
+#   action.sh route auto|anland6|desktop5   切换显示路线（写 module/route，重启生效）
+#   action.sh doctor                         只输出诊断段
+case "${1:-}" in
+    route)
+        _r=$(printf '%s' "${2:-}" | tr '[:upper:]' '[:lower:]')
+        case "$_r" in
+            auto|anland6|desktop5) ;;
+            *) echo "usage: action.sh route auto|anland6|desktop5" >&2; exit 2 ;;
+        esac
+        if ! printf '%s\n' "$_r" > "$MODDIR/route" 2>/dev/null; then
+            echo "write route failed: $MODDIR/route" >&2
+            exit 1
+        fi
+        echo "route -> $_r (reboot to apply)"
+        exit 0
+        ;;
+esac
+
 # `action.sh doctor`：只输出诊断段（状态/加载/导出/能力），不打日志尾部。
 # 借鉴 live-gpu-driver 的 doctor 子命令；KernelSU 的「操作」按钮不带参数
 # 调用本脚本，默认路径与原来完全一致。
@@ -26,6 +45,7 @@ echo "=== Droidspaces LKM ==="
 echo "${M_KERNEL}: $(uname -r)"
 echo "${M_MODULE_VER}: $(grep -m1 '^version=' "$MODDIR/module.prop" 2>/dev/null | cut -d= -f2)"
 echo "${M_ARCH}: $(uname -m)"
+echo "${M_ROUTE_NOW}: $(cat "$MODDIR/route" 2>/dev/null || echo auto)"
 echo
 
 echo "=== ${M_SEC_STATE} ==="
@@ -244,6 +264,12 @@ if [ -e /dev/mali0 ] || lsmod | grep -q '^mali_kbase'; then
 else
     echo "  [--]   ${M_MALI_NA}"
 fi
+
+echo
+echo "=== ${M_PACKAGES} ==="
+echo "  5.x: https://github.com/misaka5202/Droidspaces-rootfs-Desktop-builder"
+echo "  6.x: https://github.com/misaka5202/droidspaces-anland6-rootfs"
+echo "       am start -a android.intent.action.VIEW -d '<url>'"
 
 # doctor 到这里就够了；默认路径继续往下打日志尾部。
 [ "$_DOCTOR" = "1" ] && exit 0

@@ -218,6 +218,29 @@ droidspaces check                          # 应显示 All required features fou
 > 同一 KMI 标签的厂商内核 ABI 仍可能有差异。装之前先确认 `uname -r` 里的
 > KMI 标签，装完看 `/data/adb/droidspaces_lkm.log`。
 
+## 显示路线（route）
+
+`module/route` 决定 Mali 上走哪条渲染路径，三档：
+
+| route | 含义 | Mali 行为 |
+|---|---|---|
+| `auto`（默认） | 保持现状 | 自动装 `mali_nsfix`；`vkms` 仅在 `enable_vkms` 存在时装 |
+| `anland6` | Anland 6.x / waylandbridge | 装 `mali_nsfix`；**强制不装 vkms** |
+| `desktop5` | 自带标准合成器的桌面（Anland 5.x 路线） | **强制装 vkms**；不装 `mali_nsfix` |
+
+切换方式：
+
+- **安装 / 更新时**：MediaTek 设备在没有旧配置时会提示按音量键——上 = Anland
+  6.x，下 = 标准桌面 5.x；读不到键则用 `auto`。老安装升级默认保留原选择。
+- **随时**：KernelSU 模块页打开本模块的 WebUI，单选后点「应用」，重启生效。
+- **命令行**：`action.sh route auto|anland6|desktop5`。
+
+WebUI（`webroot/`）同时给诊断（route、`/dev/mali0`、`mali_kbase`、`nshf_*`、
+render node）和两个懒人包入口：
+
+- 5.x RootFS 构建仓库：https://github.com/misaka5202/Droidspaces-rootfs-Desktop-builder
+- 6.x Anland RootFS 仓库：https://github.com/misaka5202/droidspaces-anland6-rootfs
+
 ## 配合它跑 Linux 桌面（Anland 6.x）
 
 这个模块只负责「让容器能跑」。想在手机上看到真正的 Linux 窗口，还需要
