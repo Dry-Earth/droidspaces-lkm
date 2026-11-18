@@ -252,6 +252,8 @@ matrix and the per-KMI build traps.
 | `anland6` | Anland 6.x / waylandbridge | Loads `mali_nsfix`; **never loads vkms** |
 | `desktop5` | Self-composited desktops (Anland 5.x route) | **Loads vkms**; does not load `mali_nsfix` |
 
+On non-MTK devices the Route tab is hidden from the bottom bar (the route only matters on Mali).
+
 How to change it:
 
 - **At install/update**: on MediaTek devices without an existing config, the

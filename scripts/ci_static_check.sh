@@ -85,6 +85,10 @@ done
     || die "WebUI 底栏不足四个页签"
 grep -q 'id="lang-menu"' module/webroot/index.html \
     || die "WebUI 缺少语言菜单（md-menu）"
+grep -q 'hideRouteTabIfNotMtk' module/webroot/index.js \
+    || die "WebUI 缺少非 MTK 隐藏路线页签的逻辑"
+grep -q 'platformIsMtk' module/webroot/index.js \
+    || die "WebUI 缺少平台判定 platformIsMtk"
 grep -q 'route_keytest' module/customize.sh \
     || die "customize.sh 缺少安装期音量键选择 route_keytest"
 grep -q 'ROUTE=$(cat' module/service.sh \

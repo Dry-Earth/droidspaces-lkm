@@ -228,6 +228,8 @@ droidspaces check                          # 应显示 All required features fou
 | `anland6` | Anland 6.x / waylandbridge | 装 `mali_nsfix`；**强制不装 vkms** |
 | `desktop5` | 自带标准合成器的桌面（Anland 5.x 路线） | **强制装 vkms**；不装 `mali_nsfix` |
 
+非 MTK 设备上底栏不显示「切换路线」页签（路线只对 Mali 有意义）。
+
 切换方式：
 
 - **安装 / 更新时**：MediaTek 设备在没有旧配置时会提示按音量键——上 = Anland

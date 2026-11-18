@@ -416,12 +416,32 @@ async function changeLang(code) {
   $('appbar-title').textContent = t(`tab.${currentView.replace('view-', '')}`);
 }
 
+/* ======================= 平台判定 =======================
+ * 非 MTK（含高通等）隐藏「切换路线」底栏：路线只对 Mali 有意义，
+ * 装到别的平台只会让人误以为可以切换。
+ */
+async function platformIsMtk() {
+  const r = await sh([
+    'getprop ro.board.platform',
+    'getprop ro.soc.model',
+    'getprop ro.hardware'
+  ].join('; '));
+  const s = String(r.stdout || '').toLowerCase();
+  return /mtk|mediatek|(^|[^a-z])mt[0-9]/.test(s);
+}
+
+function hideRouteTabIfNotMtk() {
+  const tab = document.querySelector('.tab[data-target="view-route"]');
+  if (tab) tab.remove();
+}
+
 /* ======================= 启动 ======================= */
 
 (async function boot() {
   await setLang(pickLang());
   applyI18n();
   buildLangSelect();
+  if (!(await platformIsMtk())) hideRouteTabIfNotMtk();
   document.querySelectorAll('#ui-switch .seg-btn').forEach((b) => {
     b.addEventListener('click', () => applyUi(b.dataset.ui));
   });
