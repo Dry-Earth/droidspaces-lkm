@@ -44,6 +44,15 @@ fork 拒绝不经原函数体、直接给用户态返回 `-EAGAIN`，errno 与�
 
 - **布局自校验。** `struct css_set` 以 `subsys[CGROUP_SUBSYS_COUNT]` 开头。运行时从 `cgroup_subsys[]` 读取实际控制器数并据此修正偏移。`init_css_set.dfl_cgrp` 与 `init_task.cgroups` 两重校验必须同时通过，否则不安装 fork 探针。
 - **重复 enable `+pids` 返回 EFAULT。** 翻译层仅在 memory 未启用时改写缓冲区；已启用时清空缓冲区后直接返回。
+- **kprobe 处理器里绝不能睡眠。** 判断"memory 是否已启用"不能用
+  `kernfs_find_and_get()`：它经 `down_read(&kernfs_rwsem)`，一旦有竞争就
+  `schedule`，而 pre-handler 是关抢占关中断的原子上下文。实测会打出
+  `BUG: scheduling while atomic` 并连锁到看门狗重启（PHZ110 / Anland 5.x）。
+  现在改为**只信自己的观测表**：凡见过 `+memory` 的 cgroup 就记下来
+  （含用户自己写的 `+memory`，因为它也走这个钩子），后续 `+pids` 先查表。
+  表用 `spin_lock_irqsave` 保护；`-memory` 与 `cgroup_rmdir` 都会清条目。
+  盲区只有"模块加载前就已启用 memory 的 cgroup"，那种情况退回老行为
+  （rewrite 后拿到 `-EFAULT`），不会 panic。
 - **显示层必须同时声明 `cpu`。** Droidspaces 读取 `cgroup.controllers` 选择 v2 路径。只声明 `pids` 会让 `--cpus` 走 v1 路径继而失败。
 
 ### 真机验证

@@ -40,6 +40,7 @@
 #include <linux/seq_file.h>
 #include <linux/version.h>
 #include <linux/smp.h>
+#include <linux/spinlock.h>
 
 #include "kallrecon/core.h"
 #include "hk/hk.h"
@@ -253,6 +254,13 @@ static void ctl_blank_name(char *buf, size_t nbytes, const char *name)
  */
 static char ctl_rw_buf[32];
 
+/*
+ * 两张观测表（rewritten / mem_seen）的锁。kprobe pre-handler 可能在多个 CPU
+ * 上并发进入（它跑在被钩函数拿 cgroup_mutex 之前），表访问必须串行。
+ * spin_lock_irqsave 在原子上下文合法，不会睡眠。
+ */
+static DEFINE_SPINLOCK(ctl_obs_lock);
+
 #define CTL_REWRITTEN_MAX 8
 static unsigned long ctl_rewritten[CTL_REWRITTEN_MAX];
 static int ctl_n_rewritten;
@@ -260,18 +268,167 @@ static int ctl_n_rewritten;
 static bool ctl_already_rewritten(unsigned long cgrp)
 {
 	int i;
+	bool found = false;
+	unsigned long flags;
 
-	for (i = 0; i < ctl_n_rewritten; i++)
-		if (ctl_rewritten[i] == cgrp)
-			return true;
-	return false;
+	if (!cgrp)
+		return false;
+	spin_lock_irqsave(&ctl_obs_lock, flags);
+	for (i = 0; i < ctl_n_rewritten; i++) {
+		if (ctl_rewritten[i] == cgrp) {
+			found = true;
+			break;
+		}
+	}
+	spin_unlock_irqrestore(&ctl_obs_lock, flags);
+	return found;
 }
 
 static void ctl_note_rewritten(unsigned long cgrp)
 {
-	if (ctl_n_rewritten >= CTL_REWRITTEN_MAX || !cgrp)
+	int i;
+	unsigned long flags;
+
+	if (!cgrp || ctl_n_rewritten >= CTL_REWRITTEN_MAX)
 		return;
-	ctl_rewritten[ctl_n_rewritten++] = cgrp;
+	spin_lock_irqsave(&ctl_obs_lock, flags);
+	for (i = 0; i < ctl_n_rewritten; i++)
+		if (ctl_rewritten[i] == cgrp)
+			break;
+	if (i == ctl_n_rewritten && ctl_n_rewritten < CTL_REWRITTEN_MAX)
+		ctl_rewritten[ctl_n_rewritten++] = cgrp;
+	spin_unlock_irqrestore(&ctl_obs_lock, flags);
+}
+
+static void ctl_forget_rewritten(unsigned long cgrp)
+{
+	int i, j;
+	unsigned long flags;
+
+	if (!cgrp)
+		return;
+	spin_lock_irqsave(&ctl_obs_lock, flags);
+	for (i = 0; i < ctl_n_rewritten; i++) {
+		if (ctl_rewritten[i] != cgrp)
+			continue;
+		for (j = i + 1; j < ctl_n_rewritten; j++)
+			ctl_rewritten[j - 1] = ctl_rewritten[j];
+		ctl_n_rewritten--;
+		break;
+	}
+	spin_unlock_irqrestore(&ctl_obs_lock, flags);
+}
+
+/*
+ * memory 启用状态的观测表。
+ *
+ * 为什么不能查 kernfs：本文件是 kprobe pre-handler，原子上下文（关抢占、
+ * 关中断），任何可能睡眠的调用都不允许。老实现用
+ * kernfs_find_and_get(of->kn->parent, "memory.current") 判断 memory 是否
+ * 已启用，而 kernfs_find_and_get_ns() 会 down_read(&kernfs_rwsem) ——
+ * 一旦有竞争就 schedule。实测（PHZ110 / Anland 5.x）就是这条路径：
+ *
+ *   BUG: scheduling while atomic: systemd/29572
+ *   __schedule -> schedule_preempt_disabled -> down_read
+ *   -> kernfs_find_and_get_ns -> ctl_subtree_pre [droid_lkm_pids]
+ *
+ * 之后 preempt 计数被破坏，连锁出 del_timer_sync / GIC warning 和看门狗
+ * 重启。kprobe 处理器不是"偶尔不能睡"，是绝不能睡。
+ *
+ * 改为只信自己的观测：所有对 cgroup.subtree_control 的写都经过本钩子，
+ * 见过 +memory 就把该 cgroup 记下来；后续 +pids 的 rewrite 先查这张表。
+ * 表操作只用 spin_lock_irqsave，原子安全，不引入新的睡眠点。
+ *
+ * 盲区：模块加载之前就已启用 memory 的 cgroup 观测不到。那种情况下 +pids
+ * 仍会被 rewrite 成 +memory 并拿到 -EFAULT（与加这道检查之前的行为一致），
+ * 不会 panic。容器 cgroup 都是开机后创建的，不受这个盲区影响。
+ */
+#define CTL_MEM_MAX 16
+static unsigned long ctl_mem_seen[CTL_MEM_MAX];
+static int ctl_n_mem_seen;
+
+static bool ctl_memory_seen(unsigned long cgrp)
+{
+	int i;
+	bool found = false;
+	unsigned long flags;
+
+	if (!cgrp)
+		return false;
+	spin_lock_irqsave(&ctl_obs_lock, flags);
+	for (i = 0; i < ctl_n_mem_seen; i++) {
+		if (ctl_mem_seen[i] == cgrp) {
+			found = true;
+			break;
+		}
+	}
+	spin_unlock_irqrestore(&ctl_obs_lock, flags);
+	return found;
+}
+
+static void ctl_note_memory(unsigned long cgrp)
+{
+	int i;
+	unsigned long flags;
+
+	if (!cgrp)
+		return;
+	spin_lock_irqsave(&ctl_obs_lock, flags);
+	for (i = 0; i < ctl_n_mem_seen; i++)
+		if (ctl_mem_seen[i] == cgrp)
+			break;
+	if (i == ctl_n_mem_seen && ctl_n_mem_seen < CTL_MEM_MAX)
+		ctl_mem_seen[ctl_n_mem_seen++] = cgrp;
+	spin_unlock_irqrestore(&ctl_obs_lock, flags);
+}
+
+static void ctl_forget_memory(unsigned long cgrp)
+{
+	int i, j;
+	unsigned long flags;
+
+	if (!cgrp)
+		return;
+	spin_lock_irqsave(&ctl_obs_lock, flags);
+	for (i = 0; i < ctl_n_mem_seen; i++) {
+		if (ctl_mem_seen[i] != cgrp)
+			continue;
+		for (j = i + 1; j < ctl_n_mem_seen; j++)
+			ctl_mem_seen[j - 1] = ctl_mem_seen[j];
+		ctl_n_mem_seen--;
+		break;
+	}
+	spin_unlock_irqrestore(&ctl_obs_lock, flags);
+}
+
+/*
+ * 在写 buffer 里找带 +/- 前缀的 name token。
+ * 返回 1=启用, -1=禁用, 0=没提。token 边界规则与 ctl_blank_name 一致，
+ * 避免把 "memoryfoo" 之类误判成 memory。裸名字不是合法输入（内核会
+ * 自己回 -EINVAL），这里也不认。
+ */
+static int ctl_buf_token(const char *buf, size_t nbytes, const char *name)
+{
+	size_t nlen = strlen(name);
+	size_t i;
+
+	for (i = 0; i + nlen <= nbytes; i++) {
+		size_t start = i, end = i + nlen;
+		char sign;
+
+		if (memcmp(buf + i, name, nlen) != 0)
+			continue;
+		if (end < nbytes && buf[end] != ' ' && buf[end] != '\n' &&
+		    buf[end] != '\t' && buf[end] != '\0')
+			continue;
+		if (start == 0 || (buf[start - 1] != '+' &&
+				   buf[start - 1] != '-'))
+			continue;
+		start--;
+		sign = buf[start];
+		return sign == '+' ? 1 : -1;
+	}
+	return 0;
 }
 
 static struct kprobe ctl_subtree_probe;
@@ -294,6 +451,17 @@ static int ctl_subtree_pre(struct kprobe *p, struct pt_regs *regs)
 
 	if (of && of->kn && of->kn->parent)
 		cgrp = (unsigned long)of->kn->parent->priv;
+
+	/*
+	 * 记下本次写对 memory 的意图。用户自己写 +memory（不经我们的 rewrite）
+	 * 也走这条路径，所以这是唯一能看到"谁把 memory 打开过"的地方。
+	 * 只做原子标记，不碰 kernfs、不加可能睡眠的锁。
+	 */
+	switch (ctl_buf_token(buf, nbytes, "memory")) {
+	case 1:  ctl_note_memory(cgrp);   break;
+	case -1: ctl_forget_memory(cgrp); break;
+	default: break;
+	}
 
 	for (i = 0; i + 4 <= nbytes; i++) {
 		if (memcmp(buf + i, "pids", 4) != 0)
@@ -329,17 +497,12 @@ static int ctl_subtree_pre(struct kprobe *p, struct pt_regs *regs)
 	}
 
 	/* 用户先写过 +memory（不经我们）的 cgroup：memory 已启用，
-	 * 再 rewrite 会重复 enable 得 EFAULT。用 kernfs 检查子文件。 */
-	if (cgrp && of && of->kn && of->kn->parent) {
-		struct kernfs_node *mc =
-			kernfs_find_and_get(of->kn->parent, "memory.current");
-
-		if (mc) {
-			kernfs_put(mc);
-			memset(buf, ' ', nbytes);
-			ctl_note_rewritten(cgrp);
-			return 0;
-		}
+	 * 再 rewrite 会重复 enable 得 EFAULT。查自己的观测表；不再走
+	 * kernfs_find_and_get()，那是睡眠调用，这里不能做。 */
+	if (cgrp && ctl_memory_seen(cgrp)) {
+		memset(buf, ' ', nbytes);
+		ctl_note_rewritten(cgrp);
+		return 0;
 	}
 
 	/* 全局 buffer：写路径由 cgroup_mutex 串行，无需 per-CPU */
@@ -347,6 +510,7 @@ static int ctl_subtree_pre(struct kprobe *p, struct pt_regs *regs)
 	regs->regs[1] = (unsigned long)ctl_rw_buf;
 	regs->regs[2] = 7;
 	ctl_note_rewritten(cgrp);
+	ctl_note_memory(cgrp);
 	atomic_inc(&ctl_n_rewrite);
 
 	return 0;
@@ -532,6 +696,16 @@ static int ctl_rmdir_pre(struct kprobe *p, struct pt_regs *regs)
 			atomic_set(&cp->dead, 1);
 	}
 	rcu_read_unlock();
+
+	/*
+	 * 观测表按 cgroup 指针索引，被删的 cgroup 必须清掉：不清的话指针
+	 * 被复用后会假命中（新 cgroup 被当成"memory 已启用"，+pids 被静默
+	 * 清空、限额不生效）。这里只动整数下标，原子安全。
+	 */
+	if (v) {
+		ctl_forget_rewritten(v);
+		ctl_forget_memory(v);
+	}
 	return 0;
 }
 

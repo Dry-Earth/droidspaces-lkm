@@ -59,5 +59,17 @@ grep -q 'nshf_status' module/action.sh || die "action.sh 缺少 nshf_status 输�
 grep -q 'mali_nsfix_dryrun' module/service.sh || die "service.sh 缺少干跑开关接线"
 grep -q 'load_mod_retry' module/service.sh || die "service.sh 缺少有界重试 helper"
 
+# 6) droid_lkm_pids：kprobe pre-handler 里不允许出现会睡眠的 kernfs 查找。
+#    2026-11-18 的 panic（BUG: scheduling while atomic）就是 kernfs_find_and_get
+#    在原子上下文 down_read 造成的，这条静态检查防止回归。
+#    只匹配代码行：注释里提到这个名字是允许的（解释为什么不能用）。
+_bad_kernfs=$(grep -n 'kernfs_find_and_get' extra/cgrouplimits/pids_mod.c 2>/dev/null |
+              grep -vE '^[0-9]+:[[:space:]]*(\*|/\*|//)')
+[ -z "$_bad_kernfs" ] || die "pids_mod.c 又出现了 kernfs_find_and_get() 调用（kprobe 原子上下文禁止睡眠）"
+grep -q 'ctl_memory_seen' extra/cgrouplimits/pids_mod.c \
+    || die "pids_mod.c 缺少观测表判定 ctl_memory_seen"
+grep -q 'ctl_obs_lock' extra/cgrouplimits/pids_mod.c \
+    || die "pids_mod.c 缺少观测表锁 ctl_obs_lock"
+
 [ "$fail" -eq 0 ] && echo "static-check: all checks passed"
 exit "$fail"

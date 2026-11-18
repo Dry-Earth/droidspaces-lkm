@@ -54,6 +54,18 @@ Constraints:
 - **Repeated `+pids` enable returns EFAULT.** The translation layer rewrites the
   buffer only when memory is not yet enabled; when it is, the write buffer is
   cleared and the call returns without effect.
+- **Never sleep in a kprobe handler.** The "is memory already enabled?" check
+  must not use `kernfs_find_and_get()`: it goes through
+  `down_read(&kernfs_rwsem)` and can schedule, while a pre-handler runs in
+  atomic context with preemption and interrupts disabled. Measured on PHZ110 /
+  Anland 5.x as `BUG: scheduling while atomic` followed by watchdog reboot.
+  The module now trusts only its own observation table: any cgroup whose write
+  mentioned `+memory` (including a direct user write, which passes through the
+  same hook) is remembered, and later `+pids` writes consult that table. The
+  table is guarded by `spin_lock_irqsave`; `-memory` and `cgroup_rmdir` clear
+  entries. Only blind spot: cgroups where memory was enabled before this module
+  loaded - those fall back to the old behaviour (`-EFAULT` after rewrite), never
+  a panic.
 - **The visibility layer must also advertise `cpu`.** Droidspaces reads
   `cgroup.controllers` to select the v2 path. Advertising only `pids` routes
   `--cpus` through the v1 path, which then fails.
