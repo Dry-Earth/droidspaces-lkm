@@ -115,10 +115,11 @@ but not load one, drop a `disable_pids` / `disable_cpu` / `disable_uart_guard` /
 `mali_nsfix` loads automatically on Mali platforms and is skipped elsewhere. The
 decision is made from what the device reports, not from a list of vendor names.
 
-> **本表的 Android 版本是内核模块（KMI）一侧的**，与 anland6 用户态无关：
-> anland6 的 `waylandbridge` 需要 **Android 14（API 34）+**（`ANativeWindow_readFromParcel`
-> 是 API 34 才引入的符号，Android 13 上 daemon 加载失败）。
-> 详见 <https://github.com/misaka5202/Droidspaces-anland6-rootfs#support-matrix>。
+> **The Android versions in this table describe the kernel-module (KMI) side
+> only**, and are unrelated to the anland6 userspace: anland6's `waylandbridge`
+> needs **Android 14 (API 34)+** (`ANativeWindow_readFromParcel` was only added in
+> API 34, so the daemon fails to load on Android 13). See
+> <https://github.com/misaka5202/Droidspaces-anland6-rootfs#support-matrix>.
 
 Which of `vkms` / `mali_nsfix` loads is decided by `module/route` (see
 [Display route](#display-route)). Under `auto`, `vkms` is not loaded by default:
@@ -500,7 +501,7 @@ checks `vermagic` before every insmod and refuses with a message naming both
 versions, instead of letting the kernel report an unknown symbol.
 
 ```
-[FAIL] lkm4ctr: lkm4ctr-android14-6.1.ko 的 vermagic (6.1.166-dirty) 与内核 5.10.269-... 不匹配，跳过
+[FAIL] lkm4ctr: lkm4ctr-android14-6.1.ko vermagic (6.1.166-dirty) does not match kernel 5.10.269-..., skipped
 ```
 
 If you see that, the installed package does not match the device. Reinstall the
@@ -524,7 +525,7 @@ not declare. `service.sh` now filters parameters against the `.ko` before use an
 logs what it dropped:
 
 ```
-[WARN] devtmpfs_lkm 不支持参数 foo，已忽略
+[WARN] devtmpfs_lkm does not support parameter foo, ignored
 ```
 
 ### Nothing loads at all
