@@ -1,4 +1,5 @@
 name: Release
+run-name: Release ${{ inputs.tag || github.ref_name }}
 
 # 真发布：只有打 tag 才会走到这里。
 #
@@ -30,7 +31,7 @@ concurrency:
 
 jobs:
   build:
-    name: build
+    name: Build release artifacts
     uses: ./.github/workflows/build.yml
     with:
       package: true
@@ -39,14 +40,14 @@ jobs:
       version: ${{ inputs.tag || github.ref_name }}
 
   publish:
-    name: publish
+    name: Publish GitHub release
     needs: [build]
     runs-on: ubuntu-latest
     steps:
-      - name: 检出
+      - name: Checkout
         uses: actions/checkout@v6
 
-      - name: 下载构建产物
+      - name: Download build artifacts
         # Package job 已经把 .ko、模块 zip 和源码快照都做好了（artifact
         # droidspaces-lkm-dist）。这里不再重新打包一遍 —— 之前那版会重新
         # 压所有 zip 和源码快照，多花约 35 秒，而且两份逻辑容易走偏。
@@ -55,14 +56,14 @@ jobs:
           name: droidspaces-lkm-dist
           path: dist
 
-      - name: 列出产物
+      - name: List release assets
         run: |
           set -euo pipefail
           ls -lh dist/
           compgen -G "dist/*.zip" > /dev/null || { echo "::error::没有模块包"; exit 1; }
           compgen -G "dist/*.ko" > /dev/null || { echo "::error::没有 .ko"; exit 1; }
 
-      - name: 创建 pre-release
+      - name: Create pre-release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -104,24 +105,24 @@ jobs:
   # 提交带 [skip ci]，避免又触发一轮 CI。
   # ---------------------------------------------------------------------------
   publish-meta:
-    name: publish-metadata
+    name: Update release metadata
     needs: [build]
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
-      - name: 检出 master
+      - name: Checkout master
         uses: actions/checkout@v6
         with:
           ref: master
 
-      - name: 下载构建产物
+      - name: Download build artifacts
         uses: actions/download-artifact@v8
         with:
           name: droidspaces-lkm-dist
           path: dist
 
-      - name: 生成 update.json 与 CHANGELOG-latest.md
+      - name: Generate update.json and CHANGELOG-latest.md
         run: |
           set -euo pipefail
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
@@ -137,7 +138,7 @@ jobs:
           }
           python3 scripts/gen_release_meta.py --version "$TAG" --dist dist
 
-      - name: 提交
+      - name: Commit metadata
         run: |
           set -euo pipefail
           git config user.name  "github-actions[bot]"

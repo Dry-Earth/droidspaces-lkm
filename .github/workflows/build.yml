@@ -1,4 +1,5 @@
-name: build
+name: Module Build
+run-name: Module build · KMI ${{ inputs.kmis || 'all' }}${{ inputs.package && ' · packaged' || '' }}${{ inputs.version && format(' · {0}', inputs.version) || '' }}
 
 # 为全部支持的 arm64 GKI KMI 构建 Droidspaces 所需的可加载模块，
 # 并打包成按 KMI 自动选择的 KernelSU 模块。
@@ -86,13 +87,13 @@ env:
 
 jobs:
   prepare:
-    name: Prepare matrix
+    name: Resolve build matrix
     runs-on: ubuntu-latest
     outputs:
       matrix: ${{ steps.set.outputs.matrix }}
       ddk_release: ${{ steps.set.outputs.ddk_release }}
     steps:
-      - name: 检出
+      - name: Checkout
         uses: actions/checkout@v6
 
       - name: Compute KMI matrix
@@ -116,14 +117,14 @@ jobs:
     name: Static checks
     runs-on: ubuntu-latest
     steps:
-      - name: 检出
+      - name: Checkout
         uses: actions/checkout@v6
 
-      - name: 运行静态检查
+      - name: Run static checks
         run: sh scripts/ci_static_check.sh
 
   build:
-    name: Build (${{ matrix.kmi }})
+    name: Compile ${{ matrix.kmi }}
     needs: prepare
     runs-on: ubuntu-latest
     container:
@@ -134,10 +135,10 @@ jobs:
       matrix: ${{ fromJson(needs.prepare.outputs.matrix) }}
 
     steps:
-      - name: 检出
+      - name: Checkout
         uses: actions/checkout@v6
 
-      - name: 拉取上游源码并打补丁
+      - name: Fetch upstream and apply patches
         run: |
           set -euxo pipefail
           command -v git >/dev/null || { apt-get update -qq && apt-get install -y -qq git ca-certificates; }
@@ -156,7 +157,7 @@ jobs:
             done
           fi
 
-      - name: 编译模块
+      - name: Compile modules
         env:
           KMI: ${{ matrix.kmi }}
         run: |
@@ -166,7 +167,7 @@ jobs:
           chmod +x "$GITHUB_WORKSPACE/scripts/build_modules.sh"
           bash "$GITHUB_WORKSPACE/scripts/build_modules.sh"                "$KMI" "$KDIR" "$GITHUB_WORKSPACE" "$GITHUB_WORKSPACE/out"
 
-      - name: 校验
+      - name: Verify artifacts
         env:
           KMI: ${{ matrix.kmi }}
         run: |
@@ -206,7 +207,7 @@ jobs:
           done
           exit $FAIL
 
-      - name: 上传
+      - name: Upload artifacts
         if: always()
         uses: actions/upload-artifact@v7
         with:
@@ -215,24 +216,24 @@ jobs:
           if-no-files-found: warn
 
   validate:
-    name: Validation evidence
+    name: Generate validation evidence
     needs: [prepare, build]
     # 与 package 同一门槛：构建被取消就不做；失败也照实记录已有产物，
     # 这样 validation.json 反映的是「实际产出了什么」，不是「本该产出什么」。
     if: always() && needs.build.result != 'cancelled'
     runs-on: ubuntu-latest
     steps:
-      - name: 检出
+      - name: Checkout
         uses: actions/checkout@v6
 
-      - name: 下载所有产物
+      - name: Download build artifacts
         uses: actions/download-artifact@v8
         with:
           pattern: ko-*
           path: ko-all
           merge-multiple: true
 
-      - name: 生成 validation.json
+      - name: Generate validation.json
         run: |
           set -euo pipefail
           python3 scripts/gen_validation.py \
@@ -242,7 +243,7 @@ jobs:
             --source-root "$GITHUB_WORKSPACE"
           cat validation.json
 
-      - name: 上传
+      - name: Upload artifacts
         uses: actions/upload-artifact@v7
         with:
           name: droidspaces-lkm-validation
@@ -250,31 +251,31 @@ jobs:
           if-no-files-found: error
 
   package:
-    name: Package
+    name: Assemble release packages
     needs: [prepare, build, validate]
     # CI 只用 ko-* artifact 做汇总，不需要模块 zip 和源码快照；
     # 打包只在发布时做，省掉 CI 关键路径上的一次压缩。
     if: always() && needs.build.result != 'cancelled' && inputs.package
     runs-on: ubuntu-latest
     steps:
-      - name: 检出
+      - name: Checkout
         uses: actions/checkout@v6
 
-      - name: 下载所有产物
+      - name: Download build artifacts
         uses: actions/download-artifact@v8
         with:
           pattern: ko-*
           path: ko-all
           merge-multiple: true
 
-      - name: 下载验证证据
+      - name: Download validation evidence
         uses: actions/download-artifact@v8
         continue-on-error: true
         with:
           name: droidspaces-lkm-validation
           path: dist
 
-      - name: 整理
+      - name: Stage artifacts
         run: |
           set -euo pipefail
           mkdir -p dist
@@ -289,7 +290,7 @@ jobs:
           echo "=== dist ==="
           ls -lh dist/ || true
 
-      - name: 生成源码快照 (GPL-2.0 要求)
+      - name: Create source snapshot (GPL-2.0)
         run: |
           set -euo pipefail
           rm -rf /tmp/src
@@ -321,7 +322,7 @@ jobs:
           tar czf dist/source-$(date +%Y%m%d).tar.gz -C /tmp/src .
           ls -lh dist/source-*.tar.gz
 
-      - name: 构建 KernelSU 模块
+      - name: Assemble KernelSU module packages
         run: |
           set -euo pipefail
           command -v zip >/dev/null || { sudo apt-get update -qq && sudo apt-get install -y -qq zip unzip; }
@@ -429,7 +430,7 @@ jobs:
           echo "=== 最终 dist ==="
           ls -lh dist/
 
-      - name: 上传
+      - name: Upload artifacts
         uses: actions/upload-artifact@v7
         with:
           name: droidspaces-lkm-dist
