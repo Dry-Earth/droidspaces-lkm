@@ -43,3 +43,20 @@ mali_nsfix 的技术与依据来源，记录在此以便日后核对结构体漂
 - 同日在 OPPO PHZ110 / MT6989 / 6.1.157 容器内实测通过。
 - 0.4.0：加入干跑模式（nshf_activate=0）与状态参数
   （nshf_active / nshf_probe_ok / nshf_driver），供 doctor 输出使用。
+
+## 适配取舍：为什么不做严格的 BTF/notes 指纹门禁
+
+Shikochin/Droidspaces-LKM 的做法是「一个产物对应一个精确内核版本」，所以可以
+把 `/sys/kernel/btf/vmlinux` 或 `/sys/kernel/notes` 的哈希作为门禁。本项目
+不同：产物按 KMI 覆盖一族内核（同一 KMI 下 6.1.75 / 6.1.118 / 6.1.157 等
+vermagic 都不同），设备侧没有可预先捆绑的精确指纹，硬抄会直接把大量在用的
+设备挡在外面。
+
+因此这里改为两层：
+
+1. 构建期按 KMI 用真实 DDK 头文件编译，CI 对每个 KMI 单独出货并记录 SHA256；
+2. 运行期由 `nshf_layout_ok()` 做自洽性绊线（不通过就拒绝挂钩），另有
+   `nshf_activate=0` 干跑可以在不动内核行为的前提下先验证一次。
+
+若将来某个型号需要像 Shikochin 那样锁死单一内核版本，可在打包器里加一张
+`预期 BTF 哈希` 表，service.sh 比对后再 insmod。
