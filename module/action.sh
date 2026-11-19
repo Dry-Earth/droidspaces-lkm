@@ -201,6 +201,23 @@ else
     echo "  [--]   ${M_CAP_DEVTMPFS_NO}"
 fi
 
+# 容器内 systemd 把 /run 挂成 tmpfs，resolvconf 的 setfacl、NixOS suid-sgid
+# wrappers 的 setcap 都落在上面。部分厂商内核关掉了 CONFIG_TMPFS_XATTR /
+# CONFIG_TMPFS_POSIX_ACL（Meizu 21 Pro 6.1.25 实测如此），这两类调用一律
+# Operation not supported —— 编译期特性，LKM 无法补齐，只能容器侧绕开。
+# GKI 内核开了 IKCONFIG，/proc/config.gz 一读便知；没有 config.gz 的内核
+# 如实标注 NA。
+if [ -r /proc/config.gz ]; then
+    cfg=$(zcat /proc/config.gz 2>/dev/null | grep -E '^CONFIG_TMPFS_(XATTR|POSIX_ACL)=')
+    if echo "$cfg" | grep -q '^CONFIG_TMPFS_XATTR=y' && echo "$cfg" | grep -q '^CONFIG_TMPFS_POSIX_ACL=y'; then
+        echo "  [OK]   ${M_CAP_TMPFS}"
+    else
+        echo "  [--]   ${M_CAP_TMPFS_NO}"
+    fi
+else
+    echo "  [NA]   ${M_CAP_TMPFS_NA}"
+fi
+
 # 显示链路的两个不同要素，别混：
 #   /dev/mali0        —— Droidspaces --hw-access 映射的设备节点；mali_nsfix
 #                        只负责让容器内进程能用它建 GPU context。

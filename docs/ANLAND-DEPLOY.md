@@ -655,12 +655,39 @@ Wayland 平台 EGL 需要 `MESA_LOADER_DRIVER_OVERRIDE=swrast`，
 | GPU 加速收益 | ⚠️ | MobileGL 通路可用，但瓶颈在 anland 合成 |
 | 音频 | 未验证 | anland 有音频通道，未测试 |
 | 输入法 | 未验证 | fcitx5 已配置，未测试中文输入 |
+| 容器内 tmpfs ACL/xattr | ⚠️ | 取决于内核配置，部分厂商关闭（见下） |
 
 > **`--pids-limit` / `--cpus` 的附加条件**：两项仿真的 cftype 挂在 cgroup v2
 > 上，容器必须**同时设 `--memory`**（它才会创建独立的 cgroup），否则限额不生效。
 >
 > 早期文档把这两项标成 ❌「需内核重新编译」，那是 `droid_lkm_pids` /
 > `droid_lkm_cpu` 出现之前的情况，已经不成立了。
+
+### 容器内 tmpfs 的 setfacl / setcap（issue #6）
+
+容器内 systemd 把 /run 挂成 tmpfs，落在这上面的两类调用是否可用，取决于
+内核的 `CONFIG_TMPFS_XATTR` / `CONFIG_TMPFS_POSIX_ACL`：
+
+- Meizu 21 Pro（6.1.25-android14-11）实测**两者都被厂商关闭**（内核内嵌
+  config 证实）：tmpfs 上任何 setxattr 都返回 `Operation not supported`，
+  表现是 NixOS 容器里 resolvconf.service（setfacl）和
+  suid-sgid-wrappers.service（setcap）失败。这是编译期配置，内核模块无法
+  补齐。
+- 「操作」按钮的 tmpfs ACL/xattr 诊断行会如实标注（读 /proc/config.gz，
+  GKI 内核必有；无 config.gz 的内核标 NA）。
+
+规避（容器侧，不碰内核）：
+
+1. resolvconf.service 的 setfacl 失败：禁用该服务，改用静态 resolv.conf
+   （`networking.resolvconf.enable = false;` 并直接提供
+   `environment.etc."resolv.conf"`）
+2. suid-sgid-wrappers.service 的 setcap 失败：`security.wrappers = { };`
+   （特权容器里 newuidmap/newgidmap 本就不需要）
+3. bpf-firewall 的 `Operation not permitted`：cgroup BPF attach 需要宿主
+   特权，容器内天然不可能——仅是警告，`networking.firewall.enable = false;`
+   可消除
+4. 进阶：若容器运行时支持预挂载，把 /run 改挂到 ACL 可用的文件系统
+   （如 overlay，upper 在 data 分区），systemd 检测到已挂载会跳过 tmpfs
 
 ---
 

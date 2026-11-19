@@ -689,6 +689,7 @@ Wayland-platform EGL needs `MESA_LOADER_DRIVER_OVERRIDE=swrast`; setting only
 | GPU acceleration benefit | partial | the MobileGL path works, but the bottleneck is anland composition |
 | Audio | untested | anland has an audio channel; not tested |
 | Input methods | untested | fcitx5 configured, Chinese input not tested |
+| tmpfs ACL/xattr inside containers | partial | depends on kernel config; some vendors disable it (see below) |
 
 > **Additional condition for `--pids-limit` / `--cpus`:** the emulated cftypes
 > hang off cgroup v2, so the container must **also set `--memory`** (that is what
@@ -697,6 +698,34 @@ Wayland-platform EGL needs `MESA_LOADER_DRIVER_OVERRIDE=swrast`; setting only
 > Earlier revisions of this guide marked both as "requires a kernel rebuild".
 > That was true before `droid_lkm_pids` / `droid_lkm_cpu` existed and is no
 > longer the case.
+
+### setfacl / setcap on container tmpfs (issue #6)
+
+Inside the container, systemd mounts /run as tmpfs. Whether the two calls that
+land there work depends on the kernel's `CONFIG_TMPFS_XATTR` /
+`CONFIG_TMPFS_POSIX_ACL`:
+
+- Meizu 21 Pro (6.1.25-android14-11) ships with **both disabled by the vendor**
+  (confirmed from the config embedded in its kernel): every setxattr on tmpfs
+  returns `Operation not supported`, which breaks resolvconf.service (setfacl)
+  and suid-sgid-wrappers.service (setcap) in NixOS containers. This is a
+  compile-time configuration; no kernel module can restore it.
+- The Action button's tmpfs ACL/xattr diagnostic row reports it truthfully
+  (reads /proc/config.gz, present on every GKI kernel; NA when unavailable).
+
+Workarounds (container side, kernel untouched):
+
+1. resolvconf.service fails on setfacl: disable the service and provide a
+   static resolv.conf (`networking.resolvconf.enable = false;` plus an
+   `environment.etc."resolv.conf"` entry).
+2. suid-sgid-wrappers.service fails on setcap: `security.wrappers = { };`
+   (a privileged container does not need newuidmap/newgidmap anyway).
+3. bpf-firewall's `Operation not permitted`: cgroup BPF attach needs host
+   privileges and is impossible inside a container -- it is only a warning;
+   `networking.firewall.enable = false;` silences it.
+4. Advanced: if the container runtime supports pre-mounting, mount /run from
+   an ACL-capable filesystem (e.g. overlay with its upper dir on the data
+   partition); systemd detects the existing mount and skips its tmpfs.
 
 ---
 
