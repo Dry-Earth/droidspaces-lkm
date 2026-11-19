@@ -159,9 +159,19 @@ at v1.0.0 rather than v0.x. The mechanisms are in
 > backed by no GPU — Mesa falls back to llvmpipe); `--cpus` / `--pids-limit` only
 > take effect when the container is also started with `--memory`
 > ([section 7](#7-cgroup-limits)); and `uart_guard` guards tty reads, it does not
-> repair the driver underneath. Treat `droidspaces check` as a precondition
-> probe, then verify the path you actually care about — [section 10](#10-troubleshooting)
-> lists the per-route checks.
+> repair the driver underneath.
+>
+> **`Sandboxing (user namespaces)` is not native either** — on these kernels it
+> is a vendored `user_namespace` built by `lkm4ctr`, with three kernel paths
+> patched to expose and own it ([section 8](#8-full-coverage)). The verified
+> paths work (`unshare -Ur`, `uid_map`/`gid_map`, tmpfs/proc/bind mounts inside
+> the namespace), but edges a real `CONFIG_USER_NS=y` kernel handles — nested
+> namespaces, ucount accounting, LSM interaction, idmapped mounts — may behave
+> differently.
+>
+> Treat `droidspaces check` as a precondition probe, then verify the path you
+> actually care about — [section 10](#10-troubleshooting) lists the per-route
+> checks.
 
 ---
 
