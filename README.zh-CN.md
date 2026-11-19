@@ -1,82 +1,41 @@
 # Droidspaces LKM
 
-**在原始 GKI 内核上补齐容器能力，无需重编内核、无需刷 boot。**
+> **树外内核模块，补回厂商 GKI 内核编译掉的容器设施**——PID/IPC namespace、
+> devtmpfs、macvlan、IPv6 NAT，以及配置路径被删时仿真 pids/cpu cgroup 控制器。
+> 按 KMI 从对应厂商源码树构建，开机按 `uname -r` + `ro.board.first_api_level`
+> 选版：一份模块覆盖 **7 个 KMI**，无需重编内核。
 
-[**English**](README.md) | **简体中文** · [Releases](../../releases/latest) · [KMI 覆盖矩阵](docs/KMI-COVERAGE.md)
+> [![Build](https://github.com/misaka5202/droidspaces-lkm/actions/workflows/build.yml/badge.svg)](https://github.com/misaka5202/droidspaces-lkm/actions/workflows/build.yml)
+
+> [**English**](README.md) | **简体中文**
 
 ---
 
-Droidspaces 需要 PID/IPC namespace、devtmpfs、macvlan、IPv6 NAT 以及若干
-cgroup 控制器。多数厂商内核为了通过 GKI ABI 检查把这些都编译掉了。
+## 用户文档
 
-想让它们回来，得自己重编内核再刷进去。这条路能走，就是代价
-不小：每个机型要单独编一份，编出来的稳定性得自己担，系统一更新还得重来。
-做成模块就避开了这些——一份模块覆盖 7 个 KMI，按 `uname -r` 匹配，
-跟机型本身关系不大。
+| 文档 | 内容 |
+|------|------|
+| [Releases](../../releases/latest) | 预览版下载：合并包 + 分 KMI 包 + 源码快照 |
+| [KMI 覆盖矩阵](docs/KMI-COVERAGE.md) | 每个 KMI 的构建矩阵与构建陷阱 |
+| [桌面与 Anland 部署指南](docs/ANLAND-DEPLOY.md) | Wayland 桌面部署、失败对照表、容器 tmpfs 限制 |
+| [Mali 命名空间修复](extra/mali_nsfix/README.zh-CN.md) | 机制、实测数据、干跑诊断 |
+| [cgroup 限制](extra/cgrouplimits/README.md) | pids/cpu 仿真的保证与限制 |
+| [Changelog](docs/CHANGELOG.md) | 每个版本修了什么（中文维护，每条开头一行摘要） |
+| [新建 issue](https://github.com/misaka5202/droidspaces-lkm/issues/new/choose) | 表单会直接要够区分"构建问题"和"环境不匹配"的数据 |
+| [Droidspaces](https://github.com/ravindu644/Droidspaces-OSS) | 本模块服务的容器应用 |
+| [5.x RootFS 构建仓库](https://github.com/misaka5202/Droidspaces-rootfs-Desktop-builder) | 自带合成器的桌面镜像（vkms 路线） |
+| [6.x Anland RootFS](https://github.com/misaka5202/droidspaces-anland6-rootfs) | anland 6.x 镜像（mali_nsfix 路线） |
 
-## 项目状态
+> [!IMPORTANT]
+> **还没有正式版本**——本仓库目前发布的每一个 tag 都是 GitHub
+> **pre-release（预览版）**。请把它当作"拿来试一试、有问题反馈"的构建，而不是
+> 可以依赖的版本；等 inline 钩子后端在七个 KMI 上跑完真机回归才会打第一个正式版。
+> `update.json` 只在「这次发布要让 KernelSU 更新器推给用户」时才改，由发布工作流
+> 自动生成（当前同步到 v0.1.27）。
 
-**还没有正式版本。** 本仓库目前发布的每一个 tag 都是 GitHub **pre-release（预览版）**。
-请把它当作"拿来试一试、有问题反馈"的构建，而不是可以依赖的版本。
-等 inline 钩子后端在七个 KMI 上都跑完真机回归，才会打第一个正式版。
+---
 
-| | |
-|---|---|
-| CI 做什么 | 编译全部 KMI，编译不过就让构建失败，产物只作为 Actions artifact 保留。**永不发布。** |
-| Release 做什么 | 只在打 tag（`vX.Y.Z`）时运行，构建后发布**预览版**，附模块包、分 KMI 的 zip 和源码快照。 |
-| 去哪反馈 | [新建 issue](https://github.com/misaka5202/droidspaces-lkm/issues/new/choose)，表单会直接要够定位问题的那几项数据。 |
-
-`update.json` 只在「这次发布要让 KernelSU 更新器推给用户」时才改；它指向最近一次
-pre-release，并由发布工作流自动生成（本次发布会同步到 `v0.1.27`）。
-
-## 它修好什么
-
-未打补丁的厂商内核上，`droidspaces check` 是这样的：
-
-```
-[MUST HAVE]
-  [✗] PID namespace
-  [✗] IPC namespace
-[RECOMMENDED]
-  [✗] devtmpfs support
-[OPTIONAL]
-  [✗] Macvlan support
-  [✗] IPv6 NAT support
-```
-
-装上本项目后，每一行都是勾：
-
-```
-[MUST HAVE]
-  [✓] Root privileges          [✓] PID namespace
-  [✓] Linux version            [✓] Mount namespace
-  [✓] UTS namespace            [✓] IPC namespace
-  [✓] pivot_root syscall       [✓] /proc filesystem
-  [✓] /sys filesystem          [✓] Seccomp support
-
-[RECOMMENDED]
-  [✓] epoll / signalfd / PTY / devpts      [✓] Loop device
-  [✓] ext4 filesystem                      [✓] Cgroup v2 support
-  [✓] Cgroup namespace                     [✓] New mount API
-  [✓] devtmpfs support
-
-[OPTIONAL]
-  [✓] FUSE support             [✓] TUN/TAP support
-  [✓] OverlayFS support        [✓] Network namespace
-  [✓] Bridge device support    [✓] Veth pair support
-  [✓] Macvlan support          [✓] IPv6 NAT support
-  [✓] Memory limit support     [✓] Swap limit support
-  [✓] CPU limit support        [✓] CPU usage accounting
-  [✓] Process limit support    [✓] Sandboxing (user namespaces)
-
-[✓] All required features found!
-```
-
-这是 6.1.157 厂商内核上的真实输出，不是推测。`OPTIONAL` 那一块才是重点：
-`CPU limit`、`Process limit`、`Sandboxing` 正是"模块补不了"的三项，也是
-本项目以 v1.0.0 而不是 v0.x 发布的原因。
-
-## 包含的模块
+## 1. 模块
 
 | 模块 | 作用 | 补齐的 CONFIG | 开机自启 |
 |------|------|---------------|:---:|
@@ -100,17 +59,18 @@ tty 保护。想"装但不加载"某个，在模块目录放 `disable_pids` / `d
 `disable_uart_guard` / `disable_mali` 文件即可；放 `mali_nsfix_dryrun` 则以
 不挂钩的干跑模式（`nshf_activate=0`）加载 mali_nsfix，用于预检。
 
-### 按平台条件加载的模块
+### 1.1 按平台条件加载的模块
 
 `mali_nsfix` 在 Mali 平台上自动加载，其余平台跳过。判断依据是设备实际报告的
 状态，不是厂商名列表。
 
+> [!IMPORTANT]
 > **本表的 Android 版本说的是内核模块（KMI）那一侧**，与 anland6 用户态无关：
 > anland6 的 `waylandbridge` 需要 **Android 14（API 34）+**（`ANativeWindow_readFromParcel`
 > 是 API 34 才引入的符号，Android 13 上 daemon 加载失败）。
 > 详见 <https://github.com/misaka5202/Droidspaces-anland6-rootfs#support-matrix>。
 
-`vkms` / `mali_nsfix` 的加载组合由 `module/route` 决定（见[显示路线](#显示路线route)）。
+`vkms` / `mali_nsfix` 的加载组合由 `module/route` 决定（见[第 5 节](#5-显示路由eroute)）。
 在 `auto` 下，`vkms` 默认不加载：它提供 `/dev/dri/renderD128`，背后没有 GPU——Mesa
 只能回退到 llvmpipe（CPU 软件渲染）。它服务的是**自带标准 Wayland 合成器的桌面
 镜像**（Anland 5.x 路线：KDE Plasma / KDE Plasma Mobile / GNOME / Hyprland /
@@ -155,12 +115,48 @@ touch /data/adb/modules/droidspaces_lkm/enable_vkms
 Mali 容器还需要什么（Android 侧合成器配置、`dma-buf` 处理），见 RootFS 仓库的
 [桌面与 Anland 指南](https://github.com/misaka5202/Droidspaces-anland6-rootfs/blob/main/docs/zh/桌面与Anland.md)。
 
-## 安装
+---
 
-### 方式一：KernelSU / APatch 模块（推荐）
+## 2. 它修好什么
+
+未打补丁的厂商内核上，`droidspaces check` 的容器关键项全线失败——PID/IPC
+namespace、devtmpfs、macvlan、IPv6 NAT。装上本模块后，同一次检查以
+**`[✓] All required features found!`** 收尾——这是 6.1.157 厂商内核上的真实
+输出，不是推测。
+
+`CPU limit`、`Process limit`、`Sandboxing (user namespaces)` 正是"模块补不了"
+的三项，也是本项目以 v1.0.0 而不是 v0.x 发布的原因；机制见[第 8 节](#8-全覆盖)。
+
+> [!WARNING]
+> **检查全绿只代表内核设施存在，不代表每项功能端到端可用。** GPU 渲染取决于
+> 驱动栈（Mali 需要 `mali_nsfix`，高通 Adreno 不需要；`vkms` 的 render node
+> 背后没有 GPU——Mesa 回退 llvmpipe）；`--cpus` / `--pids-limit` 只有在容器
+> 同时带 `--memory` 启动时才生效（[第 7 节](#7-cgroup-限制)）；`uart_guard`
+> 是防护不是修复，tty 驱动本身的问题它管不了。
+>
+> **`Sandboxing (user namespaces)` 也不是原生的**——在这些内核上它是 `lkm4ctr`
+> vendor 出来的 `user_namespace`，外加三条内核路径补丁让它暴露和持有归属
+> （[第 8 节](#8-全覆盖)）。已验证的路径可用（`unshare -Ur`、`uid_map`/`gid_map`、
+> 命名空间内 tmpfs/proc/bind 挂载），但真 `CONFIG_USER_NS=y` 内核能处理的边角
+> 情形——嵌套命名空间、ucount 计账、LSM 交互、idmapped mounts——行为可能不同。
+>
+> 把 `droidspaces check` 当**前置条件探测**，用完再验证你真正要用的链路——
+> [第 10 节](#10-排障)列了每条路线的检查项。
+
+---
+
+## 3. 安装
+
+### 3.1 KernelSU / APatch 模块（推荐）
 
 从 [Releases](../../releases/latest) 下载 `droidspaces-lkm-arm64-<version>.zip`，
 在管理器里刷入，重启。
+
+模块会按 `/proc/sys/kernel/osrelease` 自动选择匹配当前 KMI 的 `.ko`。
+
+MediaTek 设备在**没有旧配置**时，安装/更新会用音量键提示选择显示路线
+（上 = Anland 6.x，下 = 标准桌面 5.x；读不到键则用 `auto`）。升级默认保留原
+选择。装完可在 KernelSU 模块页打开 WebUI 复核或修改（重启生效）。
 
 包内带 `updateJson`，后续版本管理器会直接提示更新，不用再回这里下载。
 如果所在网络访问不了 `raw.githubusercontent.com`，把 `updateJson` 换成 jsDelivr 镜像：
@@ -169,13 +165,7 @@ Mali 容器还需要什么（Android 侧合成器配置、`dma-buf` 处理），
 updateJson=https://cdn.jsdelivr.net/gh/misaka5202/droidspaces-lkm@master/update.json
 ```
 
-模块会按 `/proc/sys/kernel/osrelease` 自动选择匹配当前 KMI 的 `.ko`。
-
-MediaTek 设备在**没有旧配置**时，安装/更新会用音量键提示选择显示路线
-（上 = Anland 6.x，下 = 标准桌面 5.x；读不到键则用 `auto`）。升级默认保留原
-选择。装完可在 KernelSU 模块页打开 WebUI 复核或修改（重启生效）。
-
-### 方式二：手动 insmod
+### 3.2 手动 insmod
 
 ```sh
 insmod lkm4ctr-<kmi>.ko
@@ -189,11 +179,12 @@ insmod droid_lkm_cpu-<kmi>.ko
 
 `vkms` 只在需要给 Wayland 合成器提供 render node 时才有意义，其他模块不依赖它。
 
-**`devtmpfs_probe=2` 很重要。** 它只注册文件系统，不启动 kthread、不装设备
-hook。Droidspaces 只看 `/proc/filesystems` 里有没有 `devtmpfs`；默认路径
-（`probe=0`）会装 inline hook，在非目标版本内核上风险更高。
+> [!CAUTION]
+> **`devtmpfs_probe=2` 很重要。** 它只注册文件系统，不启动 kthread、不装设备
+> hook。Droidspaces 只看 `/proc/filesystems` 里有没有 `devtmpfs`；默认路径
+> （`probe=0`）会装 inline hook，在非目标版本内核上风险更高。
 
-### 验证
+### 3.3 验证
 
 ```sh
 cat /proc/filesystems | grep devtmpfs      # 应出现 devtmpfs
@@ -206,7 +197,9 @@ sh /data/adb/modules/droidspaces_lkm/action.sh doctor  # 一屏式状态
 # 或在 KernelSU 模块页打开本模块 WebUI：主页 / 切换路线 / 诊断 / 关于
 ```
 
-## 支持的内核
+---
+
+## 4. 支持的内核
 
 | 文件 | Android / 内核 |
 |---|---|
@@ -220,15 +213,19 @@ sh /data/adb/modules/droidspaces_lkm/action.sh doctor  # 一屏式状态
 
 `droidspaces-lkm-arm64-<version>.zip` 是**合并包**，里面包含全部 7 个 KMI 的产物，开机按内核版本 + `ro.board.first_api_level` 自动选对应那一份。想省空间可以只下按 KMI 分包的版本。
 
-**仅 arm64。** 非 GKI 内核、非 ARM64 设备不受支持。
+> [!CAUTION]
+> **仅 arm64。** 非 GKI 内核、非 ARM64 设备不受支持。
 
 每个模块都为每个 KMI 从 DDK 镜像里**该 KMI 自己的内核源码树**构建；
 完整矩阵与各 KMI 的构建陷阱见 [KMI-COVERAGE.md](docs/KMI-COVERAGE.md)。
 
+> [!WARNING]
 > 同一 KMI 标签的厂商内核 ABI 仍可能有差异。装之前先确认 `uname -r` 里的
 > KMI 标签，装完看 `/data/adb/droidspaces_lkm.log`。
 
-## 显示路线（route）
+---
+
+## 5. 显示路线（route）
 
 `module/route` 决定 Mali 上走哪条渲染路径，三档：
 
@@ -250,12 +247,11 @@ sh /data/adb/modules/droidspaces_lkm/action.sh doctor  # 一屏式状态
 WebUI（`webroot/`，Material You 风格 + 底栏四页签：主页 / 切换路线 / 诊断 /
 关于；MD3 与 MIUIx 两套主题，19 个语言 locale）随时可改路线；主页显示模块加载
 情况，诊断页给 route、`/dev/mali0`、`mali_kbase`、`nshf_*`、render node 与日志，
-关于页放仓库与两个懒人包入口：
+关于页放仓库与两个懒人包入口。
 
-- 5.x RootFS 构建仓库：https://github.com/misaka5202/Droidspaces-rootfs-Desktop-builder
-- 6.x Anland RootFS 仓库：https://github.com/misaka5202/droidspaces-anland6-rootfs
+---
 
-## 配合它跑 Linux 桌面（Anland 6.x）
+## 6. 配合它跑 Linux 桌面（Anland 6.x）
 
 这个模块只负责「让容器能跑」。想在手机上看到真正的 Linux 窗口，还需要
 **Anland 6.x** 那一套。Mali 设备上这条链路走 libhybris + `/dev/mali0`，宿主侧
@@ -277,12 +273,13 @@ Anland 6.x 宿主三件套
   └─ com.anland.shell（启动器，只负责把应用跑起来）
 ```
 
-**用改版，不要装上游 6.2。** 上游有输入缺陷：软键盘文本到不了应用（终端什么都
-收不到）、应用窗口起不来（xdg configure serial 为 0）、X11 应用读不到剪贴板、
-重装模块还会让 socket 路径失效。当前发布：
-[`misaka5202/anland 6.2-ds6`](https://github.com/misaka5202/anland/releases/tag/6.2-ds6) 与
-[`misaka5202/anland-shell v1.1-ds73`](https://github.com/misaka5202/anland-shell/releases/tag/v1.1-ds73)。
-安装脚本已经默认从改版下载。
+> [!IMPORTANT]
+> **用改版，不要装上游 6.2。** 上游有输入缺陷：软键盘文本到不了应用（终端什么都
+> 收不到）、应用窗口起不来（xdg configure serial 为 0）、X11 应用读不到剪贴板、
+> 重装模块还会让 socket 路径失效。当前发布：
+> [`misaka5202/anland 6.2-ds6`](https://github.com/misaka5202/anland/releases/tag/6.2-ds6) 与
+> [`misaka5202/anland-shell v1.1-ds73`](https://github.com/misaka5202/anland-shell/releases/tag/v1.1-ds73)。
+> 安装脚本已经默认从改版下载。
 
 一步到位用
 [Droidspaces-anland6-rootfs](https://github.com/misaka5202/Droidspaces-anland6-rootfs)
@@ -308,12 +305,15 @@ adb shell su -c 'sh /data/local/tmp/verify-anland6-host.sh'
 完整的宿主侧步骤、常见断点和排错表见
 [桌面与 Anland](https://github.com/misaka5202/Droidspaces-anland6-rootfs/blob/main/docs/zh/桌面与Anland.md)。
 
+> [!CAUTION]
 > **不要装 Anland 5.x 那一套**（`virtual-drm-daemon.zip` / `app-debug.apk` /
 > `/run/display.sock` 绑定）。5.x 用私有显示协议 + 自带合成器（KWin/GNOME 等），
 > Mali 上那条路必须开 `vkms` 才有 render node；6.x 用 Wayland 本身做帧交换，
 > 两条路由同时存在会互相打断。
 
-## cgroup 限制
+---
+
+## 7. cgroup 限制
 
 `--cpus` 和 `--pids-limit` 是两项无法靠开关配置补上的能力：`CONFIG_CFS_BANDWIDTH=n`
 和 `CONFIG_CGROUP_PIDS=n` 时代码路径在编译期就被删掉，没有可"打开"的东西。
@@ -350,7 +350,9 @@ cat $CG/pids.stats        # refused=N, layout=1
 `route=1` 强制 inline、`route=2` 强制 kprobe，同一台设备可以随时对比和回退，
 不用重编。不进开机自启，意味着任何异常交互都不可能让设备开不了机。
 
-## 全覆盖
+---
+
+## 8. 全覆盖
 
 Droidspaces 的每一项检查现在都通过，包括三项看起来模块补不了的：
 
@@ -405,11 +407,14 @@ CPU limit 那一项也有一个容易被忽略的前提：Droidspaces 要求
 `register_sysctl()` 真的注册了一张同形状的表（0644、`proc_dointvec_minmax`、
 默认 5000），所以那个路径可读可写，不是靠伪造 stat 骗过检查。
 
-注意 `/proc/<pid>/ns/user` 响应的是**按名查找**而不是目录枚举：
-`ls /proc/self/ns/` 看不到它，但 `stat` / `access` 会成功。这正是
-Droidspaces 实际使用的探测方式。
+> [!NOTE]
+> `/proc/<pid>/ns/user` 响应的是**按名查找**而不是目录枚举：
+> `ls /proc/self/ns/` 看不到它，但 `stat` / `access` 会成功。这正是
+> Droidspaces 实际使用的探测方式。
 
-## 安全说明
+---
+
+## 9. 安全说明
 
 这些模块是在给内核补能力，所以它可能出错的地方值得写清楚。
 
@@ -434,11 +439,11 @@ Droidspaces 实际使用的探测方式。
 - WebUI 是纯本地页面：`ksu.exec` 都以 root 执行，但只写 `module/route` 一个文件
   （不做热 insmod/rmmod），除包内 locale 外不访问网络。
 
-每个版本修了什么见 [CHANGELOG.md](docs/CHANGELOG.md)。
+---
 
-## 排障
+## 10. 排障
 
-### `insmod: unknown symbol in module, or unknown parameter`
+### 10.1 `insmod: unknown symbol in module, or unknown parameter`
 
 这是内核把所有"装不上"的情况合并成的一句话，它**不告诉你到底是哪一种**。
 模块日志现在会把它们分开。
@@ -450,7 +455,8 @@ Droidspaces 实际使用的探测方式。
 [FAIL] lkm4ctr: lkm4ctr-android14-6.1.ko 的 vermagic (6.1.166-dirty) 与内核 5.10.269-... 不匹配，跳过
 ```
 
-看到这个说明装的包和设备对不上：重装对应内核的包，并确认管理器里没有旧副本。
+看到这个说明装的包和设备对不上：重装对应内核的包（见[第 4 节](#4-支持的内核)），
+并确认管理器里没有旧副本。
 
 **2. 内核没导出某个符号** —— 这个 KMI 匹配救不了：同版本的厂商内核可能裁掉了
 通用内核有的导出符号。日志会直接把内核那句原文抄下来，给出符号名：
@@ -469,7 +475,7 @@ Droidspaces 实际使用的探测方式。
 [WARN] devtmpfs_lkm 不支持参数 foo，已忽略
 ```
 
-### 一个模块都没加载
+### 10.2 一个模块都没加载
 
 点 KernelSU 模块页的「操作」按钮。它会打印内核版本、识别出的 KMI、模块列表和
 能力自检，足够区分"环境不匹配"和"真的坏了"。
@@ -477,7 +483,7 @@ Droidspaces 实际使用的探测方式。
 另外注意开机保护：连续三次开机都没走到 `boot-completed.sh`，模块会自动禁用自己，
 并把原因写进 `/data/adb/droidspaces_lkm.log` 和 `/data/adb/droidspaces_lkm.d/`。
 
-### 显示路线问题
+### 10.3 显示路线问题
 
 **A. 自带合成器的桌面报 `no usable DRM render device`（或黑屏）。** 这是 5.x
 路线：合成器要打开 `/dev/dri/renderD128`，而 Mali 不提供。把 route 设为
@@ -488,27 +494,31 @@ Droidspaces 实际使用的探测方式。
 `0x3001`。** 这是 Mali GPU context 路径。把 route 设为 `anland6`（挂上
 `mali_nsfix`）并重启，然后在 WebUI「诊断」或 `action.sh doctor` 里确认。
 
-两条路线互斥，不要同时安装 5.x 与 6.x 的宿主组件。
+> [!CAUTION]
+> 两条路线互斥，不要同时安装 5.x 与 6.x 的宿主组件。
 
-### `BUG: scheduling while atomic` 出现在 `droid_lkm_pids`
+### 10.4 `BUG: scheduling while atomic` 出现在 `droid_lkm_pids`
 
-v0.1.27 已修复（见「安全说明」）。更早的版本在容器启动、systemd 写
+v0.1.27 已修复（见[第 9 节](#9-安全说明)）。更早的版本在容器启动、systemd 写
 `cgroup.subtree_control` 时可能 panic，升级到 v0.1.27+。
 
-## 重要提醒
+---
 
-### vermagic 不匹配也可能加载成功
+## 11. 重要提醒
+
+### 11.1 vermagic 不匹配也可能加载成功
 
 内核真正校验的是 `struct module` 的布局（`.gnu.linkonce.this_module` 段大小），
 不只是 vermagic 字符串。本项目所有 ko 的 `this_module` 都是 **1088 字节**，
 与厂商模块一致，所以 DDK 编出的 ko 在 kernel release 不同的设备上也能加载。
 
-### `devtmpfs_lkm` 千万不要用默认参数开机自启
+### 11.2 `devtmpfs_lkm` 千万不要用默认参数开机自启
 
-开机早期加载 `devtmpfs_probe=0`（默认）会**卡开机**：模块会改写内核只读
-代码段，而早期启动环境不稳定。**始终传 `devtmpfs_probe=2`。**
+> [!CAUTION]
+> 开机早期加载 `devtmpfs_probe=0`（默认）会**卡开机**：模块会改写内核只读
+> 代码段，而早期启动环境不稳定。**始终传 `devtmpfs_probe=2`。**
 
-### 硬件访问的边界
+### 11.3 硬件访问的边界
 
 `--hw-access` 能映射 `/dev/mali0`、`/dev/dma_heap`、`/dev/binder` 等节点，
 容器内可以 `open()`。但 Linux 桌面能否真正用上 GPU 取决于驱动栈：
@@ -522,17 +532,19 @@ v0.1.27 已修复（见「安全说明」）。更早的版本在容器启动、
 
 anland 桌面部署记录：[ANLAND-DEPLOY.md](docs/ANLAND-DEPLOY.md)。
 
-## 构建与发布
+---
+
+## 12. 构建与发布
 
 两个工作流，**刻意分开**：
 
 | 工作流 | 触发 | 是否发布 |
 |---|---|---|
-| [`ci.yml`](https://github.com/misaka5202/droidspaces-lkm/blob/master/.github/workflows/ci.yml) | push 到 master、PR、手动 | 否，只留 artifact。**默认只编一个 KMI**（android14-6.1），要全量传 `full_matrix: true` |
-| [`release.yml`](https://github.com/misaka5202/droidspaces-lkm/blob/master/.github/workflows/release.yml) | 打 tag `vX.Y.Z`、手动指定 tag | 是，**只发预览版** |
+| [`ci.yml`](.github/workflows/ci.yml) | push 到 master、PR、手动 | 否，只留 artifact。**默认只编一个 KMI**（android14-6.1），要全量传 `full_matrix: true` |
+| [`release.yml`](.github/workflows/release.yml) | 打 tag `vX.Y.Z`、手动指定 tag | 是，**只发预览版** |
 
 两者都调用可复用的
-[`build.yml`](https://github.com/misaka5202/droidspaces-lkm/blob/master/.github/workflows/build.yml)，
+[`build.yml`](.github/workflows/build.yml)，
 那个工作流只负责编译打包。把"发布"从 CI 里拿掉的意义是：CI 绿灯永远不会把
 坏产物推到用户面前，而每一次发布都对应某个人主动打的 tag。
 
@@ -545,7 +557,7 @@ git push origin v0.1.27
 
 只想试构建、不想打 tag：在 Actions 那一次运行里下载 `ko-*` artifact。
 
-### 模块目录结构
+### 12.1 模块目录结构
 
 安装包按 KernelSU 模块规范组织——没有 `META-INF`，也没有 `system/` 覆盖
 （这个模块不修改 `/system` 里的任何文件）：
@@ -571,7 +583,9 @@ module/
 脚本用 `MODDIR=${0%/*}` 取自身目录，不硬编码 `/data/adb/modules/<id>`，
 所以装在别处也能正常工作。
 
-## 源码与许可证
+---
+
+## 13. 源码与许可证
 
 本项目**不重新实现**内核功能，全部为移植与适配：
 
@@ -582,19 +596,23 @@ module/
 | `droid_lkm_pids` | 同项目的 pids Plan B 移植 | GPL-2.0 |
 | `droid_lkm_cpu` | 原创 | GPL-2.0 |
 
-**GPL-2.0 要求分发二进制时提供对应源码。** 每个 Release 附带的
-`source-<tag>.tar.gz` 就是编出该版本 ko 的完整源码快照。
+> [!IMPORTANT]
+> **GPL-2.0 要求分发二进制时提供对应源码。** 每个 Release 附带的
+> `source-<tag>.tar.gz` 就是编出该版本 ko 的完整源码快照。
 
 `vendor/kernel/user_namespace.c`、`vendor/kernel/nsproxy.c`、
 `vendor/kernel/pid_namespace.c`、`vendor/ipc/*` 直接来自 Linux
 （6.1.124 / android14-6.1），仅做了符号重命名以支持树外构建。
 
-## 参考
+---
+
+## 14. 参考
 
 - [Droidspaces](https://github.com/ravindu644/Droidspaces-OSS)
 - [lkm4ctr](https://github.com/cyanmint/lkm4ctr) — 命名空间模块
 - [droidspaces-6.12-pmb110](https://github.com/ai-luo2006/droidspaces-6.12-pmb110) — devtmpfs / macvlan / ip6nat / pids 实现
 - [susfs4ksu-lkm](https://github.com/inforcqb/susfs4ksu-lkm) — 发布模式参考
 
-**免责声明**：加载内核模块等同于以最高权限执行内核代码。仅在你能接受设备
-无法开机风险的前提下使用，并确保有恢复手段（fastboot / recovery）。
+> [!CAUTION]
+> **免责声明**：加载内核模块等同于以最高权限执行内核代码。仅在你能接受设备
+> 无法开机风险的前提下使用，并确保有恢复手段（fastboot / recovery）。
