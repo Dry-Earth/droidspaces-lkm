@@ -723,9 +723,40 @@ Workarounds (container side, kernel untouched):
 3. bpf-firewall's `Operation not permitted`: cgroup BPF attach needs host
    privileges and is impossible inside a container -- it is only a warning;
    `networking.firewall.enable = false;` silences it.
-4. Advanced: if the container runtime supports pre-mounting, mount /run from
-   an ACL-capable filesystem (e.g. overlay with its upper dir on the data
-   partition); systemd detects the existing mount and skips its tmpfs.
+4. Advanced: pre-mount /run so setfacl/setcap work as-is -- see below.
+
+#### Advanced: pre-mounting /run (lxc.mount.entry)
+
+If systemd finds /run already mounted (by the container runtime) at startup,
+it skips its own tmpfs. Add one mount entry to the container's lxc config to
+pre-mount /run from the data partition's f2fs (`CONFIG_F2FS_FS_POSIX_ACL=y`,
+ACL/xattr available) and resolvconf plus wrappers **work as-is, with no NixOS
+workarounds**:
+
+```
+lxc.mount.entry = overlay run overlay lowerdir=<in-rootfs>/run,upperdir=<container dir>/run-upper,workdir=<container dir>/run-work,create=dir 0 0
+```
+
+The simplest bind variant:
+
+```
+lxc.mount.entry = /data/adb/droidspaces/containers/<name>/run run none bind,create=dir 0 0
+```
+
+Caveats:
+
+1. the overlay variant depends on lkm4ctr's vendored overlayfs (without the
+   module overlay is unavailable; the bind variant is unaffected)
+2. persistence semantics: tmpfs starts empty on every container start, the
+   overlay/bind upper keeps stale files (journald/locks/sockets) -- pair it
+   with a start hook that clears it to emulate tmpfs
+3. on privileged containers file capabilities (setcap) work directly;
+   idmapped/unprivileged containers are refused file caps by the kernel
+   regardless of filesystem -- those still need `security.wrappers = { }`
+4. whether a hand edit survives depends on whether Droidspaces regenerates the
+   container's lxc config: if the config is written once it sticks; if it is
+   regenerated, the entry (or a switch) has to come from upstream
+   (Droidspaces-OSS)
 
 ---
 

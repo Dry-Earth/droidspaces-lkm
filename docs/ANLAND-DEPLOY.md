@@ -686,8 +686,34 @@ Wayland 平台 EGL 需要 `MESA_LOADER_DRIVER_OVERRIDE=swrast`，
 3. bpf-firewall 的 `Operation not permitted`：cgroup BPF attach 需要宿主
    特权，容器内天然不可能——仅是警告，`networking.firewall.enable = false;`
    可消除
-4. 进阶：若容器运行时支持预挂载，把 /run 改挂到 ACL 可用的文件系统
-   （如 overlay，upper 在 data 分区），systemd 检测到已挂载会跳过 tmpfs
+4. 进阶：预挂 /run，让 setfacl/setcap 原样可用——见下节
+
+#### 进阶：预挂 /run（lxc.mount.entry）
+
+systemd 启动时若发现 /run 已被挂载（容器运行时挂的），会跳过自己的 tmpfs。
+在容器的 lxc 配置里加一条 mount entry，把 /run 预挂到 data 分区的 f2fs 上
+（`CONFIG_F2FS_FS_POSIX_ACL=y`，ACL/xattr 可用），resolvconf 和 wrappers
+两个服务**原样工作，无需任何 NixOS 规避**：
+
+```
+lxc.mount.entry = overlay run overlay lowerdir=<rootfs内>/run,upperdir=<容器目录>/run-upper,workdir=<容器目录>/run-work,create=dir 0 0
+```
+
+最简的 bind 版：
+
+```
+lxc.mount.entry = /data/adb/droidspaces/containers/<name>/run run none bind,create=dir 0 0
+```
+
+注意：
+
+1. overlay 版依赖 lkm4ctr 的 vendored overlayfs（模块未加载时 overlay 不可用，bind 版不受影响）
+2. 持久化语义：tmpfs 每次容器启动是空的，overlay/bind 的 upper 会残留旧
+   文件（journald/锁/socket），需配 start hook 清理模拟 tmpfs 语义
+3. 特权容器下 file caps（setcap）直接可用；idmapped/unprivileged 容器内核
+   一律拒绝 file caps（与文件系统无关），那种容器仍需 `security.wrappers = { }`
+4. 手改是否长期生效取决于 Droidspaces 是否重建容器的 lxc 配置：config 创建
+   后不重建则一次生效；会重建则需上游（Droidspaces-OSS）提供该 entry 或开关
 
 ---
 
