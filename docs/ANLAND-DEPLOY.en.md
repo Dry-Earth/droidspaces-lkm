@@ -1,17 +1,27 @@
 # anland Linux desktop deployment guide
 
-Running a Linux desktop on **ARM Mali platforms (G720-class GPU)**, with the
-picture shown on the Android screen through anland.
+> **The complete manual for deploying an Anland 5.x Linux desktop (Hyprland /
+> KWin and other self-composited desktops) on a Mali device** — the kernel side
+> uses droidspaces-lkm's `vkms` for a render node, the host side installs the
+> anland module and APKs, the container side fixes the rootfs GPU configuration,
+> and `anlandproxy` bridges the frames to the Android display app.
 
-[**English**](ANLAND-DEPLOY.en.md) | [简体中文](ANLAND-DEPLOY.md)
-
-Every step here was **actually verified** and has matching on-device evidence.
-Precondition: you do not want to rebuild the kernel, so the LKM has to supply
-the missing capabilities.
+> **[简体中文](ANLAND-DEPLOY.md)**
 
 ---
 
-## Read this first: this guide covers anland 5.x
+## Documentation index
+
+| Document | What it covers |
+|---|---|
+| [README.md](../README.md) | module overview, install, display route |
+| [KMI-COVERAGE.en.md](KMI-COVERAGE.en.md) | per-KMI build matrix and traps |
+| [6.x image builder](https://github.com/misaka5202/droidspaces-anland6-rootfs) | the anland 6.x route (waylandbridge, no vkms needed) |
+| [Desktop and Anland guide](https://github.com/misaka5202/Droidspaces-anland6-rootfs/blob/main/docs/en/desktop-and-anland.md) | full 6.x host-side steps |
+
+---
+
+## 1. Read this first: 5.x and 6.x are two different routes
 
 anland has two generations and the container-side setup is **completely
 different** between them. Do not mix them.
@@ -48,7 +58,9 @@ never appear, X11 apps cannot read the clipboard). The fork
 
 ---
 
-## End result
+---
+
+## 2. End result
 
 ```
 Android screen:
@@ -74,7 +86,9 @@ carry OpenGL 4.6 programs.
 
 ---
 
-## Components
+---
+
+## 3. Components
 
 ```
 Android side
@@ -90,7 +104,7 @@ Inside the container (Droidspaces)
 └── /run/display.sock        anland socket (5.x only)
 ```
 
-### The 8 droidspaces-lkm modules
+### 3.1 The 8 droidspaces-lkm modules
 
 | Module | Purpose | CONFIG it stands in for |
 |---|---|---|
@@ -110,7 +124,9 @@ and `--cpus` work; `uart_guard` guards a vendor-kernel defect in
 
 ---
 
-## Prerequisite: the LKM
+---
+
+## 4. Prerequisite: the LKM
 
 Flash the package for your KMI — `droidspaces-lkm-<kmi>-arm64-<version>.zip`, e.g.
 `droidspaces-lkm-android14-6.1-arm64-<version>.zip` — then reboot.
@@ -152,6 +168,7 @@ The boot log lives at **`/data/adb/droidspaces_lkm.log`** (not the old
 [OK] /dev/dri/renderD128 (vkms)
 ```
 
+> [!IMPORTANT]
 > **Read this before deploying (changed 2026-11)**
 >
 > `vkms` in this module no longer loads by default. The reason is that anland
@@ -186,7 +203,7 @@ crw-rw-rw- 1 root graphics 226,  1  card1        <- vkms display device
 crw-rw-rw- 1 root graphics 226, 128  renderD128   <- render node
 ```
 
-### Why vkms and not vgem
+### 4.1 Why vkms and not vgem
 
 Mesa's GBM backend looks up the dri driver by DRM driver name. A full Mesa
 install ships `vkms_dri.so` but **no** `vgem_dri.so`. With vgem, Hyprland stops
@@ -197,7 +214,7 @@ DEBUG: openRenderNode got drm device /dev/dri/renderD128
 CRIT : Couldn't open a gbm device            (OpenGL.cpp:351)
 ```
 
-### The two vkms patches
+### 4.2 The two vkms patches
 
 **Patch one: `DRIVER_RENDER`.** Upstream vkms declares
 `driver_features = MODESET|ATOMIC|GEM`, so `drm_dev_register()` never creates a
@@ -209,6 +226,7 @@ render minor:
 ```
 
 > An earlier revision of this guide said to edit `extra/vkms/vkms_drv.c`.
+> [!NOTE]
 > **That directory has been deleted** — `extra/vkms/` and `extra/vgem/` were
 > never referenced by the build script and were dead code. `vkms` is now
 > compiled from the **kernel tree's own** `drivers/gpu/drm/vkms` with the patch
@@ -232,7 +250,9 @@ than force-patched.
 
 ---
 
-## Step two: the anland components
+---
+
+## 5. The anland components
 
 ```bash
 # daemon (KernelSU module)
@@ -251,9 +271,11 @@ su -c 'nohup /data/adb/modules/anland-daemon/display_daemon \
 
 ---
 
-## Step three: the container
+---
 
-### 3.1 Prepare the rootfs
+## 6. The container
+
+### 6.1 Prepare the rootfs
 
 Use the **Ubuntu-26-hyprland-Wayland** image from
 `Goldzxcbug/Droidspaces-rootfs-Desktop-builder`:
@@ -263,7 +285,7 @@ su -c 'cd /data/local/Droidspaces/rootfs-ubuntu && \
        busybox tar xJf /sdcard/Download/Ubuntu-26-hyprland-*.tar.xz'
 ```
 
-### 3.2 Fix the rootfs GPU configuration (critical)
+### 6.2 Fix the rootfs GPU configuration (critical)
 
 That rootfs is preconfigured for Qualcomm Adreno, and `/etc/environment`
 contains three fatal lines:
@@ -316,7 +338,7 @@ Measured comparison (Wayland-platform EGL):
 | `MESA_LOADER_DRIVER_OVERRIDE=kms_swrast` | EGL 1.5 |
 | `EGL_PLATFORM=gbm` | EGL 1.5 |
 
-### 3.3 Create the container
+### 6.3 Create the container
 
 ```bash
 su -c '/data/local/Droidspaces/bin/droidspaces --name=anland \
@@ -346,7 +368,7 @@ If the container side is a `regular empty file`, the bind mount failed — **reb
 the container cleanly**. A manual `mount --bind` turns the socket into a plain
 file.
 
-### 3.4 Start Hyprland
+### 6.4 Start Hyprland
 
 ```bash
 su -c '/data/local/Droidspaces/bin/droidspaces --name=anland run -- /bin/sh /root/hnx.sh'
@@ -391,9 +413,11 @@ and takes the compositor down with it.
 
 ---
 
-## Step four: connect the app (anlandproxy)
+---
 
-### Why a proxy is needed
+## 7. Connect the app (anlandproxy)
+
+### 7.1 Why a proxy is needed
 
 The anland daemon validates peers like this:
 
@@ -420,7 +444,7 @@ W Anland: root socket probe failed:
           java.io.IOException: Cannot run program "su": error=2, No such file or directory
 ```
 
-### The proxy approach
+### 7.2 The proxy approach
 
 `anlandproxy` runs as root, listens on a path the app can reach, and forwards
 to the real daemon. **It must pass SCM_RIGHTS-accompanying dmabuf fds through
@@ -444,7 +468,7 @@ su -c 'S=$(ls /data/local/Droidspaces/Net/anland-*.sock | head -1)
 The `anlandproxy.c` source is in this repository's history; the original lived
 at `C:\nomount\wsl\anlandproxy.c` on the test machine.
 
-### Configure the app
+### 7.3 Configure the app
 
 ```bash
 su -c 'cat > /data/data/com.anland.consumer/shared_prefs/anland_settings.xml <<EOF
@@ -460,7 +484,7 @@ chown u0_a437:u0_a437 /data/data/com.anland.consumer/shared_prefs/anland_setting
 
 `use_root=false` plus a custom `socket_path` pointing at the proxy.
 
-### Success indicators
+### 7.4 Success indicators
 
 Daemon log (`/data/local/Droidspaces/Logs/anland/anland`):
 
@@ -482,7 +506,9 @@ Monitor ANLAND-1 (ID 0): 1264x2517@60.00000 at 0x0
 
 ---
 
-## Step five: launch applications
+---
+
+## 8. Launch applications
 
 **Use shm-rendering apps, not EGL.**
 
@@ -508,11 +534,13 @@ hyprctl clients    # should show the foot window as mapped:1 visible:1 monitor:0
 
 ---
 
-## Optional: MobileGL GPU acceleration
+---
+
+## 9. Optional: MobileGL GPU acceleration
 
 Translate the container's OpenGL to the Android-side Mali GPU.
 
-### Build the Android side (Mali render service)
+### 9.1 Build the Android side (Mali render service)
 
 ```bash
 cd MobileGL
@@ -531,7 +559,7 @@ cmake --build build-android --target MobileGL MobileGLServer -j 8
 llvm-strip --strip-unneeded libMobileGL.so
 ```
 
-### Start the server (TCP mode)
+### 9.2 Start the server (TCP mode)
 
 ```bash
 su -c 'cd /data/local/tmp && setsid env -u MOBILEGL_TRANSPORT \
@@ -551,7 +579,7 @@ netstat -tlnp | grep 40613
 # tcp 0 0 0.0.0.0:40613 LISTEN <pid>/libMobileGLServer.so
 ```
 
-### Build the glibc client inside the container
+### 9.3 Build the glibc client inside the container
 
 **Compile natively inside the container** (it is already aarch64 glibc, so the
 match is automatic):
@@ -571,7 +599,7 @@ su -c '/data/local/Droidspaces/bin/droidspaces --name=anland run -- /bin/sh -c "
 Output: `/opt/mobilegl/build-client/libMobileGL.so` (22 MB) plus `libEGL.so` /
 `libGL.so` symlinks.
 
-### Verify
+### 9.4 Verify
 
 ```bash
 export MOBILEGL_TRANSPORT=spawn
@@ -590,7 +618,7 @@ GL_RENDERER: Espryt (MobileGL Core) (Mali-G720-Immortalis MC12, OpenGL ES 3.2)
 GL_VERSION:  4.6.0 MobileGL 26.11-dev, Direct (GLES) Backend
 ```
 
-### MobileGL build traps
+### 9.5 MobileGL build traps
 
 | Problem | Fix |
 |------|------|
@@ -603,9 +631,11 @@ GL_VERSION:  4.6.0 MobileGL 26.11-dev, Direct (GLES) Backend
 
 ---
 
-## Troubleshooting
+---
 
-### A module will not load / the device hangs at boot
+## 10. Troubleshooting
+
+### 10.1 A module will not load / the device hangs at boot
 
 Look at the log and the state directory (both exist since recent versions):
 
@@ -634,7 +664,7 @@ empty), the hang happened after `post-fs-data` but before `late_start`, i.e.
 kernel itself, not this one. Confirming takes one boot in safe mode with only
 this module enabled.
 
-### The container exits immediately
+### 10.2 The container exits immediately
 
 ```bash
 # look at the monitor log
@@ -645,7 +675,7 @@ If you see `Monitor performing cleanup` followed by
 `Container is running in background`, systemd exited. Check the kgsl lines in
 `/etc/environment`.
 
-### The socket is a plain file inside the container
+### 10.3 The socket is a plain file inside the container
 
 ```bash
 stat -c '%F %i' rootfs/run/display.sock     # expect "socket"
@@ -654,7 +684,7 @@ stat -c '%F %i' rootfs/run/display.sock     # expect "socket"
 If it is not a socket, **rebuild the container cleanly** — a manual bind mount
 will not help.
 
-### Hyprland crashes
+### 10.4 Hyprland crashes
 
 ```bash
 grep -aE 'CRIT|ASSERTION|Couldn' /root/hx.log
@@ -665,7 +695,7 @@ Common causes:
 - `ZINK: vkEnumeratePhysicalDevices failed` -> set `MESA_LOADER_DRIVER_OVERRIDE=swrast`
 - Lua config syntax errors -> delete `/root/.config/hypr/hyprland.lua`
 
-### The app keeps opening its settings page
+### 10.5 The app keeps opening its settings page
 
 ```bash
 logcat -d -s Anland:*
@@ -674,7 +704,7 @@ logcat -d -s Anland:*
 `root socket probe failed: Cannot run program "su"` -> use the anlandproxy
 approach.
 
-### EGL initialisation fails
+### 10.6 EGL initialisation fails
 
 ```
 eglInitialize failed with error 0x3001
@@ -685,7 +715,9 @@ Wayland-platform EGL needs `MESA_LOADER_DRIVER_OVERRIDE=swrast`; setting only
 
 ---
 
-## Known limitations
+---
+
+## 11. Known limitations
 
 | Item | Status | Notes |
 |---|---|---|
@@ -697,6 +729,7 @@ Wayland-platform EGL needs `MESA_LOADER_DRIVER_OVERRIDE=swrast`; setting only
 | Input methods | untested | fcitx5 configured, Chinese input not tested |
 | tmpfs ACL/xattr inside containers | partial | depends on kernel config; some vendors disable it (see below) |
 
+> [!IMPORTANT]
 > **Additional condition for `--pids-limit` / `--cpus`:** the emulated cftypes
 > hang off cgroup v2, so the container must **also set `--memory`** (that is what
 > creates a dedicated cgroup). Without it the limits do not take effect.
@@ -705,7 +738,7 @@ Wayland-platform EGL needs `MESA_LOADER_DRIVER_OVERRIDE=swrast`; setting only
 > That was true before `droid_lkm_pids` / `droid_lkm_cpu` existed and is no
 > longer the case.
 
-### setfacl / setcap on container tmpfs (issue #6)
+### 11.1 setfacl / setcap on container tmpfs (issue #6)
 
 Inside the container, systemd mounts /run as tmpfs. Whether the two calls that
 land there work depends on the kernel's `CONFIG_TMPFS_XATTR` /
@@ -766,7 +799,9 @@ Caveats:
 
 ---
 
-## Test device
+---
+
+## 12. Test device
 
 The environment used for everything in this guide:
 
@@ -786,7 +821,9 @@ this guide has not been exercised on real hardware for those.
 
 ---
 
-## References
+---
+
+## 13. References
 
 - [anland](https://github.com/SuperTurtleDev/anland) — display protocol (both 5.x and 6.x live here)
 - [anland-shell](https://github.com/SuperTurtleDev/anland-shell) — 6.x container/app management
