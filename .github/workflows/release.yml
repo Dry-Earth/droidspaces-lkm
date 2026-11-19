@@ -85,7 +85,7 @@ jobs:
             --title "$TAG" \
             --prerelease \
             --notes-file notes.md \
-            dist/*.ko dist/*.zip dist/source-*.tar.gz
+            dist/*.zip dist/source-*.tar.gz
 
   # ---------------------------------------------------------------------------
   # 发布后同步 update.json 与 docs/CHANGELOG-latest.md
