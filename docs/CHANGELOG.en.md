@@ -1,6 +1,6 @@
 # Changelog
 
-This is the English changelog. Entries before v0.1.23 exist only in Chinese;
+This is the English changelog. 
 see [CHANGELOG.md](CHANGELOG.md). Version numbering rationale is documented
 there as well.
 
