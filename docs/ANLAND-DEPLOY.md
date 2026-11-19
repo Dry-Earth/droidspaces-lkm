@@ -21,7 +21,7 @@ anland 有两代，容器侧的部署方式**完全不同**，别混着看：
 | 连接方式 | `/run/display.sock` + bind mount | binder 传 fd，**没有 socket 文件** |
 | 窗口 | 整块屏幕投到一个 Android 窗口 | **每个窗口一个真正的 Android 窗口** |
 | 容器内组件 | 无（靠 patched 合成器） | `anlandx` 会话（wayland 链接 + rootless Xwayland + mini-wm） |
-| 宿主产物 | `anland-daemon.zip` + `anland-v5.apk`（`com.anland.consumer`） | `module/anland-awl.zip` + `anland-wayland.apk` + `anlandx.tar.gz` |
+| 宿主产物 | `anland-daemon.zip` + `anland-v5.apk`（`com.anland.consumer`） | `anland-awl.zip` + `anland-wayland.apk` + `anlandx.tar.gz`（6.x 从 **改版** `misaka5202/anland` 取，见下） |
 
 **5.x 的痛点**：那个 patched 合成器并不在公开的 `anland-kde-packages` 里。
 实测装了那批 deb 之后，`kwin_wayland` 二进制里一个 anland 字样都没有 —— 会话起来了、
@@ -30,6 +30,12 @@ anland 有两代，容器侧的部署方式**完全不同**，别混着看：
 **6.x 绕开了这个死胡同**：把 Wayland 本身做成帧交换协议，宿主侧 `waylandbridge`
 （KernelSU 模块 `anland-awl`）通过 binder 把每个 `xdg_toplevel` 变成真正的
 Android 窗口，所以 stock 合成器不用改。
+
+**6.x 用改版，不要用上游 6.2**：上游的输入链有缺陷（软键盘文本到不了应用、
+xdg configure serial 为 0 导致窗口起不来、X11 应用读不到剪贴板），改版
+`misaka5202/anland` 全部修好，Release 为 `6.2-ds6`（shell 为
+`misaka5202/anland-shell` `v1.1-ds73`）。镜像构建器见
+[`misaka5202/Droidspaces-anland6-rootfs`](https://github.com/misaka5202/Droidspaces-anland6-rootfs)。
 
 如果你是 **Mali / MTK 设备且拿不到 patched 合成器**，优先考虑 6.x 路线。
 本仓库配套的 6.x 镜像构建器：

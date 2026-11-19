@@ -23,7 +23,7 @@ different** between them. Do not mix them.
 | Transport | `/run/display.sock` + bind mount | binder-passed fds, **no socket file** |
 | Windows | the whole screen maps to one Android window | **each window becomes a real Android window** |
 | Container side | nothing (the patched compositor does it) | an `anlandx` session (wayland link + rootless Xwayland + mini-wm) |
-| Host artifacts | `anland-daemon.zip` + `anland-v5.apk` (`com.anland.consumer`) | `module/anland-awl.zip` + `anland-wayland.apk` + `anlandx.tar.gz` |
+| Host artifacts | `anland-daemon.zip` + `anland-v5.apk` (`com.anland.consumer`) | `anland-awl.zip` + `anland-wayland.apk` + `anlandx.tar.gz` (6.x comes from the **fork** `misaka5202/anland`, see below) |
 
 **The 5.x pain point:** that patched compositor is **not** published in the
 public `anland-kde-packages`. Measured: after installing those .debs, the
@@ -39,6 +39,12 @@ compositors need no changes.
 If you are on a **Mali / MediaTek device and cannot obtain a patched
 compositor**, prefer the 6.x route. The matching 6.x image builder lives at
 [`misaka5202/Droidspaces-anland6-rootfs`](https://github.com/misaka5202/Droidspaces-anland6-rootfs).
+
+**For 6.x use the fork, not upstream 6.2.** Upstream's input chain is broken
+(soft-keyboard text never reaches apps, xdg configure serial 0 means windows
+never appear, X11 apps cannot read the clipboard). The fork
+`misaka5202/anland` fixes all of it; releases are tagged `6.2-ds6` (shell:
+`misaka5202/anland-shell` `v1.1-ds73`).
 
 ---
 

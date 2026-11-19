@@ -311,6 +311,14 @@ Anland 6.x host trio
   └─ com.anland.shell (launcher; it only starts apps)
 ```
 
+**Use the fork, not upstream 6.2.** Upstream has input defects — soft-keyboard
+text never reaches apps (terminals get nothing), windows never appear (xdg
+configure serial 0), X11 apps cannot read the clipboard, and reinstalling the
+module breaks the socket path. Current releases:
+[`misaka5202/anland 6.2-ds6`](https://github.com/misaka5202/anland/releases/tag/6.2-ds6) and
+[`misaka5202/anland-shell v1.1-ds73`](https://github.com/misaka5202/anland-shell/releases/tag/v1.1-ds73).
+The setup script already downloads from the fork.
+
 Use the setup script from
 [Droidspaces-anland6-rootfs](https://github.com/misaka5202/Droidspaces-anland6-rootfs)
 to wire the whole host side in one go (module, APKs, bind mount, daemon config):
