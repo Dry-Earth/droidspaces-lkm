@@ -173,7 +173,7 @@ at v1.0.0 rather than v0.x. The mechanisms are in
 
 ## 3. Install
 
-### 3.1 KernelSU / APatch module (recommended)
+### 3.1 KernelSU / Magisk module (recommended)
 
 Download `droidspaces-lkm-arm64-<version>.zip` from [Releases](../../releases/latest),
 flash it in the manager, reboot.
