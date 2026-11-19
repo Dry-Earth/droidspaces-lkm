@@ -147,7 +147,7 @@ namespace、devtmpfs、macvlan、IPv6 NAT。装上本模块后，同一次检查
 
 ## 3. 安装
 
-### 3.1 KernelSU / APatch 模块（推荐）
+### 3.1 KernelSU / Magisk 模块（推荐）
 
 从 [Releases](../../releases/latest) 下载 `droidspaces-lkm-arm64-<version>.zip`，
 在管理器里刷入，重启。
