@@ -595,6 +595,10 @@ module/
 | `devtmpfs_lkm` / `macvlan` / `ip6table_nat` | [ai-luo2006/droidspaces-6.12-pmb110](https://github.com/ai-luo2006/droidspaces-6.12-pmb110) | GPL-2.0 |
 | `droid_lkm_pids` | 同项目的 pids Plan B 移植 | GPL-2.0 |
 | `droid_lkm_cpu` | 原创 | GPL-2.0 |
+| `extra/hk/` | [Dere3046/HooKern](https://github.com/Dere3046/HooKern) —— 内核 hook 库，做了适配 | GPL-2.0 |
+| `extra/kallrecon/` | [Dere3046/KallRecon](https://github.com/Dere3046/KallRecon) —— kallsyms 重建 | GPL-2.0 |
+| `uart_guard` | 原创 | GPL-2.0 |
+| `mali_nsfix` | 原创（kprobe ARM Mali DDK，见 `extra/mali_nsfix/ORIGIN`） | GPL-2.0 |
 
 > [!IMPORTANT]
 > **GPL-2.0 要求分发二进制时提供对应源码。** 每个 Release 附带的
@@ -612,6 +616,8 @@ module/
 - [lkm4ctr](https://github.com/cyanmint/lkm4ctr) — 命名空间模块
 - [droidspaces-6.12-pmb110](https://github.com/ai-luo2006/droidspaces-6.12-pmb110) — devtmpfs / macvlan / ip6nat / pids 实现
 - [susfs4ksu-lkm](https://github.com/inforcqb/susfs4ksu-lkm) — 发布模式参考
+- [HooKern](https://github.com/Dere3046/HooKern) —— 内核 hook 库，`extra/hk/` 由它适配而来
+- [KallRecon](https://github.com/Dere3046/KallRecon) —— kallsyms 重建，vendored 在 `extra/kallrecon/`
 
 > [!CAUTION]
 > **免责声明**：加载内核模块等同于以最高权限执行内核代码。仅在你能接受设备

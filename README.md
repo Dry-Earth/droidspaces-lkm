@@ -677,6 +677,10 @@ adapted:
 | `devtmpfs_lkm` / `macvlan` / `ip6table_nat` | [ai-luo2006/droidspaces-6.12-pmb110](https://github.com/ai-luo2006/droidspaces-6.12-pmb110) | GPL-2.0 |
 | `droid_lkm_pids` | port of the same project's pids Plan B | GPL-2.0 |
 | `droid_lkm_cpu` | original | GPL-2.0 |
+| `extra/hk/` | [Dere3046/HooKern](https://github.com/Dere3046/HooKern) — kernel hook library, adapted | GPL-2.0 |
+| `extra/kallrecon/` | [Dere3046/KallRecon](https://github.com/Dere3046/KallRecon) — kallsyms reconstruction | GPL-2.0 |
+| `uart_guard` | original | GPL-2.0 |
+| `mali_nsfix` | original (kprobes the ARM Mali DDK; see `extra/mali_nsfix/ORIGIN`) | GPL-2.0 |
 
 > [!IMPORTANT]
 > **GPL-2.0 requires source for binaries.** Every release carries
@@ -694,6 +698,8 @@ adapted:
 - [lkm4ctr](https://github.com/cyanmint/lkm4ctr)
 - [droidspaces-6.12-pmb110](https://github.com/ai-luo2006/droidspaces-6.12-pmb110)
 - [susfs4ksu-lkm](https://github.com/inforcqb/susfs4ksu-lkm) — release pattern reference
+- [HooKern](https://github.com/Dere3046/HooKern) — kernel hook library, adapted into `extra/hk/`
+- [KallRecon](https://github.com/Dere3046/KallRecon) — kallsyms reconstruction, vendored in `extra/kallrecon/`
 
 > [!CAUTION]
 > **Disclaimer**: loading a kernel module runs kernel code with full privilege.
