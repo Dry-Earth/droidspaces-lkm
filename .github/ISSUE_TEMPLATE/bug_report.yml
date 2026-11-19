@@ -101,7 +101,12 @@ body:
     attributes:
       label: Module log
       description: |
-        Contents of `cat /data/adb/droidspaces_lkm.log`.
+        Preferred: open the module WebUI -> Diagnostics tab -> Copy, and paste the
+        clipboard contents here. The export already includes module load state,
+        mali_nsfix parameters, /dev nodes, the last 40 log lines and related dmesg.
+
+        If the WebUI is unavailable (module < v0.1.27 or it fails to open):
+        run `cat /data/adb/droidspaces_lkm.log` manually.
         If the file does not exist (meaning `service.sh` never ran), say so explicitly.
       render: shell
     validations:

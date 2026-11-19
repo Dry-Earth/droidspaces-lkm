@@ -99,8 +99,13 @@ body:
     attributes:
       label: 模块日志
       description: |
-        `cat /data/adb/droidspaces_lkm.log` 的内容。
-        如果文件不存在（说明 service.sh 根本没跑到），请说明这一点。
+        优先用模块 WebUI 的诊断导出：KernelSU 模块页打开 WebUI →「诊断」页签 →
+        点「复制」，把剪贴板内容粘贴到这里即可。这份导出已包含模块加载状态、
+        mali_nsfix 参数、/dev 节点、日志末尾 40 行和相关 dmesg。
+
+        WebUI 用不了时（模块版本 < v0.1.27 或打不开）：手动
+        `cat /data/adb/droidspaces_lkm.log`。
+        文件不存在（说明 service.sh 根本没跑到）请直接说明。
       render: shell
     validations:
       required: false
