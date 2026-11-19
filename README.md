@@ -142,51 +142,15 @@ What else a Mali container needs — the Android-side compositor settings and th
 
 ## 2. What it fixes
 
-`droidspaces check` on an unpatched vendor kernel:
+On an unpatched vendor kernel, `droidspaces check` fails every container-critical
+line — PID/IPC namespaces, devtmpfs, macvlan, IPv6 NAT. After these modules load,
+the same run ends with **`[✓] All required features found!`** — measured on a
+6.1.157 vendor kernel, not a projection.
 
-```
-[MUST HAVE]
-  [✗] PID namespace
-  [✗] IPC namespace
-[RECOMMENDED]
-  [✗] devtmpfs support
-[OPTIONAL]
-  [✗] Macvlan support
-  [✗] IPv6 NAT support
-```
-
-After loading these modules, every line is a tick:
-
-```
-[MUST HAVE]
-  [✓] Root privileges          [✓] PID namespace
-  [✓] Linux version            [✓] Mount namespace
-  [✓] UTS namespace            [✓] IPC namespace
-  [✓] pivot_root syscall       [✓] /proc filesystem
-  [✓] /sys filesystem          [✓] Seccomp support
-
-[RECOMMENDED]
-  [✓] epoll / signalfd / PTY / devpts      [✓] Loop device
-  [✓] ext4 filesystem                      [✓] Cgroup v2 support
-  [✓] Cgroup namespace                     [✓] New mount API
-  [✓] devtmpfs support
-
-[OPTIONAL]
-  [✓] FUSE support             [✓] TUN/TAP support
-  [✓] OverlayFS support        [✓] Network namespace
-  [✓] Bridge device support    [✓] Veth pair support
-  [✓] Macvlan support          [✓] IPv6 NAT support
-  [✓] Memory limit support     [✓] Swap limit support
-  [✓] CPU limit support        [✓] CPU usage accounting
-  [✓] Process limit support    [✓] Sandboxing (user namespaces)
-
-[✓] All required features found!
-```
-
-That is the real output from a 6.1.157 vendor kernel, not a projection. The
-`OPTIONAL` block is the interesting one: `CPU limit`, `Process limit` and
-`Sandboxing` are the three a module was supposed to be unable to provide, and
-they are the reason this project exists at v1.0.0 rather than v0.x.
+The three lines a module was *supposed* to be unable to provide — `CPU limit`,
+`Process limit` and `Sandboxing (user namespaces)` — are what puts this project
+at v1.0.0 rather than v0.x. The mechanisms are in
+[section 8](#8-full-coverage).
 
 ---
 
