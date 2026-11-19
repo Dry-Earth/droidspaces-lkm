@@ -1,15 +1,11 @@
 # Droidspaces LKM
 
-> **Container capabilities for stock GKI kernels — no kernel rebuild, no boot
-> image flashing.** Droidspaces needs PID/IPC namespaces, devtmpfs, macvlan,
-> IPv6 NAT and a few cgroup controllers. Most vendor kernels ship with those
-> compiled out to satisfy GKI ABI checks.
->
-> The other way to get them back is to unlock the bootloader, rebuild the kernel
-> and flash it. That works, but it costs you: one kernel per device model, the
-> stability of the result is your problem, and every system update means starting
-> over. The modules avoid all of that. One set covers **seven KMIs**, matched
-> against `uname -r`, so the device model stops mattering.
+> **Out-of-tree kernel modules restoring the container facilities vendor GKI
+> kernels compile out** — PID/IPC namespaces, devtmpfs, macvlan, IPv6 NAT, plus
+> emulated pids/cpu cgroup controllers where the config paths are deleted.
+> Built per KMI from the matching vendor source tree, selected at boot by
+> `uname -r` + `ro.board.first_api_level`: one set covers **seven KMIs**,
+> without a kernel rebuild.
 
 > [![Build](https://github.com/misaka5202/droidspaces-lkm/actions/workflows/build.yml/badge.svg)](https://github.com/misaka5202/droidspaces-lkm/actions/workflows/build.yml)
 
