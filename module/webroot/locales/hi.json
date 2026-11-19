@@ -40,6 +40,7 @@
   "about.author": "निर्माता",
   "about.repo": "रिपॉज़िटरी",
   "about.language": "भाषा",
+  "about.language.system": "सिस्टम डिफ़ॉल्ट",
   "about.ui": "इंटरफ़ेस शैली",
   "about.packs": "वन-क्लिक पैक",
   "about.pack5": "5.x RootFS बिल्डर",

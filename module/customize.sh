@@ -103,16 +103,11 @@ ui_print "- ${M_HANG_REPORT}: /data/adb/droidspaces_lkm.d/hang-report.txt"
 ui_print "- ${M_STATUS_QUERY}"
 ui_print " "
 
-# 把本地化描述写进 module.prop。
+# description 保持仓库里的英文，不按系统语言改写。
 #
-# KernelSU 模块列表显示的就是这里的 description；仓库里那份是固定的英文，
-# 安装时按系统语言改写一次，之后一直生效。拿不到 M_DESC 就不动它。
-if [ -n "$M_DESC" ] && [ -f "${MODPATH:-.}/module.prop" ]; then
-    # 用 | 作分隔符，描述里可能有 / 和空格
-    if sed -i "s|^description=.*|description=$M_DESC|" "${MODPATH:-.}/module.prop" 2>/dev/null; then
-        ui_print "- description -> ${LANG_CODE}"
-    fi
-fi
+# 改写是安装时一次性的：之后用户换系统语言，模块页仍显示旧语言，看起来像
+# 「没识别到英文」。KernelSU 的模块列表是英文界面，描述统一用英文最稳。
+# 语言相关的只是安装过程的提示（走 i18n.sh）。
 
 # ---------------------------------------------------------------------------
 # 显示路线（route）：auto / anland6 / desktop5

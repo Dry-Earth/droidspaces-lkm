@@ -40,6 +40,7 @@
   "about.author": "ผู้พัฒนา",
   "about.repo": "คลังโค้ด",
   "about.language": "ภาษา",
+  "about.language.system": "ตามระบบ",
   "about.ui": "สไตล์อินเทอร์เฟซ",
   "about.packs": "ชุดติดตั้งคลิกเดียว",
   "about.pack5": "ตัวสร้าง RootFS 5.x",

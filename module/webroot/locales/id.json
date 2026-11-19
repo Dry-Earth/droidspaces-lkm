@@ -40,6 +40,7 @@
   "about.author": "Pembuat",
   "about.repo": "Repositori",
   "about.language": "Bahasa",
+  "about.language.system": "Bawaan sistem",
   "about.ui": "Gaya antarmuka",
   "about.packs": "Paket sekali klik",
   "about.pack5": "Pembuat RootFS 5.x",

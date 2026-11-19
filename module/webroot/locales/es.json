@@ -40,6 +40,7 @@
   "about.author": "Autor",
   "about.repo": "Repositorio",
   "about.language": "Idioma",
+  "about.language.system": "Idioma del sistema",
   "about.ui": "Estilo de interfaz",
   "about.packs": "Paquetes de un clic",
   "about.pack5": "Constructor de RootFS 5.x",

@@ -40,6 +40,7 @@
   "about.author": "作者",
   "about.repo": "リポジトリ",
   "about.language": "言語",
+  "about.language.system": "システムに従う",
   "about.ui": "インターフェーススタイル",
   "about.packs": "ワンクリックパック",
   "about.pack5": "5.x RootFS ビルダー",

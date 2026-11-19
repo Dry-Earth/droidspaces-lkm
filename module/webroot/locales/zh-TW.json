@@ -40,6 +40,7 @@
   "about.author": "作者",
   "about.repo": "儲存庫",
   "about.language": "語言",
+  "about.language.system": "跟隨系統",
   "about.ui": "介面風格",
   "about.packs": "懶人包",
   "about.pack5": "5.x RootFS 建置倉庫",

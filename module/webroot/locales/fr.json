@@ -40,6 +40,7 @@
   "about.author": "Auteur",
   "about.repo": "Dépôt",
   "about.language": "Langue",
+  "about.language.system": "Langue du système",
   "about.ui": "Style d'interface",
   "about.packs": "Packs en un clic",
   "about.pack5": "Générateur RootFS 5.x",

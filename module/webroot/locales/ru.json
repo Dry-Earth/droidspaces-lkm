@@ -40,6 +40,7 @@
   "about.author": "Автор",
   "about.repo": "Репозиторий",
   "about.language": "Язык",
+  "about.language.system": "Как в системе",
   "about.ui": "Стиль интерфейса",
   "about.packs": "Готовые наборы",
   "about.pack5": "Сборщик RootFS 5.x",

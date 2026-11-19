@@ -40,6 +40,7 @@
   "about.author": "Tác giả",
   "about.repo": "Kho mã",
   "about.language": "Ngôn ngữ",
+  "about.language.system": "Theo hệ thống",
   "about.ui": "Kiểu giao diện",
   "about.packs": "Gói một chạm",
   "about.pack5": "Trình tạo RootFS 5.x",

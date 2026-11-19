@@ -40,6 +40,7 @@
   "about.author": "제작자",
   "about.repo": "저장소",
   "about.language": "언어",
+  "about.language.system": "시스템 기본값",
   "about.ui": "인터페이스 스타일",
   "about.packs": "원클릭 팩",
   "about.pack5": "5.x RootFS 빌더",

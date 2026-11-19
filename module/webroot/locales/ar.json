@@ -40,6 +40,7 @@
   "about.author": "المطوّر",
   "about.repo": "المستودع",
   "about.language": "اللغة",
+  "about.language.system": "لغة النظام",
   "about.ui": "نمط الواجهة",
   "about.packs": "حزم بنقرة واحدة",
   "about.pack5": "أداة بناء RootFS 5.x",

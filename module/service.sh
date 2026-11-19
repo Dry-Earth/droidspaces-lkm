@@ -95,6 +95,10 @@ dlog() {
     return 0
 }
 
+# 文案语言目录：必须在任何中文输出之前 source（dlog 里的人读部分按系统语言）。
+# [OK]/[FAIL]/[MISS] 这类标记与符号名不翻译。
+[ -f "$MODDIR/i18n.sh" ] && . "$MODDIR/i18n.sh"
+
 dlog "=== Droidspaces LKM ==="
 dlog "kernel: $(uname -r)"
 dlog "moddir: $MODDIR"
@@ -197,7 +201,7 @@ ROUTE=$(cat "$MODDIR/route" 2>/dev/null)
 case "$ROUTE" in
     auto|anland6|desktop5) ;;
     *)
-        [ -n "$ROUTE" ] && dlog "[WARN] route '$ROUTE' 非法，回落 auto"
+        [ -n "$ROUTE" ] && dlog "$(msg "$M_ROUTE_INVALID" "$ROUTE")"
         ROUTE=auto
         ;;
 esac
@@ -504,7 +508,7 @@ if [ -e /dev/mali0 ] || lsmod 2>/dev/null | grep -q '^mali_kbase'; then
 fi
 
 dlog "platform: mali=${GPU_HAS_MALI} renderD128=$([ -e /dev/dri/renderD128 ] && echo present || echo absent)"
-dlog "route:    $ROUTE$( [ -f "$MODDIR/route" ] || echo ' (默认，无配置文件)')"
+dlog "$(msg "$M_ROUTE_DEFAULT" "$ROUTE" "$([ -f "$MODDIR/route" ] || msg "$M_ROUTE_DEFAULT_MARK")")"
 
 # vkms —— 默认不加载，需要者显式开启
 # ------------------------------------
@@ -544,14 +548,14 @@ dlog "route:    $ROUTE$( [ -f "$MODDIR/route" ] || echo ' (默认，无配置文
 # 会解析错；下面 L499 那处也重新赋成了绝对值，这里保持一致。
 case "$ROUTE" in
     anland6)
-        dlog "[SKIP] vkms: route=anland6（6.x waylandbridge 直接用 /dev/mali0，不需 render node）"
+        dlog "$M_VKMS_ANLAND6"
         ;;
     desktop5)
         if [ "$GPU_HAS_MALI" = "1" ]; then
-            dlog "[INFO] vkms: route=desktop5，强制提供 /dev/dri/renderD128"
+            dlog "$M_VKMS_FORCE"
             load_mod_retry vkms "" 6 || true
         else
-            dlog "[SKIP] vkms: route=desktop5 但非 Mali（Adreno 有原生 render node）"
+            dlog "$M_VKMS_ADRENO"
         fi
         ;;
     *)
@@ -571,9 +575,6 @@ esac
 # 放最后，失败不挡前面五个模块。
 # 想临时关掉：在模块目录放 disable_pids / disable_cpu。
 MODDIR="/data/adb/modules/droidspaces_lkm"
-# 文案语言目录（开机日志里人读的部分按系统语言显示；
-# [OK]/[FAIL]/[MISS] 这类标记与符号名不翻译）
-[ -f "$MODDIR/i18n.sh" ] && . "$MODDIR/i18n.sh"
 [ -f "$MODDIR/disable_pids" ] || load_mod droid_lkm_pids ""
 [ -f "$MODDIR/disable_cpu" ] || load_mod droid_lkm_cpu ""
 
@@ -589,7 +590,7 @@ MODDIR="/data/adb/modules/droidspaces_lkm"
 if [ "$GPU_HAS_MALI" = "1" ]; then
     case "$ROUTE" in
         desktop5)
-            dlog "[SKIP] mali_nsfix: route=desktop5（走 vkms，不用 /dev/mali0）"
+            dlog "$M_MALI_NS_FIX"
             ;;
         *)
             if [ -f "$MODDIR/disable_mali" ]; then
@@ -682,19 +683,19 @@ snapshot_once() {
         printf '=== %s ===\n' "$(date '+%m-%d %H:%M:%S')"
         printf -- '-- uptime: %s\n' "$(cut -d' ' -f1 /proc/uptime 2>/dev/null)"
         printf -- '-- load  : %s\n' "$(cut -d' ' -f1-3 /proc/loadavg 2>/dev/null)"
-        printf -- '-- droidspaces 模块:\n'
+        printf -- '%s\n' "$M_DOC_MOD"
         grep -E '^(lkm4ctr|devtmpfs_lkm|ip6table_nat|macvlan|vkms|droid_lkm_pids|droid_lkm_cpu|uart_guard|mali_nsfix) ' \
             /proc/modules 2>/dev/null \
             | awk '{printf "   %-14s ref=%-4s size=%s\n", $1, $3, $2}'
-        printf -- '-- renderD128: %s\n' "$([ -e /dev/dri/renderD128 ] && echo 有 || echo 无)"
-        printf -- '-- dmesg 尾部:\n'
+        printf -- '%s\n' "$(msg "$M_DOC_R128" "$([ -e /dev/dri/renderD128 ] && msg "$M_DOC_YES" || msg "$M_DOC_NO")")"
+        printf -- '%s\n' "$M_DOC_DMESG"
         dmesg 2>/dev/null | tail -40
 
         #
         # 自家日志单独再放一份：dmesg 尾部很容易被充电/蓝牙/CCCI 刷屏挤满，
         # 真正要看的"service.sh 走到哪一步"反而被冲掉。快照自带这一段，
         # 事后只看 hang-report.txt 一个文件就够。
-        printf -- '-- 模块日志尾部:\n'
+        printf -- '%s\n' "$M_DOC_MLOG"
         tail -30 "$LOG" 2>/dev/null
     } > "$SNAP.tmp" 2>/dev/null
     mv -f "$SNAP.tmp" "$SNAP" 2>/dev/null

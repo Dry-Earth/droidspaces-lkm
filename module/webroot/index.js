@@ -94,7 +94,8 @@ function matchLang(tag) {
 function pickLang() {
   let saved = null;
   try { saved = localStorage.getItem(LANG_STORE); } catch { /* 存储不可用 */ }
-  if (LANGS.some((l) => l.code === saved)) return saved;
+  // 'system' 是「跟随系统」：不用缓存，每次按 navigator 重新检测
+  if (saved !== 'system' && LANGS.some((l) => l.code === saved)) return saved;
   const prefs = navigator.languages?.length ? navigator.languages : [navigator.language];
   for (const p of prefs) {
     const hit = matchLang(p);
@@ -122,14 +123,17 @@ function t(key, vars) {
 }
 
 async function setLang(code) {
-  const next = LANGS.some((l) => l.code === code) ? code : FALLBACK;
+  const wantSystem = code === 'system';
+  const next = wantSystem ? pickLang()
+                          : (LANGS.some((l) => l.code === code) ? code : FALLBACK);
   const [base, cur] = await Promise.all([
     fetchLocale(FALLBACK),
     next === FALLBACK ? {} : fetchLocale(next)
   ]);
   dict = { ...base, ...cur };
   lang = next;
-  try { localStorage.setItem(LANG_STORE, lang); } catch { /* 忽略 */ }
+  // 记住「跟随系统」这个选择本身，而不是记住当时解析出的语言
+  try { localStorage.setItem(LANG_STORE, wantSystem ? 'system' : lang); } catch { /* 忽略 */ }
   const meta = LANGS.find((l) => l.code === lang);
   document.documentElement.lang = meta.htmlLang;
   document.documentElement.dir = meta.rtl ? 'rtl' : 'ltr';
@@ -253,7 +257,10 @@ function buildLangSelect() {
   const btn = $('lang-select');
   const menu = $('lang-menu');
 
-  menu.replaceChildren(...LANGS.map((l) => {
+  // 「跟随系统」置顶；选中后清掉语言缓存，按 navigator 重新解析
+  const sysLabel = t('about.language.system') || 'System default';
+  const items = [{ code: 'system', name: sysLabel }, ...LANGS];
+  menu.replaceChildren(...items.map((l) => {
     const b = document.createElement('button');
     b.type = 'button';
     b.className = 'md-menu-item';

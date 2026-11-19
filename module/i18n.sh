@@ -147,6 +147,28 @@ M_LOG_KMI_AMBIG="KMI %s, multiple candidates in directory, refusing to guess"
 M_LOG_MISSING_SYM="needs but this kernel does not export:"
 M_LOG_MISSING_SYM_TAIL="(vendor-kernel export-table difference, not a broken package)"
 M_LOG_OPTIONAL="optional, skipped"
+M_ROUTE_INVALID="[WARN] route '%s' is invalid, falling back to auto"
+M_ROUTE_DEFAULT="route:    %s%s"
+M_ROUTE_DEFAULT_MARK=" (default, no config file)"
+M_VKMS_ANLAND6="[SKIP] vkms: route=anland6 (6.x waylandbridge uses /dev/mali0 directly, no render node needed)"
+M_VKMS_FORCE="INFO] vkms: route=desktop5, forcing /dev/dri/renderD128"
+M_VKMS_ADRENO="[SKIP] vkms: route=desktop5 but not Mali (Adreno has a native render node)"
+M_MALI_NS_FIX="[SKIP] mali_nsfix: route=desktop5 (uses vkms, not /dev/mali0)"
+M_MALI_ABSENT="[SKIP] mali_nsfix: no Mali GPU on this device, skipped"
+M_DOC_MOD="-- droidspaces module:"
+M_DOC_R128="-- renderD128: %s"
+M_DOC_YES="yes"
+M_DOC_NO="no"
+M_DOC_DMESG="-- dmesg tail:"
+M_DOC_MLOG="-- module log tail:"
+M_PSTORE_HEAD="=== pstore scene ==="
+M_PSTORE_KERNEL="Local kernel: %s"
+M_PSTORE_NOTE="Note: the previous boot ended in a kernel panic (pstore is empty on a normal reboot)"
+M_PSTORE_SAVED="Previous boot ended in a kernel panic; pstore scene saved: %s"
+M_PSTORE_ATTACH="  Attach this file to the issue; it usually holds the full dmesg before the panic"
+M_BLACKLIST_ADD="Previous boot died while loading %s (breadcrumb still present); added to blacklist"
+M_AUTO_DISABLE="Boot failed to load %d times in a row; module auto-disabled"
+M_AUTO_DISABLE_HINT="Troubleshoot: adb pull /data/adb/droidspaces_lkm.d/hang-report.txt"
 
 case "$LANG_CODE" in
 
@@ -271,7 +293,31 @@ zh)
     M_LOG_MISSING_SYM="需要但本内核未导出:"
     M_LOG_MISSING_SYM_TAIL="（这是厂商内核的导出表差异，不是模块包损坏）"
     M_LOG_OPTIONAL="可选，跳过"
+    # --- 本次新增（service / post-fs-data / boot-completed 的输出）---
+    M_ROUTE_INVALID="[WARN] route '%s' 非法，回落 auto"
+    M_ROUTE_DEFAULT="route:    %s%s"
+    M_ROUTE_DEFAULT_MARK="（默认，无配置文件）"
+    M_VKMS_ANLAND6="[SKIP] vkms: route=anland6（6.x waylandbridge 直接用 /dev/mali0，不需 render node）"
+    M_VKMS_FORCE="[INFO] vkms: route=desktop5，强制提供 /dev/dri/renderD128"
+    M_VKMS_ADRENO="[SKIP] vkms: route=desktop5 但非 Mali（Adreno 有原生 render node）"
+    M_MALI_NS_FIX="[SKIP] mali_nsfix: route=desktop5（走 vkms，不用 /dev/mali0）"
+    M_MALI_ABSENT="[SKIP] mali_nsfix: 本设备没有 Mali GPU，跳过"
+    M_DOC_MOD="-- droidspaces 模块:"
+    M_DOC_R128="-- renderD128: %s"
+    M_DOC_YES="有"
+    M_DOC_NO="无"
+    M_DOC_DMESG="-- dmesg 尾部:"
+    M_DOC_MLOG="-- 模块日志尾部:"
+    M_PSTORE_HEAD="=== pstore 现场 ==="
+    M_PSTORE_KERNEL="本机内核: %s"
+    M_PSTORE_NOTE="说明: 上一次启动是内核崩溃退出的（正常重启时 pstore 为空）"
+    M_PSTORE_SAVED="上次启动是内核崩溃退出，pstore 现场已保存：%s"
+    M_PSTORE_ATTACH="  把这个文件贴到 issue 里，里面通常有 panic 前的完整 dmesg"
+    M_BLACKLIST_ADD="上次开机死在加载 %s 上（面包屑还在），已加入黑名单"
+    M_AUTO_DISABLE="连续 %d 次开机未成功加载，已自动禁用本模块"
+    M_AUTO_DISABLE_HINT="排查：adb pull /data/adb/droidspaces_lkm.d/hang-report.txt"
     ;;
+
 
 ja)
     # 日语只做最小覆盖：大部分键回退英文，这里补齐最显眼的几句
@@ -362,6 +408,30 @@ ja)
 
 *)
     # 英文默认值已提到 case 之前，这里不需要再赋值
+    # --- service / post-fs-data / boot-completed output ---
+    M_ROUTE_INVALID="[WARN] route '%s' は不正です。auto に戻します"
+    M_ROUTE_DEFAULT="route:    %s%s"
+    M_ROUTE_DEFAULT_MARK="（デフォルト、設定ファイルなし）"
+    M_VKMS_ANLAND6="[SKIP] vkms: route=anland6（6.x waylandbridge は /dev/mali0 を直接使うため render node 不要）"
+    M_VKMS_FORCE="[INFO] vkms: route=desktop5、/dev/dri/renderD128 を強制提供"
+    M_VKMS_ADRENO="[SKIP] vkms: route=desktop5 だが Mali 以外（Adreno はネイティブの render node あり）"
+    M_MALI_NS_FIX="[SKIP] mali_nsfix: route=desktop5（vkms 経由、/dev/mali0 は使わない）"
+    M_MALI_ABSENT="[SKIP] mali_nsfix: この端末には Mali GPU がないためスキップ"
+    M_DOC_MOD="-- droidspaces モジュール:"
+    M_DOC_R128="-- renderD128: %s"
+    M_DOC_YES="あり"
+    M_DOC_NO="なし"
+    M_DOC_DMESG="-- dmesg 末尾:"
+    M_DOC_MLOG="-- モジュールログ末尾:"
+    M_PSTORE_HEAD="=== pstore の記録 ==="
+    M_PSTORE_KERNEL="カーネル: %s"
+    M_PSTORE_NOTE="備考: 前回の起動はカーネルパニックで終了しました（通常の再起動では pstore は空です）"
+    M_PSTORE_SAVED="前回はカーネルパニックで終了。pstore の記録を保存しました: %s"
+    M_PSTORE_ATTACH="  このファイルを issue に貼ってください。パニック前の dmesg 全体が入っています"
+    M_BLACKLIST_ADD="前回の起動は %s の読み込みで死亡（パン屑残存）。ブラックリストに追加しました"
+    M_AUTO_DISABLE="%d 回連続で読み込みに失敗したため、モジュールを自動無効化しました"
+    M_AUTO_DISABLE_HINT="調査: adb pull /data/adb/droidspaces_lkm.d/hang-report.txt"
+
     :
     ;;
 esac

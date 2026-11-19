@@ -13,6 +13,9 @@
 
 MODDIR=${0%/*}
 [ "$MODDIR" = "$0" ] && MODDIR=.
+
+# Catalog: human-readable lines follow the system language.
+[ -f "$MODDIR/i18n.sh" ] && . "$MODDIR/i18n.sh"
 COUNT=/data/adb/droidspaces_lkm.bootcount
 LIMIT=3
 
@@ -65,9 +68,9 @@ if [ -d "$_ps" ]; then
     if [ "$_n" -gt 0 ]; then
         _out="$STATE_DIR/pstore-$(date '+%Y%m%d-%H%M%S').txt"
         {
-            printf '=== pstore 现场 ===\n'
-            printf '本机内核: %s\n' "$(uname -r)"
-            printf '说明: 上一次启动是内核崩溃退出的（正常重启时 pstore 为空）\n\n'
+            printf '%s\n' "$M_PSTORE_HEAD"
+            printf '%s\n' "$(msg "$M_PSTORE_KERNEL" "$(uname -r)")"
+            printf '%s\n\n' "$M_PSTORE_NOTE"
             for _f in "$_ps"/console-ramoops* "$_ps"/dmesg-ramoops*; do
                 [ -f "$_f" ] || continue
                 [ -s "$_f" ] || continue
@@ -77,8 +80,8 @@ if [ -d "$_ps" ]; then
             done
         } > "$_out" 2>/dev/null
         sync
-        plog "上次启动是内核崩溃退出，pstore 现场已保存：$_out"
-        plog "  把这个文件贴到 issue 里，里面通常有 panic 前的完整 dmesg"
+        plog "$(msg "$M_PSTORE_SAVED" "$_out")"
+        plog "$M_PSTORE_ATTACH"
         # 只保留最近 3 份，避免状态目录无限增长
         ls -1t "$STATE_DIR"/pstore-*.txt 2>/dev/null | tail -n +4 | while read -r _old; do
             rm -f "$_old" 2>/dev/null
@@ -98,7 +101,7 @@ fi
 if [ -f "$STATE_DIR/loading" ]; then
     _dead=$(head -1 "$STATE_DIR/loading" 2>/dev/null)
     if [ -n "$_dead" ]; then
-        plog "上次开机死在加载 $_dead 上（面包屑还在），已加入黑名单"
+        plog "$(msg "$M_BLACKLIST_ADD" "$_dead")"
         printf '%s\n' "$_dead" >> "$STATE_DIR/blacklist" 2>/dev/null
         sort -u "$STATE_DIR/blacklist" -o "$STATE_DIR/blacklist" 2>/dev/null
         cp -f "$STATE_DIR/loading" "$STATE_DIR/crash-module.txt" 2>/dev/null
@@ -125,8 +128,8 @@ if [ "$cur" -gt "$LIMIT" ]; then
         cp -f "$SNAP" "$HANG" 2>/dev/null
     fi
     touch "$MODDIR/disable"
-    plog "连续 $((cur - 1)) 次开机未成功加载，已自动禁用本模块"
-    plog "排查：adb pull /data/adb/droidspaces_lkm.d/hang-report.txt"
+    plog "$(msg "$M_AUTO_DISABLE" "$((cur - 1))")"
+    plog "$M_AUTO_DISABLE_HINT"
     plog "      adb pull /data/adb/droidspaces_lkm.log"
     echo 0 > "$COUNT"
 fi

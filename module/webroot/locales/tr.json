@@ -40,6 +40,7 @@
   "about.author": "Yazar",
   "about.repo": "Depo",
   "about.language": "Dil",
+  "about.language.system": "Sistem dili",
   "about.ui": "Arayüz stili",
   "about.packs": "Tek tıkla paketler",
   "about.pack5": "5.x RootFS oluşturucu",
