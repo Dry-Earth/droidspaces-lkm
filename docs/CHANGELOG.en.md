@@ -4,7 +4,9 @@ This is the English changelog. Entries before v0.1.23 exist only in Chinese;
 see [CHANGELOG.md](CHANGELOG.md). Version numbering rationale is documented
 there as well.
 
-## v0.1.27
+## Unreleased
+
+## 0.1.27 - 2026-11-18
 
 ### Fixed
 
@@ -57,7 +59,7 @@ readable `nshf_status` line.
 - pids fix and route/WebUI checked on OPPO PHZ110 (MediaTek) and 2410CRP4CG
   (Qualcomm).
 
-## v0.1.26
+## 0.1.26 - 2026-11-18
 
 ### Fixed
 
@@ -97,7 +99,7 @@ defensive; it is not the cause of the hang above.)
 - On-device regression pending from the reporter (the custom kernel's
   `.config` matches the DDK).
 
-## v0.1.25
+## 0.1.25 - 2026-11-17
 
 ### Fixed
 
@@ -169,7 +171,7 @@ value, so it was removed rather than shipped as dead code.
 Full KMI matrix builds green. On device (PHZ110 / 6.1.157) all three hooks are
 confirmed on the inline route, and pids accounting matches the kprobe build.
 
-## v0.1.24
+## 0.1.24 - 2026-11-17
 
 ### Fixed
 
@@ -279,7 +281,7 @@ PHZ110 (MT6989, `6.1.157`): PID/IPC/UTS/user/net/cgroup namespaces, in-container
 nodes, emulated `pids.max`/`cpu.max`, and the export-symbol check (0 missing of
 781 rows) all pass, with no kernel anomalies in `dmesg`.
 
-## v0.1.23
+## 0.1.23 - 2026-11-16
 
 `versionCode` is written at build time (`YYYYMMDDnn` = date*100 + hour*4 + minute/15,
 see `.github/workflows/build.yml`). It must fit in int32.
