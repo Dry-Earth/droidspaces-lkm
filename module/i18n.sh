@@ -404,10 +404,6 @@ ja)
     M_LOG_MISSING_SYM="が必要だが本カーネルは未エクスポート:"
     M_LOG_MISSING_SYM_TAIL="（ベンダーカーネルのエクスポート表の差異であり、パッケージ破損ではありません）"
     M_LOG_OPTIONAL="任意のためスキップ"
-    ;;
-
-*)
-    # 英文默认值已提到 case 之前，这里不需要再赋值
     # --- service / post-fs-data / boot-completed output ---
     M_ROUTE_INVALID="[WARN] route '%s' は不正です。auto に戻します"
     M_ROUTE_DEFAULT="route:    %s%s"
@@ -431,6 +427,10 @@ ja)
     M_BLACKLIST_ADD="前回の起動は %s の読み込みで死亡（パン屑残存）。ブラックリストに追加しました"
     M_AUTO_DISABLE="%d 回連続で読み込みに失敗したため、モジュールを自動無効化しました"
     M_AUTO_DISABLE_HINT="調査: adb pull /data/adb/droidspaces_lkm.d/hang-report.txt"
+    ;;
+
+*)
+    # 英文默认值已提到 case 之前，这里不需要再赋值
 
     :
     ;;
