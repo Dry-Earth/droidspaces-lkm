@@ -93,9 +93,11 @@ grep -q 'route_keytest' module/customize.sh \
     || die "customize.sh 缺少安装期音量键选择 route_keytest"
 grep -q 'ROUTE=$(cat' module/service.sh \
     || die "service.sh 缺少 route 解析"
-grep -q 'route=anland6' module/service.sh \
+# 路由此前的字面量已移入 i18n 键（service.sh 里是 dlog "$M_VKMS_ANLAND6"），
+# 所以这里验证 service.sh 真的引用了这两条键，而不是 grep 已经不存在的字面量。
+grep -q 'M_VKMS_ANLAND6' module/service.sh \
     || die "service.sh 缺少 anland6 路线分支"
-grep -q 'route=desktop5' module/service.sh \
+grep -q 'M_VKMS_FORCE\|M_VKMS_ADRENO' module/service.sh \
     || die "service.sh 缺少 desktop5 路线分支"
 grep -q 'route)' module/action.sh || die "action.sh 缺少 route 子命令"
 grep -q 'Droidspaces-rootfs-Desktop-builder' README.md \
