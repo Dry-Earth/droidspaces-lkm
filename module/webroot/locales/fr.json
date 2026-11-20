@@ -50,5 +50,16 @@
   "toast.saveFailed": "Échec de l'enregistrement de la route",
   "toast.copied": "Copié",
   "toast.copyFailed": "Échec de la copie",
-  "toast.openFailed": "Impossible d'ouvrir le lien"
+  "toast.openFailed": "Impossible d'ouvrir le lien",
+  "tab.modules": "Modules",
+  "modules.title": "Module load switches",
+  "modules.desc": "Choose which .ko files load at boot. Default follows the built-in route logic. Takes effect after reboot.",
+  "modules.apply": "Apply (reboot required)",
+  "modules.state": "Boot state",
+  "modules.default": "Default",
+  "modules.on": "On",
+  "modules.off": "Off",
+  "modules.warnLkm4ctr": "lkm4ctr provides the container namespaces. Turning it off makes Droidspaces containers unable to start until it is re-enabled.",
+  "modules.toast.saved": "Module switches saved. Applies after reboot.",
+  "modules.toast.saveFailed": "Failed to save module switches"
 }

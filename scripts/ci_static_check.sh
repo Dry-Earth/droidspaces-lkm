@@ -77,7 +77,7 @@ for f in module/webroot/index.html module/webroot/index.js module/webroot/styles
     [ -f "$f" ] || die "缺少 $f"
 done
 grep -q 'auto' module/route || die "module/route 默认值应为 auto"
-# WebUI 结构：底栏四页签 + 四个视图 + 语言菜单
+# WebUI 结构：底栏页签（≥4，含模块页）+ 四个基础视图 + 语言菜单
 for v in view-home view-route view-diag view-about; do
     grep -q "id=\"$v\"" module/webroot/index.html || die "WebUI 缺少视图 $v"
 done
@@ -158,6 +158,75 @@ _out=$(DSL_KERNEL_CONFIG="$_fx/does-not-exist" sh module/action.sh 2>/dev/null)
 printf '%s\n' "$_out" | grep -q 'nft_status nf_tables=unknown' \
     || die "读不到内核 config 时应报 nft_status nf_tables=unknown"
 rm -rf "$_fx"
+
+# 9) 逐模块加载开关（WebUI「模块」页 + service.sh ko_switch）
+#
+# 光 grep 代码形状挡不住"把 1 判成 0""畸形行把后面全带崩"这类写反。
+# 这里 (a) 静态确认接线齐全；(b) 把 service.sh 的 helper 段抽出来单独 source，
+# 用 fixture 跑真值测试 —— 文件缺失/显式 0|1/畸形行/旧开关兼容都要对。
+for s in ko_switch DSL_KO_SWITCH ko_switch_val ko_known ko_gate; do
+    grep -q "$s" module/service.sh || die "service.sh 缺少 $s"
+done
+for k in M_KO_OFF_SWITCH M_KO_ON_SWITCH M_KO_OFF_LEGACY M_KO_LKM4CTR_WARN \
+         M_KO_OV_ROUTE M_KO_UNKNOWN M_KO_BADVAL M_KO_NOEQ; do
+    grep -q "\b$k=" module/i18n.sh || die "i18n.sh 缺少 $k"
+    grep -q "$k"    module/service.sh || die "service.sh 未引用 $k"
+done
+# WebUI 链路：视图 / 页签 / 写入命令 / 语言键
+grep -q 'id="view-modules"' module/webroot/index.html || die "WebUI 缺少模块开关视图"
+grep -q 'data-target="view-modules"' module/webroot/index.html || die "WebUI 缺少模块页签"
+grep -q 'ko_switch' module/webroot/index.js || die "WebUI 未读写 ko_switch"
+for lk in tab.modules modules.title modules.apply modules.default modules.on modules.off modules.warnLkm4ctr; do
+    grep -q "\"$lk\"" module/webroot/locales/en.json || die "en.json 缺少语言键 $lk"
+    grep -q "\"$lk\"" module/webroot/locales/zh.json || die "zh.json 缺少语言键 $lk"
+done
+# action.sh 也把开关状态摊成机器可读一行
+grep -q 'ko_mod' module/action.sh || die "action.sh 缺少 ko_mod 机器可读输出"
+
+# helper 真值测试：抽出 service.sh 的 BEGIN/END_KO_SWITCH_HELPERS 段
+# 在一个隔离的 sh 里 source，注入桩 dlog，然后用 fixture 验证判定。
+_koh=$(mktemp 2>/dev/null) || die "mktemp 不可用"
+awk '/^# BEGIN_KO_SWITCH_HELPERS/{f=1;next} /^# END_KO_SWITCH_HELPERS/{f=0} f' \
+    module/service.sh > "$_koh"
+[ -s "$_koh" ] || die "抽不出 ko_switch helper（BEGIN/END 标记丢失？）"
+
+_kot=$(mktemp -d 2>/dev/null) || die "mktemp -d 不可用"
+# 桩：dlog 吞掉，M_KO_* 给占位，basename 用 coreutils
+_dlog_stub='dlog(){ :; }; M_KO_OFF_SWITCH=x; M_KO_ON_SWITCH=x; M_KO_OFF_LEGACY=x; M_KO_OV_ROUTE=x; M_KO_UNKNOWN=x; M_KO_BADVAL=x; M_KO_NOEQ=x'
+
+# 9a) 文件不存在 -> 所有模块走默认（ko_switch_val 返回空，ko_gate 返回 0=加载）
+_r=$(DSL_KO_SWITCH="$_kot/absent" sh -c "$_dlog_stub; . '$_koh'; printf '[%s]' \"\$(ko_switch_val macvlan)\"; ko_gate macvlan '' >/dev/null && echo GATE=load || echo GATE=skip" 2>&1)
+printf '%s\n' "$_r" | grep -q '\[\]GATE=load' \
+    || die "ko_switch 文件缺失时应走默认加载（期望 []GATE=load，得到: $_r）"
+
+# 9b) 显式 0 -> ko_gate 跳过；显式 1 -> 加载
+printf '%s\n' 'macvlan=0' 'vkms=1' > "$_kot/switch"
+_r=$(DSL_KO_SWITCH="$_kot/switch" sh -c "$_dlog_stub; . '$_koh'; printf 'mv=%s ' \"\$(ko_switch_val macvlan)\"; printf 'vk=%s ' \"\$(ko_switch_val vkms)\"; ko_gate macvlan '' >/dev/null && printf 'A=load ' || printf 'A=skip '; ko_gate vkms '' >/dev/null && printf 'B=load' || printf 'B=skip'" 2>&1)
+printf '%s\n' "$_r" | grep -q 'mv=0 vk=1 A=skip B=load' \
+    || die "显式 0/1 判定不对（期望 mv=0 vk=1 A=skip B=load，得到: $_r）"
+
+# 9c) 畸形行：无 = 行、非法值、未知模块名 -> 被忽略，合法键仍正确
+printf '%s\n' 'oops-no-equals' 'macvlan=maybe' 'frobnicate=1' 'vkms=1' > "$_kot/switch"
+_r=$(DSL_KO_SWITCH="$_kot/switch" sh -c "$_dlog_stub; . '$_koh'; printf 'mv=%s vk=%s' \"\$(ko_switch_val macvlan)\" \"\$(ko_switch_val vkms)\"" 2>&1)
+printf '%s\n' "$_r" | grep -q 'mv= vk=1' \
+    || die "畸形行处理不对：非法 macvlan 值应忽略(空)、合法 vkms=1 应生效（期望 mv= vk=1，得到: $_r）"
+
+# 9d) 旧 disable_* 文件兼容：ko_switch 无该键时，旧文件存在 -> 跳过；
+#     ko_switch 显式 1 时，旧文件存在 -> 仍加载（ko_switch 优先）
+: > "$_kot/legacy_off"
+printf '%s\n' 'droid_lkm_cpu=1' > "$_kot/switch"
+_r=$(DSL_KO_SWITCH="$_kot/switch" sh -c "$_dlog_stub; . '$_koh'; ko_gate droid_lkm_pids '$_kot/legacy_off' >/dev/null && printf 'P=load ' || printf 'P=skip '; ko_gate droid_lkm_cpu '$_kot/legacy_off' >/dev/null && printf 'C=load' || printf 'C=skip'" 2>&1)
+printf '%s\n' "$_r" | grep -q 'P=skip C=load' \
+    || die "旧开关兼容不对：缺键+旧文件应跳过(P=skip)，显式=1应覆盖旧文件(C=load)（期望 P=skip C=load，得到: $_r）"
+
+# 9e) 注释与空行被忽略，不影响合法键
+printf '%s\n' '# a comment' '' 'mali_nsfix=0' > "$_kot/switch"
+_r=$(DSL_KO_SWITCH="$_kot/switch" sh -c "$_dlog_stub; . '$_koh'; printf '[%s]' \"\$(ko_switch_val mali_nsfix)\"" 2>&1)
+printf '%s\n' "$_r" | grep -q '\[0\]' \
+    || die "注释/空行应被忽略且不影响合法键（期望 [0]，得到: $_r）"
+
+rm -f "$_koh"
+rm -rf "$_kot"
 
 [ "$fail" -eq 0 ] && echo "static-check: all checks passed"
 exit "$fail"

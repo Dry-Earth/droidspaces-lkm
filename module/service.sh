@@ -207,6 +207,87 @@ case "$ROUTE" in
 esac
 dlog "route:   $ROUTE"
 
+# ---------------------------------------------------------------------------
+# 逐模块加载开关（ko_switch）
+#
+# 文件 $MODDIR/ko_switch 由 WebUI「模块」页写入（每行一条 <name>=<0|1>）。
+# 可用 DSL_KO_SWITCH 覆盖，CI 拿 fixture 测解析逻辑 —— 与 action.sh 里的
+# DSL_KERNEL_CONFIG 同模式。
+#
+# 优先级（从高到低）：
+#   1. ko_switch 里的显式值（1=加载 / 0=不加载）
+#   2. 旧的单文件开关（disable_pids / disable_cpu / disable_uart_guard /
+#      disable_mali / enable_vkms / mali_nsfix_dryrun）—— 向后兼容，仅在
+#      ko_switch 没有该键时生效
+#   3. route 逻辑与各模块默认（默认都加载）
+#
+# 文件缺失 / 为空 / 全畸形 = 全部走默认，启动不受任何影响。未知模块名、值
+# 不是 0/1、缺 = 的行一律忽略并 WARN 一次，绝不因为一行坏数据把别的模块带崩。
+# ---------------------------------------------------------------------------
+# BEGIN_KO_SWITCH_HELPERS  （scripts/ci_static_check.sh 会抽这一段单独跑真值测试，
+#                           改动下面的函数时不要动这一对标记）
+DSL_KO_NAMES="lkm4ctr devtmpfs_lkm ip6table_nat macvlan droid_lkm_pids droid_lkm_cpu uart_guard mali_nsfix vkms"
+DSL_KO_SWITCH=${DSL_KO_SWITCH:-/data/adb/modules/droidspaces_lkm/ko_switch}
+_ko_warned=0
+
+ko_known() {
+    local n
+    for n in $DSL_KO_NAMES; do
+        [ "$n" = "$1" ] && return 0
+    done
+    return 1
+}
+
+# ko_switch_val <name>：打印 1 / 0；未设置或值非法时打印空串（=走默认）。
+# 畸形行只在首次解析时 WARN 一次（_ko_warned 去重）。用 < 重定向而非管道，
+# 保证 while 循环里的赋值不会跑进子 shell 而丢掉。
+ko_switch_val() {
+    local want="$1" line key val out=""
+    [ -r "$DSL_KO_SWITCH" ] || return 0
+    if [ "$_ko_warned" = "0" ]; then
+        _ko_warned=1
+        while IFS= read -r line || [ -n "$line" ]; do
+            case "$line" in ''|'#'*) continue ;; esac
+            case "$line" in
+                *=*) : ;;
+                *) dlog "[WARN] ko_switch: ${M_KO_NOEQ} $line"; continue ;;
+            esac
+            key=${line%%=*}; val=${line#*=}
+            ko_known "$key" || dlog "[WARN] ko_switch: ${M_KO_UNKNOWN} $key"
+            case "$val" in
+                0|1) : ;;
+                *) dlog "[WARN] ko_switch: ${M_KO_BADVAL} $key=$val" ;;
+            esac
+        done < "$DSL_KO_SWITCH"
+    fi
+    while IFS= read -r line || [ -n "$line" ]; do
+        case "$line" in ''|'#'*) continue ;; esac
+        case "$line" in *=*) : ;; *) continue ;; esac
+        key=${line%%=*}; val=${line#*=}
+        [ "$key" = "$want" ] || continue
+        case "$val" in 0|1) out="$val" ;; esac
+    done < "$DSL_KO_SWITCH"
+    [ -n "$out" ] && printf '%s' "$out"
+    return 0
+}
+
+# ko_gate <base> [legacy_disable_file]：综合 ko_switch 与旧开关给出是否加载。
+# 返回 0=加载，1=跳过（并打日志说明原因）。
+ko_gate() {
+    local base="$1" legacy="$2" v
+    v=$(ko_switch_val "$base")
+    case "$v" in
+        0) dlog "[SKIP] $base ${M_KO_OFF_SWITCH}"; return 1 ;;
+        1) return 0 ;;
+    esac
+    if [ -n "$legacy" ] && [ -f "$legacy" ]; then
+        dlog "[SKIP] $base ${M_KO_OFF_LEGACY} ($(basename "$legacy"))"
+        return 1
+    fi
+    return 0
+}
+# END_KO_SWITCH_HELPERS
+
 # 选 ko: 优先精确 KMI, 否则退回目录里唯一的一组
 # 读 .ko 的 vermagic，和 uname -r 比"主版本.次版本"。只在无法确定 KMI
 # 时用，作为最后一道防线 —— 版本对不上的模块 insmod 必然失败。
@@ -473,23 +554,34 @@ dlog "${M_LOG_LOADING}"
 #   lkm4ctr-lite-<kmi>.ko  不带（给裁了 VFS 导出表的厂商内核）
 # 先试完整版；失败且 lite 存在时回退。lite 至少保住 PID/IPC/UTS namespace，
 # 也就是 Droidspaces 的硬性前提。
-load_mod lkm4ctr ""
-if ! mod_loaded lkm4ctr; then
-    if [ -f "$MODDIR/ko/lkm4ctr-lite-$KMI.ko" ]; then
-        dlog "$M_LITE_FALLBACK"
-        load_mod lkm4ctr-lite ""
-        if mod_loaded lkm4ctr-lite; then
-            dlog "$M_LITE_OK"
+#
+# lite 只是完整版的内部回退，不是给用户单独选的开关；所以 ko_switch 只认
+# lkm4ctr 这一个键。关掉它 = 两个变体都不加载，并在日志里显著提示后果。
+if ko_gate lkm4ctr ""; then
+    _v=$(ko_switch_val lkm4ctr)
+    [ "$_v" = "1" ] && dlog "[INFO] lkm4ctr ${M_KO_ON_SWITCH}"
+    load_mod lkm4ctr ""
+    if ! mod_loaded lkm4ctr; then
+        if [ -f "$MODDIR/ko/lkm4ctr-lite-$KMI.ko" ]; then
+            dlog "$M_LITE_FALLBACK"
+            load_mod lkm4ctr-lite ""
+            if mod_loaded lkm4ctr-lite; then
+                dlog "$M_LITE_OK"
+            else
+                dlog "$M_LITE_FAIL"
+            fi
         else
-            dlog "$M_LITE_FAIL"
+            dlog "$M_LITE_ABSENT"
         fi
-    else
-        dlog "$M_LITE_ABSENT"
     fi
+else
+    # 用户显式关掉 lkm4ctr：尊重选择，但它是容器 namespace 的前提，
+    # 后果必须在日志里说清楚（这是 9 个模块里唯一关掉会废掉核心功能的）。
+    [ "$(ko_switch_val lkm4ctr)" = "0" ] && dlog "[WARN] ${M_KO_LKM4CTR_WARN}"
 fi
-load_mod devtmpfs_lkm "devtmpfs_probe=2"
-load_mod ip6table_nat ""
-load_mod macvlan ""
+ko_gate devtmpfs_lkm "" && load_mod devtmpfs_lkm "devtmpfs_probe=2"
+ko_gate ip6table_nat "" && load_mod ip6table_nat ""
+ko_gate macvlan "" && load_mod macvlan ""
 # ---------------------------------------------------------------------------
 # 平台判定
 #
@@ -546,54 +638,76 @@ dlog "$(msg "$M_ROUTE_DEFAULT" "$ROUTE" "$([ -f "$MODDIR/route" ] || msg "$M_ROU
 # 会通过检查再失败。这也是不该把它做成运行时自动决策的理由。
 # 用绝对路径：此处 MODDIR 还是 ${0%/*} 的相对形式，脚本被以相对路径调用时
 # 会解析错；下面 L499 那处也重新赋成了绝对值，这里保持一致。
-case "$ROUTE" in
-    anland6)
-        dlog "$M_VKMS_ANLAND6"
-        ;;
-    desktop5)
-        if [ "$GPU_HAS_MALI" = "1" ]; then
-            dlog "$M_VKMS_FORCE"
-            load_mod_retry vkms "" 6 || true
-        else
-            dlog "$M_VKMS_ADRENO"
-        fi
-        ;;
-    *)
-        # auto：沿用 enable_vkms 开关
-        if [ -f "$DSM_DIR/enable_vkms" ]; then
-            # 原来是 load_mod + for 1..5 重试（共 6 次）。改用统一的有界重试，
-            # 次数保持一致（tries=6），日志标记不变。
-            load_mod_retry vkms "" 6 || true
-        else
-            dlog "[SKIP] ${M_SKIP_VKMS_OFF}"
-        fi
-        ;;
-esac
+_vks=$(ko_switch_val vkms)
+if [ "$_vks" = "0" ]; then
+    # 显式关闭：覆盖所有路线（包括 desktop5 的强制加载）
+    dlog "[SKIP] vkms ${M_KO_OFF_SWITCH} ${M_KO_OV_ROUTE}($ROUTE)"
+elif [ "$_vks" = "1" ]; then
+    # 显式开启：覆盖所有路线（包括 anland6/auto 的默认不加载）
+    dlog "[INFO] vkms ${M_KO_ON_SWITCH} ${M_KO_OV_ROUTE}($ROUTE)"
+    load_mod_retry vkms "" 6 || true
+else
+    case "$ROUTE" in
+        anland6)
+            dlog "$M_VKMS_ANLAND6"
+            ;;
+        desktop5)
+            if [ "$GPU_HAS_MALI" = "1" ]; then
+                dlog "$M_VKMS_FORCE"
+                load_mod_retry vkms "" 6 || true
+            else
+                dlog "$M_VKMS_ADRENO"
+            fi
+            ;;
+        *)
+            # auto：沿用 enable_vkms 开关
+            if [ -f "$DSM_DIR/enable_vkms" ]; then
+                # 原来是 load_mod + for 1..5 重试（共 6 次）。改用统一的有界重试，
+                # 次数保持一致（tries=6），日志标记不变。
+                load_mod_retry vkms "" 6 || true
+            else
+                dlog "[SKIP] ${M_SKIP_VKMS_OFF}"
+            fi
+            ;;
+    esac
+fi
 
 # cgroup 限流仿真（--cpus / --pids-limit）。
 # 装 kprobe 并在运行时解析符号，最坏表现是加载失败；
 # 放最后，失败不挡前面五个模块。
-# 想临时关掉：在模块目录放 disable_pids / disable_cpu。
+# 想临时关掉：ko_switch 里写 droid_lkm_pids=0 / droid_lkm_cpu=0，
+# 或在模块目录放旧开关 disable_pids / disable_cpu（二者等价，ko_switch 优先）。
 MODDIR="/data/adb/modules/droidspaces_lkm"
-[ -f "$MODDIR/disable_pids" ] || load_mod droid_lkm_pids ""
-[ -f "$MODDIR/disable_cpu" ] || load_mod droid_lkm_cpu ""
+ko_gate droid_lkm_pids "$MODDIR/disable_pids" && load_mod droid_lkm_pids ""
+ko_gate droid_lkm_cpu   "$MODDIR/disable_cpu" && load_mod droid_lkm_cpu ""
 
 # uart_guard：串口 sysfs 属性会去锁一个可能已损坏的 tty_port mutex，
 # 容器里的 udev 扫一遍 /sys/class/tty 就能把宿主打 panic。
 # 放最后，钩不上也不影响容器本身；想排查时看 dmesg 里的 uart_guard 行。
-[ -f "$MODDIR/disable_uart_guard" ] || load_mod uart_guard ""
+ko_gate uart_guard "$MODDIR/disable_uart_guard" && load_mod uart_guard ""
 
 # mali_nsfix：把 mali_kbase 的 find_get_pid 重定向到 group leader。
 # 只在 Mali 平台上加载 —— 它在 find_get_pid 这个热点函数上挂 kprobe，
 # 没有 mali_kbase 的设备装上纯属浪费。
 # 它在 GPU context 创建路径上，失败不影响容器本身。
 if [ "$GPU_HAS_MALI" = "1" ]; then
+    _ms=$(ko_switch_val mali_nsfix)
     case "$ROUTE" in
         desktop5)
-            dlog "$M_MALI_NS_FIX"
+            # desktop5 默认不装 mali_nsfix；ko_switch=1 时用户显式要求覆盖
+            if [ "$_ms" = "0" ]; then
+                dlog "[SKIP] mali_nsfix ${M_KO_OFF_SWITCH}"
+            elif [ "$_ms" = "1" ]; then
+                dlog "[INFO] mali_nsfix ${M_KO_ON_SWITCH} ${M_KO_OV_ROUTE}(desktop5)"
+                load_mod mali_nsfix ""
+            else
+                dlog "$M_MALI_NS_FIX"
+            fi
             ;;
         *)
-            if [ -f "$MODDIR/disable_mali" ]; then
+            if [ "$_ms" = "0" ]; then
+                dlog "[SKIP] mali_nsfix ${M_KO_OFF_SWITCH}"
+            elif [ -f "$MODDIR/disable_mali" ]; then
                 dlog "[SKIP] ${M_SKIP_MALI_DISABLE}"
             elif [ -f "$MODDIR/mali_nsfix_dryrun" ]; then
                 # 干跑：模块留在内核里但不挂钩，用来在没验证过的设备上先回答

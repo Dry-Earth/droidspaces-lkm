@@ -193,6 +193,18 @@ const DIAG_CMD = [
   `dmesg 2>/dev/null | grep -aE 'mali_nsfix|vkms|droid_lkm' | tail -n 20`
 ].join('; ');
 
+// 模块开关页：每个模块两行 —— sw:<name>=<1|0|-> (ko_switch 里的意图, -=未设置走默认)
+// 和 ld:<name>=<yes|no> (当前是否已加载)。
+const MODULES_CMD = [
+  ...MODULES.map((m) =>
+    `v=$(grep -E '^${m}=' ${MOD}/ko_switch 2>/dev/null | tail -1 | cut -d= -f2); ` +
+    `case "$v" in 1|0) : ;; *) v=- ;; esac; echo "sw:${m}=$v"`
+  ),
+  ...MODULES.map((m) =>
+    `grep -q '^${m} ' /proc/modules && echo "ld:${m}=yes" || echo "ld:${m}=no"`
+  )
+].join('; ');
+
 function parseKv(stdout) {
   const out = {};
   String(stdout).split('\n').forEach((line) => {
@@ -206,6 +218,11 @@ function parseKv(stdout) {
 
 let lastHome = null;
 let selectedRoute = 'auto';
+// 每个模块的开关意图：'' = 跟随默认/路线，'1' = 强制加载，'0' = 强制不加载。
+// 只在「模块」页刷新时由 ko_switch 内容初始化；用户改动后驻留在内存，
+// 点「应用」才落盘 —— 与路线页 selectedRoute 的模式一致。
+let moduleSel = {};
+let lastModules = null;
 
 function setNode(id, on, yesKey, noKey) {
   const el = $(id);
@@ -250,6 +267,49 @@ function markSelected(route) {
       chip.textContent = on ? t('route.selected') : '—';
       chip.className = `chip ${on ? 'on' : 'off'}`;
     }
+  });
+}
+
+/* 模块开关页渲染：每行 [名称 + 加载状态] + [默认/开/关] 三段选择。
+ * 意图来自 moduleSel（''/1/0）；当前加载状态来自 lastModules，仅作信息展示。
+ * lkm4ctr 被显式关掉时弹警告条（它是容器 namespace 的前提）。 */
+const SW_OPTS = ['', '1', '0'];
+const swLabel = (v) => t(v === '' ? 'modules.default' : v === '1' ? 'modules.on' : 'modules.off');
+
+function renderModules(d) {
+  lastModules = d;
+  const host = $('module-switches');
+  host.innerHTML = MODULES.map((m) => {
+    const ld = d[`ld:${m}`] === 'yes';
+    const seg = SW_OPTS.map((v) =>
+      `<button type="button" class="seg-btn" data-m="${m}" data-v="${v}">${swLabel(v)}</button>`
+    ).join('');
+    return (
+      `<div class="row sw-row">` +
+        `<span class="sw-name"><b>${m}</b>` +
+          `<small>${t('modules.state')} · ${t(ld ? 'state.loaded' : 'state.notLoaded')}</small></span>` +
+        `<span class="seg" data-seg="${m}">${seg}</span>` +
+      `</div>`
+    );
+  }).join('');
+  // 重新绑定：语言切换或刷新后 DOM 是新的
+  host.querySelectorAll('.seg-btn').forEach((b) => {
+    b.addEventListener('click', () => setSwitch(b.dataset.m, b.dataset.v));
+  });
+  markSwitches();
+  const lkmOff = moduleSel.lkm4ctr === '0';
+  $('lkm4ctr-warn').hidden = !lkmOff;
+}
+
+function setSwitch(name, val) {
+  moduleSel[name] = val;
+  markSwitches();
+  $('lkm4ctr-warn').hidden = !(moduleSel.lkm4ctr === '0');
+}
+
+function markSwitches() {
+  document.querySelectorAll('#module-switches .seg-btn').forEach((b) => {
+    b.classList.toggle('is-on', (moduleSel[b.dataset.m] ?? '') === b.dataset.v);
   });
 }
 
@@ -350,6 +410,39 @@ async function refreshDiag() {
   $('diag-out').textContent = r.stdout || r.stderr || t('diag.execFailed', { code: r.errno });
 }
 
+// 模块开关页：意图（sw:）用来初始化选择，加载状态（ld:）只做展示。
+// 每次进入页面都重新读文件，保证和磁盘上的 ko_switch 一致。
+async function refreshModules() {
+  const r = await sh(MODULES_CMD);
+  const d = parseKv(r.stdout);
+  moduleSel = {};
+  MODULES.forEach((m) => {
+    const v = d[`sw:${m}`];
+    moduleSel[m] = (v === '1' || v === '0') ? v : '';
+  });
+  renderModules(d);
+}
+
+async function applyModules() {
+  // 只把显式选择了开/关的键写进 ko_switch；「跟随默认」的模块不落盘 ——
+  // service.sh 里缺键 = 走旧开关/route/默认，这正是「跟随」的语义。
+  const lines = MODULES
+    .filter((m) => moduleSel[m] === '1' || moduleSel[m] === '0')
+    .map((m) => `${m}=${moduleSel[m]}`);
+  let cmd;
+  if (lines.length) {
+    // 模块名与 0/1 都是固定白名单字符，拼进 printf 的格式串安全；
+    // printf 会把 \n 解释成真正的换行，逐条写入 ko_switch。
+    cmd = `mkdir -p ${MOD} && printf '${lines.join('\\n')}\\n' > ${MOD}/ko_switch && sync`;
+  } else {
+    // 全部跟随默认 = 删除文件；service.sh 见不到文件即全走默认。
+    cmd = `rm -f ${MOD}/ko_switch && sync`;
+  }
+  const r = await sh(cmd);
+  toast(t(r.errno === 0 ? 'modules.toast.saved' : 'modules.toast.saveFailed'));
+  await refreshModules();
+}
+
 /* ======================= 交互 ======================= */
 
 let toastTimer = 0;
@@ -410,6 +503,7 @@ function switchView(target) {
   syncAppbar();
   if (target === 'view-diag') refreshDiag();
   if (target === 'view-home') refreshHome();
+  if (target === 'view-modules') refreshModules();
 }
 
 // 切换语言只重绘文本，不重新执行 shell 命令
@@ -420,6 +514,7 @@ async function changeLang(code) {
   markLang();
   markSelected(selectedRoute);
   if (lastHome) renderHome(lastHome);
+  if (lastModules) renderModules(lastModules);
   $('appbar-title').textContent = t(`tab.${currentView.replace('view-', '')}`);
 }
 
@@ -462,6 +557,7 @@ function hideRouteTabIfNotMtk() {
   });
   $('scroller').addEventListener('scroll', syncAppbar, { passive: true });
   $('apply-route').addEventListener('click', applyRoute);
+  $('apply-modules').addEventListener('click', applyModules);
   $('copy-diag').addEventListener('click', copyDiag);
   $('pack5').addEventListener('click', () => openLink(PACK5));
   $('pack6').addEventListener('click', () => openLink(PACK6));

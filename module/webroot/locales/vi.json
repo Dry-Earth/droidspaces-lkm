@@ -50,5 +50,16 @@
   "toast.saveFailed": "Không thể lưu tuyến",
   "toast.copied": "Đã sao chép",
   "toast.copyFailed": "Sao chép thất bại",
-  "toast.openFailed": "Không thể mở liên kết"
+  "toast.openFailed": "Không thể mở liên kết",
+  "tab.modules": "Modules",
+  "modules.title": "Module load switches",
+  "modules.desc": "Choose which .ko files load at boot. Default follows the built-in route logic. Takes effect after reboot.",
+  "modules.apply": "Apply (reboot required)",
+  "modules.state": "Boot state",
+  "modules.default": "Default",
+  "modules.on": "On",
+  "modules.off": "Off",
+  "modules.warnLkm4ctr": "lkm4ctr provides the container namespaces. Turning it off makes Droidspaces containers unable to start until it is re-enabled.",
+  "modules.toast.saved": "Module switches saved. Applies after reboot.",
+  "modules.toast.saveFailed": "Failed to save module switches"
 }

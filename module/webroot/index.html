@@ -26,6 +26,7 @@
     <symbol id="i-open" viewBox="0 0 24 24"><path d="M14 4h6v6M20 4l-9 9M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5"/></symbol>
     <symbol id="i-chev" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></symbol>
     <symbol id="i-check" viewBox="0 0 24 24"><path d="m5 12.5 4.5 4.5L19 7.5"/></symbol>
+    <symbol id="i-layers" viewBox="0 0 24 24"><path d="M12 3 3 7.5l9 4.5 9-4.5z"/><path d="m3 12.5 9 4.5 9-4.5M3 17l9 4.5L21 17"/></symbol>
   </defs>
 </svg>
 
@@ -107,6 +108,20 @@
       <button type="button" class="btn btn-block" id="apply-route" data-i18n="route.apply">Apply (reboot required)</button>
     </section>
 
+    <!-- 模块开关 -->
+    <section id="view-modules" class="page">
+      <h1 class="page-title" data-i18n="modules.title">Module load switches</h1>
+      <p class="page-desc" data-i18n="modules.desc">Choose which .ko files load at boot. Default follows the built-in route logic. Takes effect after reboot.</p>
+
+      <div id="lkm4ctr-warn" class="warn" hidden data-i18n="modules.warnLkm4ctr">Turning off lkm4ctr disables container namespaces.</div>
+
+      <div class="panel panel-rows" id="module-switches">
+        <div class="row"><span class="k">…</span></div>
+      </div>
+
+      <button type="button" class="btn btn-block" id="apply-modules" data-i18n="modules.apply">Apply (reboot required)</button>
+    </section>
+
     <!-- 诊断 -->
     <section id="view-diag" class="page">
       <h1 class="page-title" data-i18n="diag.title">Diagnostics</h1>
@@ -168,6 +183,10 @@
     <button type="button" class="tab" data-target="view-route">
       <span class="tab-pill"><svg class="ic"><use href="#i-route"/></svg></span>
       <span class="tab-label" data-i18n="tab.route">Route</span>
+    </button>
+    <button type="button" class="tab" data-target="view-modules">
+      <span class="tab-pill"><svg class="ic"><use href="#i-layers"/></svg></span>
+      <span class="tab-label" data-i18n="tab.modules">Modules</span>
     </button>
     <button type="button" class="tab" data-target="view-diag">
       <span class="tab-pill"><svg class="ic"><use href="#i-diag"/></svg></span>

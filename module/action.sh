@@ -83,6 +83,22 @@ else
 fi
 echo
 
+# 逐模块加载开关（WebUI「模块」页写入）。这里把每个模块的意图摊开成
+# 机器可读一行：switch=<1|0|default> loaded=<yes|no>，语言无关，脚本和
+# Issue 模板可直接 grep。default = ko_switch 没这一条，走旧开关/route/默认。
+echo "=== ${M_SEC_KOSWITCH} ==="
+[ -r "$MODDIR/ko_switch" ] || echo "  (${M_KO_FILE_ABSENT})"
+for _kn in lkm4ctr devtmpfs_lkm ip6table_nat macvlan droid_lkm_pids droid_lkm_cpu uart_guard mali_nsfix vkms; do
+    _kv=""
+    if [ -r "$MODDIR/ko_switch" ]; then
+        _kv=$(grep -E "^${_kn}=" "$MODDIR/ko_switch" 2>/dev/null | tail -1 | cut -d= -f2)
+    fi
+    case "$_kv" in 1|0) : ;; *) _kv=default ;; esac
+    _ld=no; grep -q "^${_kn} " /proc/modules 2>/dev/null && _ld=yes
+    echo "  ko_mod ${_kn} switch=${_kv} loaded=${_ld}"
+done
+echo
+
 echo "=== ${M_SEC_EXPORT} ==="
 # 构建期把每个 .ko 的未定义符号导成 ko/symcheck-<kmi>.txt。
 # 这里拿清单查 /proc/kallsyms 的 __ksymtab_ 条目 —— 直接报出「本内核缺哪些」，
