@@ -211,13 +211,22 @@ fi
 # 配置来源可以用 DSL_KERNEL_CONFIG 覆盖（CI 用 fixture 测判定逻辑）。
 # .gz 走 zcat，纯文本直接 cat —— 有些内核把 config 放成未压缩的 /proc/config。
 DSL_KERNEL_CONFIG=${DSL_KERNEL_CONFIG:-/proc/config.gz}
-if [ -r "$DSL_KERNEL_CONFIG" ]; then
-    case "$DSL_KERNEL_CONFIG" in
-        *.gz|*.xz) _kcfg=$(zcat "$DSL_KERNEL_CONFIG" 2>/dev/null) ;;
-        *)         _kcfg=$(cat "$DSL_KERNEL_CONFIG" 2>/dev/null) ;;
-    esac
 
-    cfg=$(printf '%s\n' "$_kcfg" | grep -E '^CONFIG_TMPFS_(XATTR|POSIX_ACL)=')
+# 读配置的唯一入口，一律用管道喂给 grep。
+#
+# 不要把整份 config 存进变量再 printf 出来：Android 的 /system/bin/printf
+# 是外部命令（toybox），单个参数受 MAX_ARG_STRLEN（128KB）限制，GKI 的
+# config 解压后约 260KB，printf 直接 "Argument list too long"，grep 拿到
+# 空输入，tmpfs / netfilter 的判定全部失真（v0.1.28 实测踩过）。
+_kcfg_read() {
+    case "$DSL_KERNEL_CONFIG" in
+        *.gz|*.xz) zcat "$DSL_KERNEL_CONFIG" 2>/dev/null ;;
+        *)         cat "$DSL_KERNEL_CONFIG" 2>/dev/null ;;
+    esac
+}
+
+if [ -r "$DSL_KERNEL_CONFIG" ]; then
+    cfg=$(_kcfg_read | grep -E '^CONFIG_TMPFS_(XATTR|POSIX_ACL)=')
     if printf '%s\n' "$cfg" | grep -q '^CONFIG_TMPFS_XATTR=y' && \
        printf '%s\n' "$cfg" | grep -q '^CONFIG_TMPFS_POSIX_ACL=y'; then
         echo "  [OK]   ${M_CAP_TMPFS}"
@@ -238,9 +247,10 @@ fi
 # 两者都是编译期配置，任何内核模块都补不齐。这里只如实报出来，让人知道
 # 该走 iptables-legacy + --network=host（见 README §10.5）。
 #
-# 复用上面已经读进来的 _kcfg，不再第二次解 gzip。
+# 复用 _kcfg_read 管道入口，不再把整份 config 存进变量（见上：Android 的
+# 外部 printf 单个参数限 128KB，260KB 的 config 会直接失败）。
 if [ -r "$DSL_KERNEL_CONFIG" ]; then
-    _nfcfg=$(printf '%s\n' "$_kcfg" |
+    _nfcfg=$(_kcfg_read |
         grep -E '^CONFIG_(NF_TABLES|BRIDGE_NETFILTER|IP_NF_IPTABLES|NETFILTER_XTABLES_COMPAT|IP_NF_NAT)=')
     _nft=$(printf '%s\n' "$_nfcfg" | grep -E '^CONFIG_NF_TABLES=' | head -1 | cut -d= -f2)
     _brf=$(printf '%s\n' "$_nfcfg" | grep -E '^CONFIG_BRIDGE_NETFILTER=' | head -1 | cut -d= -f2)
@@ -327,16 +337,19 @@ if [ -e /dev/mali0 ] || lsmod | grep -q '^mali_kbase'; then
         _drv=$(cat "$_p/nshf_driver" 2>/dev/null)
         _seen=$(cat "$_p/nshf_seen" 2>/dev/null)
         _hits=$(cat "$_p/nshf_hits" 2>/dev/null)
+        # 参数表示不统一：nshf_active 是 int（sysfs 显示 1/0），
+        # nshf_probe_ok / nshf_layout_valid 是 bool（sysfs 显示 Y/N）。
+        # 只认 "1" 会把明明校验通过的 bool 报成 FAIL，两种表示都要接受。
         case "$_act" in
-            1) echo "  [OK]   ${M_MALI_ACTIVE} (${M_MALI_DRIVER}=${_drv:-?})" ;;
+            1|Y|y) echo "  [OK]   ${M_MALI_ACTIVE} (${M_MALI_DRIVER}=${_drv:-?})" ;;
             *) echo "  [FAIL] ${M_MALI_DRY}" ;;
         esac
         case "$_probe" in
-            1) echo "  [OK]   ${M_MALI_PROBE_OK}" ;;
+            1|Y|y) echo "  [OK]   ${M_MALI_PROBE_OK}" ;;
             *) echo "  [FAIL] ${M_MALI_PROBE_NO}" ;;
         esac
         case "$_lay" in
-            1) : ;;
+            1|Y|y) : ;;
             *) echo "  [FAIL] ${M_MALI_LAYOUT_BAD}" ;;
         esac
         printf "         %s\n" "$(printf "$M_MALI_COUNT" "${_seen:-?}" "${_hits:-?}")"
