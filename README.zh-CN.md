@@ -277,8 +277,8 @@ Anland 6.x 宿主三件套
 > **用改版，不要装上游 6.2。** 上游有输入缺陷：软键盘文本到不了应用（终端什么都
 > 收不到）、应用窗口起不来（xdg configure serial 为 0）、X11 应用读不到剪贴板、
 > 重装模块还会让 socket 路径失效。当前发布：
-> [`misaka5202/anland 6.2-ds6`](https://github.com/misaka5202/anland/releases/tag/6.2-ds6) 与
-> [`misaka5202/anland-shell v1.1-ds73`](https://github.com/misaka5202/anland-shell/releases/tag/v1.1-ds73)。
+> [`misaka5202/anland`](https://github.com/misaka5202/anland/releases/latest)（宿主模块、APK、容器会话）与
+> [`misaka5202/anland-shell`](https://github.com/misaka5202/anland-shell/releases/latest)（启动器）。
 > 安装脚本已经默认从改版下载。
 
 一步到位用

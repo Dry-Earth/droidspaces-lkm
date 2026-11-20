@@ -53,8 +53,8 @@ compositor**, prefer the 6.x route. The matching 6.x image builder lives at
 **For 6.x use the fork, not upstream 6.2.** Upstream's input chain is broken
 (soft-keyboard text never reaches apps, xdg configure serial 0 means windows
 never appear, X11 apps cannot read the clipboard). The fork
-`misaka5202/anland` fixes all of it; releases are tagged `6.2-ds6` (shell:
-`misaka5202/anland-shell` `v1.1-ds73`).
+`misaka5202/anland` fixes all of it; releases are tagged `v6.2.N` (the shell,
+`misaka5202/anland-shell`, uses `v1.1.N`).
 
 ---
 

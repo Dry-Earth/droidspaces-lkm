@@ -43,8 +43,8 @@ Android 窗口，所以 stock 合成器不用改。
 
 **6.x 用改版，不要用上游 6.2**：上游的输入链有缺陷（软键盘文本到不了应用、
 xdg configure serial 为 0 导致窗口起不来、X11 应用读不到剪贴板），改版
-`misaka5202/anland` 全部修好，Release 为 `6.2-ds6`（shell 为
-`misaka5202/anland-shell` `v1.1-ds73`）。镜像构建器见
+`misaka5202/anland` 全部修好，Release 以 `v6.2.N` 标记（shell
+`misaka5202/anland-shell` 为 `v1.1.N`）。镜像构建器见
 [`misaka5202/Droidspaces-anland6-rootfs`](https://github.com/misaka5202/Droidspaces-anland6-rootfs)。
 
 如果你是 **Mali / MTK 设备且拿不到 patched 合成器**，优先考虑 6.x 路线。
