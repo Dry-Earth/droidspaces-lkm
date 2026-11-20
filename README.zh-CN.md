@@ -502,6 +502,55 @@ CPU limit 那一项也有一个容易被忽略的前提：Droidspaces 要求
 v0.1.27 已修复（见[第 9 节](#9-安全说明)）。更早的版本在容器启动、systemd 写
 `cgroup.subtree_control` 时可能 panic，升级到 v0.1.27+。
 
+### 10.5 Docker 起不来：`failed to create NAT chain DOCKER`
+
+```
+failed to start daemon: Error initializing network controller: error obtaining
+controller instance: failed to register "bridge" driver: failed to create NAT
+chain DOCKER: iptables failed: iptables --wait -t nat -N DOCKER: iptables
+v1.8.10 (nf_tables): Could not fetch rule set generation id: Invalid argument
+```
+
+**根因是两项编译期内核配置，任何内核模块都补不齐。** 所有 GKI 内核
+（`android12-5.10` 到 `android16-6.12`）都带 `CONFIG_IP_NF_IPTABLES=y`、
+`CONFIG_NETFILTER_XTABLES_COMPAT=y`、`CONFIG_IP_NF_NAT=y`，但**没有
+`CONFIG_NF_TABLES`**。`iptables-nft` 因此拿不到可用的 netfilter ABI，容器里
+每一条 `iptables` 命令都会以上面那个 `Invalid argument` 失败。此外 GKI 也
+**没有 `CONFIG_BRIDGE_NETFILTER`** —— 源码（`br_netfilter.c`）根本不在 GKI
+树里 —— 所以 Docker 默认的 `bridge` 网络模式在这里同样没有 NAT 可用。
+
+「操作」按钮现在会从 `/proc/config.gz` 把这两项如实报出来：
+
+```
+  [--]   没有 nf_tables —— iptables-nft 与本内核无法通信，请改用 iptables-legacy
+  [OK]   legacy iptables + IPv4 NAT（docker --bridge=none --network=host 可用）
+  [--]   docker bridge 拿不到 NAT（没有 BRIDGE_NETFILTER）—— 请用 --network=host
+  nft_status nf_tables=no legacy=yes ipv4_nat=y bridge_netfilter=no
+```
+
+**修法 A —— 宿主网络（GKI 上唯一可行的路子）**，与上游 `lkm4ctr` 手册一致：
+
+```sh
+# 宿主上
+sudo dockerd --config-file="$PREFIX/etc/docker/daemon.json" --bridge=none --experimental
+# 容器里
+sudo docker run --network=host --rm -it docker.io/library/alpine:latest /bin/sh
+```
+
+**修法 B —— 切 legacy iptables（能让 daemon 起来，但 bridge 上没有 NAT）。**
+在容器里把 `iptables` 指向 legacy 后端：
+
+```sh
+update-alternatives --set iptables  /usr/sbin/iptables-legacy
+update-alternatives --set ip6tables /usr/sbin/ip6tables-legacy
+```
+
+也可以用 `--iptables=false` 启动 daemon：Docker 能跑，但放弃端口映射与 NAT。
+
+> [!NOTE]
+> `droidspaces check` 全绿不代表 Docker 能跑：它证明的是内核设施存在，不是
+> 每个使用这些设施的功能都可用。见[第 2 节](#2-它修好什么)。
+
 ---
 
 ## 11. 重要提醒

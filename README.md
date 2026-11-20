@@ -577,6 +577,60 @@ Fixed in v0.1.27 (see [section 9](#9-security-notes)). Older builds could panic
 when systemd wrote `cgroup.subtree_control` during container startup; upgrade to
 v0.1.27+.
 
+### 10.5 Docker fails to start: `failed to create NAT chain DOCKER`
+
+```
+failed to start daemon: Error initializing network controller: error obtaining
+controller instance: failed to register "bridge" driver: failed to create NAT
+chain DOCKER: iptables failed: iptables --wait -t nat -N DOCKER: iptables
+v1.8.10 (nf_tables): Could not fetch rule set generation id: Invalid argument
+```
+
+**Cause — two compile-time kernel options, neither of which a module can
+supply.** Every GKI kernel (`android12-5.10` through `android16-6.12`) ships
+`CONFIG_IP_NF_IPTABLES=y`, `CONFIG_NETFILTER_XTABLES_COMPAT=y` and
+`CONFIG_IP_NF_NAT=y`, but **no `CONFIG_NF_TABLES`**. `iptables-nft` therefore
+has no netfilter ABI to talk to, and every `iptables` invocation inside the
+container dies with the `Invalid argument` above. On top of that, GKI has
+**no `CONFIG_BRIDGE_NETFILTER`** — the source (`br_netfilter.c`) is not even in
+the GKI tree — so Docker's default `bridge` network mode has no NAT to use
+there either.
+
+The Action button now reports both, from `/proc/config.gz`:
+
+```
+  [--]   nf_tables absent — iptables-nft cannot talk to this kernel; use iptables-legacy
+  [OK]   legacy iptables + IPv4 NAT (docker --bridge=none --network=host works)
+  [--]   docker bridge NAT unavailable (no BRIDGE_NETFILTER) — use --network=host
+  nft_status nf_tables=no legacy=yes ipv4_nat=y bridge_netfilter=no
+```
+
+**Fix A — host networking (the only route that works on GKI).** This is what
+the upstream `lkm4ctr` manual documents:
+
+```sh
+# on the host
+sudo dockerd --config-file="$PREFIX/etc/docker/daemon.json" --bridge=none --experimental
+# in the container
+sudo docker run --network=host --rm -it docker.io/library/alpine:latest /bin/sh
+```
+
+**Fix B — legacy iptables (makes the daemon start, keeps NAT off the bridge).**
+Inside the container, point `iptables` at the legacy backend:
+
+```sh
+update-alternatives --set iptables  /usr/sbin/iptables-legacy
+update-alternatives --set ip6tables /usr/sbin/ip6tables-legacy
+```
+
+Or start the daemon with `--iptables=false`, which lets Docker run but gives
+up port publishing and NAT.
+
+> [!NOTE]
+> A green `droidspaces check` does not mean Docker works: the check proves the
+> kernel facilities are present, not that every consumer of them works. See
+> [section 2](#2-what-it-fixes).
+
 ---
 
 ## 11. Important notes
