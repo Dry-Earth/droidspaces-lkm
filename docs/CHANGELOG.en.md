@@ -4,6 +4,52 @@ This is the English changelog.
 see [CHANGELOG.md](CHANGELOG.md). Version numbering rationale is documented
 there as well.
 
+## 0.1.29 - 2026-11-21
+
+### Added
+
+**A Modules tab in the WebUI, to choose per `.ko` whether it loads at boot.**
+The bottom bar grows a fifth tab (Home / Route / Modules / Diagnostics /
+About). Each module has three settings — **Default** (follow the built-in route
+logic; equivalent to making no change), **On** (force-load, overriding the
+route, e.g. loading vkms under anland6), **Off** (never load, overriding the
+route and any legacy `enable_*` file). Applying writes `module/ko_switch`
+(one `name=0|1` line per explicitly-changed module; Default writes nothing),
+effective after reboot.
+
+`service.sh` reads it in this precedence: an explicit `ko_switch` value > the
+legacy single-file switches (`disable_pids` / `disable_cpu` /
+`disable_uart_guard` / `disable_mali`) > the route logic and each module's
+default. A missing, empty or fully malformed file falls through safely to the
+defaults; one bad line (unknown name, value other than 0/1, missing `=`) is
+logged as a warning and ignored, never affecting other modules. Turning off
+`lkm4ctr` warns prominently in the page and the boot log (it provides the
+container namespaces). `action.sh doctor` adds a machine-readable
+`ko_mod <name> switch=… loaded=…` line per module.
+
+### Fixed
+
+**The Action button diagnostics are no longer broken by Android's `printf`
+argument limit.** On Android `printf` is an external command (toybox) whose
+single argument is capped by `MAX_ARG_STRLEN` (128KB). v0.1.28 stuffed the whole
+~260KB kernel config into a variable and passed it to `printf`, which failed
+with `Argument list too long`; the tmpfs ACL/xattr and netfilter checks then got
+empty input and reported wrong verdicts (e.g. `ipv4_nat=no` on a kernel with
+`CONFIG_IP_NF_NAT=y`). All config reads now go through a pipe.
+
+**The mali_nsfix probe and layout checks no longer always report FAIL.**
+`nshf_probe_ok` / `nshf_layout_valid` are bool module params, so sysfs renders
+them as `Y`/`N`, while `nshf_active` is an int rendered as `1`/`0`; matching only
+`1` reported the passing bool checks as `[FAIL]`. `1`/`Y`/`y` are all accepted
+now.
+
+### Documentation
+
+- README §1.2 (en + zh): the per-module load switches, the `ko_switch` file
+  format and precedence.
+- The WebUI five-tab description, the directory tree and the security note (the
+  WebUI now writes only two config files, `route` and `ko_switch`) are updated.
+
 ## 0.1.28 - 2026-11-20
 
 ### Fixed

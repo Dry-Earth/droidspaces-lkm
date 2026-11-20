@@ -55,8 +55,9 @@
 **九个里有八个开机加载**（带平台条件，见下），`vkms` 是例外、需要显式开启。
 三个补充模块（`droid_lkm_pids` / `droid_lkm_cpu` / `uart_guard`）排在最后，
 不会挡住前面五个：它们失败时设备照常开机、照常跑容器，只是少了对应的限额或
-tty 保护。想"装但不加载"某个，在模块目录放 `disable_pids` / `disable_cpu` /
-`disable_uart_guard` / `disable_mali` 文件即可；放 `mali_nsfix_dryrun` 则以
+tty 保护。想少加载几个模块，用 WebUI 的**模块**页逐模块开关（写入 `ko_switch`，见
+1.2 节）；或在模块目录放 `disable_pids` / `disable_cpu` /
+`disable_uart_guard` / `disable_mali` 文件；放 `mali_nsfix_dryrun` 则以
 不挂钩的干跑模式（`nshf_activate=0`）加载 mali_nsfix，用于预检。
 
 ### 1.1 按平台条件加载的模块
@@ -114,6 +115,40 @@ touch /data/adb/modules/droidspaces_lkm/enable_vkms
 
 Mali 容器还需要什么（Android 侧合成器配置、`dma-buf` 处理），见 RootFS 仓库的
 [桌面与 Anland 指南](https://github.com/misaka5202/Droidspaces-anland6-rootfs/blob/main/docs/zh/桌面与Anland.md)。
+
+### 1.2 逐模块加载开关（ko_switch）
+
+WebUI 的**模块**页可以逐个 `.ko` 选择开机是否加载，无需手动碰文件。每个模块三档：
+
+- **默认** —— 跟随内置的路线判定（没改动时页面显示的就是它），等价于 `ko_switch` 里没有这一条。
+- **开** —— 强制加载该模块，覆盖路线（例如在 `anland6` 下加载 `vkms`，或在 `desktop5` 下加载 `mali_nsfix`）。
+- **关** —— 永不加载该模块，覆盖路线以及任何旧的 `enable_*` 文件。
+
+应用后写入 `/data/adb/modules/droidspaces_lkm/ko_switch`，每个显式改动的模块一行
+`name=0|1`（选「默认」的不落盘）：
+
+```
+# 由「模块」页生成；'#' 开头的行与空行会被忽略
+lkm4ctr=1
+vkms=0
+droid_lkm_cpu=0
+```
+
+`service.sh` 按以下优先级读取（从高到低）：
+
+1. `ko_switch` 里的显式值（`1`=加载，`0`=不加载）；
+2. 旧的单文件开关（`disable_pids` / `disable_cpu` / `disable_uart_guard` /
+   `disable_mali`），仅当 `ko_switch` 没有该模块这一条时生效；
+3. `module/route` 路线判定与各模块默认。
+
+`ko_switch` 缺失 / 为空 / 全畸形时，完全落到第 2、3 层 —— 一行坏数据（未知模块名、
+值不是 0/1、缺少 `=`）只会被记一条警告并忽略，绝不影响其它模块。`action.sh doctor`
+会为每个模块打印机器可读的 `ko_mod <name> switch=<1|0|default> loaded=<yes|no>`
+行，重启后据此确认实际生效状态。
+
+> [!WARNING]
+> `lkm4ctr` 提供容器必需的 PID/IPC/UTS 命名空间。把它**关掉**会让 Droidspaces
+> 容器无法启动。选择时页面会警告，`service.sh` 开机也会记一条 `WARN`。
 
 ---
 
@@ -194,7 +229,7 @@ droidspaces check                          # 应显示 All required features fou
 # 显示路线与显示链路状态
 cat /data/adb/modules/droidspaces_lkm/route            # auto | anland6 | desktop5
 sh /data/adb/modules/droidspaces_lkm/action.sh doctor  # 一屏式状态
-# 或在 KernelSU 模块页打开本模块 WebUI：主页 / 切换路线 / 诊断 / 关于
+# 或在 KernelSU 模块页打开本模块 WebUI：主页 / 切换路线 / 模块 / 诊断 / 关于
 ```
 
 ---
@@ -244,9 +279,10 @@ sh /data/adb/modules/droidspaces_lkm/action.sh doctor  # 一屏式状态
 - **随时**：KernelSU 模块页打开本模块的 WebUI，单选后点「应用」，重启生效。
 - **命令行**：`action.sh route auto|anland6|desktop5`。
 
-WebUI（`webroot/`，Material You 风格 + 底栏四页签：主页 / 切换路线 / 诊断 /
+WebUI（`webroot/`，Material You 风格 + 底栏五页签：主页 / 切换路线 / 模块 / 诊断 /
 关于；MD3 与 MIUIx 两套主题，19 个语言 locale）随时可改路线；主页显示模块加载
-情况，诊断页给 route、`/dev/mali0`、`mali_kbase`、`nshf_*`、render node 与日志，
+情况，「模块」页逐个 `.ko` 选择开机是否加载（见 1.2 节），诊断页给 route、
+`/dev/mali0`、`mali_kbase`、`nshf_*`、render node 与日志，
 关于页放仓库与两个懒人包入口。
 
 ---
@@ -436,8 +472,9 @@ CPU limit 那一项也有一个容易被忽略的前提：Droidspaces 要求
   `BUG: scheduling while atomic ... ctl_subtree_pre [droid_lkm_pids]`，升级即可。
 - `mali_nsfix` 装钩子前会自校验 `struct module` 布局（错位会把无关的
   `find_get_pid` 调用也重定向掉），且运行期不解析任何符号；校验不过直接拒绝加载。
-- WebUI 是纯本地页面：`ksu.exec` 都以 root 执行，但只写 `module/route` 一个文件
-  （不做热 insmod/rmmod），除包内 locale 外不访问网络。
+- WebUI 是纯本地页面：`ksu.exec` 都以 root 执行，但只写 `module/route` 与
+  `module/ko_switch` 两个配置文件（不做热 insmod/rmmod，开关下次开机才生效），
+  除包内 locale 外不访问网络。
 
 ---
 
@@ -615,8 +652,9 @@ git push origin v0.1.27
 module/
 ├── module.prop        元数据；version 就是更新器比较的那个
 ├── route              显示路线：auto | anland6 | desktop5（安装期写入）
+├── ko_switch          逐模块加载开关（可选；WebUI「模块」页运行期生成）
 ├── customize.sh       安装期：架构/代际校验、音量键选路线、ui_print
-├── service.sh         late_start：按 route 决定加载哪些 .ko
+├── service.sh         late_start：按 route 与 ko_switch 决定加载哪些 .ko
 ├── post-fs-data.sh    开机循环保护 + pstore 现场捕获
 ├── boot-completed.sh  真正开机成功后才清零计数器
 ├── uninstall.sh       清理；刻意不 rmmod（原因见下）
