@@ -105,5 +105,59 @@ grep -q 'Droidspaces-rootfs-Desktop-builder' README.md \
 grep -q 'droidspaces-anland6-rootfs' README.md \
     || die "README.md 缺少 6.x 懒人包链接"
 
+# 8) Docker / iptables 诊断（issue #5）与 tmpfs ACL/xattr 诊断（issue #6）
+#
+# 两者都是**编译期内核配置**，任何内核模块都补不齐；模块侧只能如实报出来。
+# 这里验证：(a) 判定代码与文案键都在；(b) 判定逻辑在两种 fixture 下给出
+# 正确答案 —— 光 grep 代码形状挡不住把 =y 判成 =n 这类写反。
+for k in M_CAP_NF_NFT M_CAP_NF_NFT_MOD M_CAP_NF_NFT_NO M_CAP_NF_LEGACY \
+         M_CAP_NF_LEGACY_NO M_CAP_NF_BRIDGE M_CAP_NF_BRIDGE_NO M_CAP_NF_NA; do
+    grep -q "\b$k=" module/i18n.sh || die "i18n.sh 缺少 $k"
+    grep -q "$k" module/action.sh    || die "action.sh 未引用 $k"
+done
+for c in CONFIG_NF_TABLES CONFIG_BRIDGE_NETFILTER CONFIG_IP_NF_IPTABLES \
+         CONFIG_NETFILTER_XTABLES_COMPAT CONFIG_IP_NF_NAT; do
+    grep -q "$c" module/action.sh || die "action.sh 未检查 $c"
+done
+grep -q 'nft_status' module/action.sh || die "action.sh 缺少机器可读的 nft_status 行"
+grep -q 'CONFIG_TMPFS_XATTR' module/action.sh || die "action.sh 未检查 CONFIG_TMPFS_XATTR"
+grep -q 'M_CAP_TMPFS' module/action.sh || die "action.sh 缺少 tmpfs ACL/xattr 诊断"
+
+# 判定逻辑真值测试：用 fixture 覆盖内核 config 路径。
+# DSL_KERNEL_CONFIG 是 action.sh 里的覆盖口，CI 用它喂假 config。
+_fx=$(mktemp -d 2>/dev/null) || die "mktemp 不可用"
+cat > "$_fx/gki.config" <<'EOF'
+CONFIG_NETFILTER_XTABLES_COMPAT=y
+CONFIG_IP_NF_IPTABLES=y
+CONFIG_IP_NF_NAT=y
+CONFIG_BRIDGE=y
+CONFIG_TMPFS=y
+EOF
+cat > "$_fx/nft.config" <<'EOF'
+CONFIG_NF_TABLES=y
+CONFIG_BRIDGE_NETFILTER=y
+CONFIG_IP_NF_IPTABLES=y
+CONFIG_NETFILTER_XTABLES_COMPAT=y
+CONFIG_IP_NF_NAT=y
+CONFIG_TMPFS_XATTR=y
+CONFIG_TMPFS_POSIX_ACL=y
+EOF
+
+_out=$(DSL_KERNEL_CONFIG="$_fx/gki.config" sh module/action.sh 2>/dev/null)
+printf '%s\n' "$_out" | grep -q 'nft_status nf_tables=no legacy=yes .*bridge_netfilter=no' \
+    || die "GKI 形状的 config 判定不对（应为 nf_tables=no legacy=yes bridge_netfilter=no）"
+printf '%s\n' "$_out" | grep -q 'CONFIG_TMPFS_XATTR' \
+    && die "action.sh 把配置行原样打印出来了"
+
+_out=$(DSL_KERNEL_CONFIG="$_fx/nft.config" sh module/action.sh 2>/dev/null)
+printf '%s\n' "$_out" | grep -q 'nft_status nf_tables=yes legacy=yes .*bridge_netfilter=yes' \
+    || die "有 nf_tables 的 config 判定不对（应为 nf_tables=yes bridge_netfilter=yes）"
+
+# 没有 config 时必须标 NA，不能瞎猜
+_out=$(DSL_KERNEL_CONFIG="$_fx/does-not-exist" sh module/action.sh 2>/dev/null)
+printf '%s\n' "$_out" | grep -q 'nft_status nf_tables=unknown' \
+    || die "读不到内核 config 时应报 nft_status nf_tables=unknown"
+rm -rf "$_fx"
+
 [ "$fail" -eq 0 ] && echo "static-check: all checks passed"
 exit "$fail"

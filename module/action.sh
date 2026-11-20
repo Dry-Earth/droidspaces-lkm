@@ -207,15 +207,80 @@ fi
 # Operation not supported —— 编译期特性，LKM 无法补齐，只能容器侧绕开。
 # GKI 内核开了 IKCONFIG，/proc/config.gz 一读便知；没有 config.gz 的内核
 # 如实标注 NA。
-if [ -r /proc/config.gz ]; then
-    cfg=$(zcat /proc/config.gz 2>/dev/null | grep -E '^CONFIG_TMPFS_(XATTR|POSIX_ACL)=')
-    if echo "$cfg" | grep -q '^CONFIG_TMPFS_XATTR=y' && echo "$cfg" | grep -q '^CONFIG_TMPFS_POSIX_ACL=y'; then
+#
+# 配置来源可以用 DSL_KERNEL_CONFIG 覆盖（CI 用 fixture 测判定逻辑）。
+# .gz 走 zcat，纯文本直接 cat —— 有些内核把 config 放成未压缩的 /proc/config。
+DSL_KERNEL_CONFIG=${DSL_KERNEL_CONFIG:-/proc/config.gz}
+if [ -r "$DSL_KERNEL_CONFIG" ]; then
+    case "$DSL_KERNEL_CONFIG" in
+        *.gz|*.xz) _kcfg=$(zcat "$DSL_KERNEL_CONFIG" 2>/dev/null) ;;
+        *)         _kcfg=$(cat "$DSL_KERNEL_CONFIG" 2>/dev/null) ;;
+    esac
+
+    cfg=$(printf '%s\n' "$_kcfg" | grep -E '^CONFIG_TMPFS_(XATTR|POSIX_ACL)=')
+    if printf '%s\n' "$cfg" | grep -q '^CONFIG_TMPFS_XATTR=y' && \
+       printf '%s\n' "$cfg" | grep -q '^CONFIG_TMPFS_POSIX_ACL=y'; then
         echo "  [OK]   ${M_CAP_TMPFS}"
     else
         echo "  [--]   ${M_CAP_TMPFS_NO}"
     fi
 else
     echo "  [NA]   ${M_CAP_TMPFS_NA}"
+fi
+
+# Docker / iptables 能力（issue #5 的根因）。
+#
+# GKI 内核不带 nf_tables：iptables-nft 与内核没有可用的 nf_tables ABI，
+# 容器里报 "iptables v1.8.10 (nf_tables): Could not fetch rule set generation id:
+# Invalid argument"。同时 GKI 也没有 CONFIG_BRIDGE_NETFILTER（内核树里连
+# br_netfilter.c 都没有），docker 默认的 bridge 网络模式因此拿不到 NAT。
+#
+# 两者都是编译期配置，任何内核模块都补不齐。这里只如实报出来，让人知道
+# 该走 iptables-legacy + --network=host（见 README §10.5）。
+#
+# 复用上面已经读进来的 _kcfg，不再第二次解 gzip。
+if [ -r "$DSL_KERNEL_CONFIG" ]; then
+    _nfcfg=$(printf '%s\n' "$_kcfg" |
+        grep -E '^CONFIG_(NF_TABLES|BRIDGE_NETFILTER|IP_NF_IPTABLES|NETFILTER_XTABLES_COMPAT|IP_NF_NAT)=')
+    _nft=$(printf '%s\n' "$_nfcfg" | grep -E '^CONFIG_NF_TABLES=' | head -1 | cut -d= -f2)
+    _brf=$(printf '%s\n' "$_nfcfg" | grep -E '^CONFIG_BRIDGE_NETFILTER=' | head -1 | cut -d= -f2)
+    _ipt=$(printf '%s\n' "$_nfcfg" | grep -E '^CONFIG_IP_NF_IPTABLES=' | head -1 | cut -d= -f2)
+    _xtc=$(printf '%s\n' "$_nfcfg" | grep -E '^CONFIG_NETFILTER_XTABLES_COMPAT=' | head -1 | cut -d= -f2)
+    _nat=$(printf '%s\n' "$_nfcfg" | grep -E '^CONFIG_IP_NF_NAT=' | head -1 | cut -d= -f2)
+
+    # nft 内核 ABI：只有编成 y 才能直接用；=m 时要模块已加载才行。
+    case "$_nft" in
+        y) _nf_nft=yes; echo "  [OK]   ${M_CAP_NF_NFT}" ;;
+        m) _nf_nft=no;  echo "  [--]   ${M_CAP_NF_NFT_MOD}" ;;
+        *) _nf_nft=no;  echo "  [--]   ${M_CAP_NF_NFT_NO}" ;;
+    esac
+
+    # legacy iptables：xtables 兼容层 + IPv4 NAT 都要在。
+    # config 说 =m 而模块已经在跑（/proc/net/ip_tables_names 存在）也算可用 ——
+    # 那才是真实状态，config 只说明"能不能"。
+    _nf_legacy=no
+    if [ "$_ipt" = "y" ] && [ "$_xtc" = "y" ] && [ "$_nat" = "y" ]; then
+        _nf_legacy=yes
+    elif [ -e /proc/net/ip_tables_names ]; then
+        _nf_legacy=yes
+    fi
+    if [ "$_nf_legacy" = "yes" ]; then
+        echo "  [OK]   ${M_CAP_NF_LEGACY}"
+    else
+        echo "  [--]   ${M_CAP_NF_LEGACY_NO}"
+    fi
+
+    # bridge netfilter：docker 默认 bridge 模式做 NAT 的前提。
+    case "$_brf" in
+        y) echo "  [OK]   ${M_CAP_NF_BRIDGE}"; _nf_brf=yes ;;
+        *) echo "  [--]   ${M_CAP_NF_BRIDGE_NO}"; _nf_brf=no ;;
+    esac
+
+    # 机器可读一行：脚本和 Issue 模板可以直接 grep，不受语言影响
+    echo "  nft_status nf_tables=${_nf_nft} legacy=${_nf_legacy} ipv4_nat=${_nat:-no} bridge_netfilter=${_nf_brf}"
+else
+    echo "  [NA]   ${M_CAP_NF_NA}"
+    echo "  nft_status nf_tables=unknown legacy=unknown ipv4_nat=unknown bridge_netfilter=unknown"
 fi
 
 # 显示链路的两个不同要素，别混：
