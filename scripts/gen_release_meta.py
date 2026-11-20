@@ -47,10 +47,20 @@ def extract_entry(changelog: Path, version: str) -> str:
     text = changelog.read_text(encoding="utf-8", errors="replace")
     lines = text.split("\n")
 
+    # 标题形状有两种，两份 changelog 各用一种：
+    #   docs/CHANGELOG.md     -> "## v0.1.28"        （带 v）
+    #   docs/CHANGELOG.en.md  -> "## 0.1.28 - 2026-11-20"（不带 v，带日期）
+    #
+    # 原来只按传入的 version 原样匹配，于是 --version v0.1.28 在英文那份上
+    # 永远匹配不到 —— update.json 指向的 CHANGELOG-latest.md 会静默丢掉
+    # 整段英文，KernelSU 更新弹窗只剩中文。带不带 v 都要试。
+    bare = version[1:] if version.startswith("v") else version
+    patterns = [rf"^##\s+{re.escape(v)}(\s|$|—|-)"
+                for v in dict.fromkeys([version, bare, "v" + bare])]
+
     start = None
     for i, line in enumerate(lines):
-        # 标题可能写成 "## v0.1.23" 或 "## v0.1.23 — 说明"
-        if re.match(rf"^##\s+{re.escape(version)}(\s|$|—|-)", line):
+        if any(re.match(p, line) for p in patterns):
             start = i
             break
     if start is None:
