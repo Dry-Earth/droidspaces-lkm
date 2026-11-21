@@ -1,120 +1,83 @@
-## v0.1.28
-
-### 修复
-
-**`update.json` 指向的 changelog 不再丢英文段。** `scripts/gen_release_meta.py`
-切版本条目时只按传入的 `--version` 原样匹配标题，而两份 changelog 的标题形状
-不同：`docs/CHANGELOG.md` 是 `## v0.1.28`，`docs/CHANGELOG.en.md` 是
-`## 0.1.28 - 2026-11-20`（不带 `v`）。于是 `--version v0.1.28` 在英文那份上
-永远匹配不到，`docs/CHANGELOG-latest.md` 静默丢掉整段英文——KernelSU 更新
-弹窗只剩中文。现在两种形状都试。
+## v0.1.29
 
 ### 新增
 
-**「操作」按钮新增 Docker / iptables 能力诊断（[#5](https://github.com/misaka5202/droidspaces-lkm/issues/5)）。**
-从 `/proc/config.gz` 读 `CONFIG_NF_TABLES`、`CONFIG_BRIDGE_NETFILTER`、
-`CONFIG_IP_NF_IPTABLES`、`CONFIG_NETFILTER_XTABLES_COMPAT`、`CONFIG_IP_NF_NAT`，
-如实报出并给一行机器可读的 `nft_status`。这条诊断回答的是用户实际卡住的地方：
+**WebUI「模块」页：逐个 `.ko` 选择开机是否加载。** 底栏新增第五个页签
+（主页 / 切换路线 / 模块 / 诊断 / 关于）。每个模块三档——**默认**（跟随内置
+路线判定，与没有改动等价）、**开**（强制加载，覆盖路线，例如在 anland6 下加载
+vkms）、**关**（永不加载，覆盖路线与旧的 `enable_*` 文件）。应用时写入
+`module/ko_switch`（每行一条 `name=0|1`，选「默认」的不落盘），重启生效。
 
-```
-  [--]   没有 nf_tables —— iptables-nft 与本内核无法通信，请改用 iptables-legacy
-  [OK]   legacy iptables + IPv4 NAT（docker --bridge=none --network=host 可用）
-  [--]   docker bridge 拿不到 NAT（没有 BRIDGE_NETFILTER）—— 请用 --network=host
-  nft_status nf_tables=no legacy=yes ipv4_nat=y bridge_netfilter=no
-```
+`service.sh` 的读取优先级：`ko_switch` 显式值 > 旧的单文件开关
+（`disable_pids` / `disable_cpu` / `disable_uart_guard` / `disable_mali`）>
+路线判定与默认。文件缺失 / 为空 / 全畸形都安全回落到默认，单行坏数据（未知
+模块名、值不是 0/1、缺 `=`）只记一条警告并忽略，绝不影响其它模块。关掉
+`lkm4ctr` 会在页面和开机日志里显著警告（它提供容器必需的命名空间）。
+`action.sh doctor` 为每个模块补一行机器可读的 `ko_mod <name> switch=…
+loaded=…`。
 
-**「操作」按钮新增 tmpfs ACL/xattr 诊断（[#6](https://github.com/misaka5202/droidspaces-lkm/issues/6)）。**
-读 `CONFIG_TMPFS_XATTR` 与 `CONFIG_TMPFS_POSIX_ACL`，让用户一眼看到「容器内
-`setfacl` / `setcap` 会不会失败」。（该诊断的代码自 `4f8ed4be` 起就在仓库里，
-但那两次提交都晚于 v0.1.27 tag，所以已发布的包里没有它——本版本第一次把它
-发出去。）
+### 修复
+
+**「操作」按钮的诊断不再被 Android 的 `printf` 参数上限打断。** Android 上的
+`printf` 是外部命令（toybox），单个参数受 `MAX_ARG_STRLEN`（128KB）限制；v0.1.28
+把整份约 260KB 的内核 config 塞进一个变量再交给 `printf`，直接 `Argument list too
+long`，导致 tmpfs ACL/xattr 与 netfilter 两块判定拿到空输入、报错误结论（例如在
+`CONFIG_IP_NF_NAT=y` 的内核上报 `ipv4_nat=no`）。现在所有 config 读取统一走管道。
+
+**mali_nsfix 探针与布局校验不再恒报 FAIL。** `nshf_probe_ok` / `nshf_layout_valid`
+是 bool 模块参数，sysfs 渲染成 `Y`/`N`，而 `nshf_active` 是 int 渲染成 `1`/`0`；
+判定原来只认 `1`，把明明通过的 bool 校验报成 `[FAIL]`。现在 `1`/`Y`/`y` 都接受。
 
 ### 文档与说明
 
-- **README §10.5：Docker 起不来的完整排查**（中英文）。两个根因都是编译期内核
-  配置，任何内核模块都补不齐：七个 GKI KMI 的 `gki_defconfig` 全都没有
-  `CONFIG_NF_TABLES`（`iptables-nft` 没有可用的 netfilter ABI），也没有
-  `CONFIG_BRIDGE_NETFILTER`（GKI 树里连 `br_netfilter.c` 都没有，docker 默认的
-  bridge 模式因此拿不到 NAT）。给出两条可行路径：宿主
-  `dockerd --bridge=none` + 容器 `--network=host`（与上游 `lkm4ctr` 手册一致），
-  或在容器内切 `iptables-legacy`。
-- **部署文档 §11.1：容器内 tmpfs 的 setfacl / setcap**（[#[6](https://github.com/misaka5202/droidspaces-lkm/issues/6)）。
-  给出四条容器侧规避：静态 `resolv.conf`、`security.wrappers = { }`、关掉
-  bpf-firewall，以及用 `lxc.mount.entry` 把 `/run` 预挂到 ACL/xattr 可用的
-  data 分区。
-- WebUI 的性能与开机状态改进（缓存刷新、开机选项开关、黑名单提示、两次点击
-  确认重启）在 [PR #7](https://github.com/misaka5202/droidspaces-lkm/pull/7) 中，
-  等待真机回归后再合入——本版本**不含**这部分改动。
-
-### 引用
-
-- [#5 — Docker 启动失败：failed to create NAT chain DOCKER](https://github.com/misaka5202/droidspaces-lkm/issues/5)
-- [#6 — tmpfs xattr missing on MEIZU 21 Pro](https://github.com/misaka5202/droidspaces-lkm/issues/6)
-- [PR #7 — WebUI speed/UX + boot-state handling](https://github.com/misaka5202/droidspaces-lkm/pull/7)
+- README §1.2（中英文）：逐模块加载开关、`ko_switch` 文件格式与优先级规则。
+- WebUI 五页签描述、目录结构、安全说明（WebUI 现在只写 `route` 与 `ko_switch`
+  两个配置文件）同步更新。
 
 ---
 
-## 0.1.28 - 2026-11-20
-
-### Fixed
-
-**The changelog behind `update.json` no longer loses its English half.**
-`scripts/gen_release_meta.py` sliced the version entry by matching the
-`--version` argument verbatim, but the two changelogs use different heading
-shapes: `docs/CHANGELOG.md` writes `## v0.1.28`, `docs/CHANGELOG.en.md` writes
-`## 0.1.28 - 2026-11-20` (no `v`). So `--version v0.1.28` never matched the
-English file and `docs/CHANGELOG-latest.md` silently dropped the whole English
-section — the KernelSU update dialog showed Chinese only. Both shapes are now
-tried.
+## 0.1.29 - 2026-11-21
 
 ### Added
 
-**The Action button now reports Docker / iptables capability
-([#5](https://github.com/misaka5202/droidspaces-lkm/issues/5)).** It reads
-`CONFIG_NF_TABLES`, `CONFIG_BRIDGE_NETFILTER`, `CONFIG_IP_NF_IPTABLES`,
-`CONFIG_NETFILTER_XTABLES_COMPAT` and `CONFIG_IP_NF_NAT` from
-`/proc/config.gz`, prints the verdict and one machine-readable `nft_status`
-line. It answers the question users actually hit:
+**A Modules tab in the WebUI, to choose per `.ko` whether it loads at boot.**
+The bottom bar grows a fifth tab (Home / Route / Modules / Diagnostics /
+About). Each module has three settings — **Default** (follow the built-in route
+logic; equivalent to making no change), **On** (force-load, overriding the
+route, e.g. loading vkms under anland6), **Off** (never load, overriding the
+route and any legacy `enable_*` file). Applying writes `module/ko_switch`
+(one `name=0|1` line per explicitly-changed module; Default writes nothing),
+effective after reboot.
 
-```
-  [--]   nf_tables absent — iptables-nft cannot talk to this kernel; use iptables-legacy
-  [OK]   legacy iptables + IPv4 NAT (docker --bridge=none --network=host works)
-  [--]   docker bridge NAT unavailable (no BRIDGE_NETFILTER) — use --network=host
-  nft_status nf_tables=no legacy=yes ipv4_nat=y bridge_netfilter=no
-```
+`service.sh` reads it in this precedence: an explicit `ko_switch` value > the
+legacy single-file switches (`disable_pids` / `disable_cpu` /
+`disable_uart_guard` / `disable_mali`) > the route logic and each module's
+default. A missing, empty or fully malformed file falls through safely to the
+defaults; one bad line (unknown name, value other than 0/1, missing `=`) is
+logged as a warning and ignored, never affecting other modules. Turning off
+`lkm4ctr` warns prominently in the page and the boot log (it provides the
+container namespaces). `action.sh doctor` adds a machine-readable
+`ko_mod <name> switch=… loaded=…` line per module.
 
-**The Action button now reports tmpfs ACL/xattr capability
-([#6](https://github.com/misaka5202/droidspaces-lkm/issues/6)).** It reads
-`CONFIG_TMPFS_XATTR` and `CONFIG_TMPFS_POSIX_ACL`, so it is visible at a
-glance whether `setfacl` / `setcap` will fail inside a container. (The code
-has been in the tree since `4f8ed4be`, but both that commit and the
-documentation commit landed after the v0.1.27 tag, so no published package
-ever carried it — this release ships it for the first time.)
+### Fixed
+
+**The Action button diagnostics are no longer broken by Android's `printf`
+argument limit.** On Android `printf` is an external command (toybox) whose
+single argument is capped by `MAX_ARG_STRLEN` (128KB). v0.1.28 stuffed the whole
+~260KB kernel config into a variable and passed it to `printf`, which failed
+with `Argument list too long`; the tmpfs ACL/xattr and netfilter checks then got
+empty input and reported wrong verdicts (e.g. `ipv4_nat=no` on a kernel with
+`CONFIG_IP_NF_NAT=y`). All config reads now go through a pipe.
+
+**The mali_nsfix probe and layout checks no longer always report FAIL.**
+`nshf_probe_ok` / `nshf_layout_valid` are bool module params, so sysfs renders
+them as `Y`/`N`, while `nshf_active` is an int rendered as `1`/`0`; matching only
+`1` reported the passing bool checks as `[FAIL]`. `1`/`Y`/`y` are all accepted
+now.
 
 ### Documentation
 
-- **README §10.5: full troubleshooting for a Docker daemon that will not
-  start** (both languages). Both root causes are compile-time kernel options
-  that no module can supply: none of the seven GKI KMIs' `gki_defconfig`
-  carries `CONFIG_NF_TABLES` (so `iptables-nft` has no netfilter ABI to talk
-  to) and none carries `CONFIG_BRIDGE_NETFILTER` (`br_netfilter.c` is not even
-  in the GKI tree, so Docker's default bridge network has no NAT there
-  either). Two workable paths are given: host-side
-  `dockerd --bridge=none` plus `--network=host` in the container (as the
-  upstream `lkm4ctr` manual documents), or switching the container to
-  `iptables-legacy`.
-- **Deploy guide §11.1: container tmpfs `setfacl` / `setcap`**
-  ([#6](https://github.com/misaka5202/droidspaces-lkm/issues/6)). Four
-  container-side workarounds: a static `resolv.conf`, `security.wrappers =
-  { }`, turning bpf-firewall off, and pre-mounting `/run` from an
-  ACL/xattr-capable data partition via `lxc.mount.entry`.
-- WebUI performance and boot-state handling (cached refresh, boot option
-  switches, blacklist notice, two-tap reboot) live in
-  [PR #7](https://github.com/misaka5202/droidspaces-lkm/pull/7), pending
-  on-device regression — this release does **not** contain them.
-
-### References
-
-- [#5 — Docker fails to start: failed to create NAT chain DOCKER](https://github.com/misaka5202/droidspaces-lkm/issues/5)
-- [#6 — tmpfs xattr missing on MEIZU 21 Pro](https://github.com/misaka5202/droidspaces-lkm/issues/6)
-- [PR #7 — WebUI speed/UX + boot-state handling](https://github.com/misaka5202/droidspaces-lkm/pull/7)
+- README §1.2 (en + zh): the per-module load switches, the `ko_switch` file
+  format and precedence.
+- The WebUI five-tab description, the directory tree and the security note (the
+  WebUI now writes only two config files, `route` and `ko_switch`) are updated.
