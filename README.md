@@ -11,12 +11,21 @@
 
 > **English** | [简体中文](README.zh-CN.md)
 
+> [!NOTE]
+> **This fork** ([Dry-Earth/droidspaces-lkm](https://github.com/Dry-Earth/droidspaces-lkm))
+> adds an exact-kernel build channel for the OnePlus Ace 5 Pro (`hummer`,
+> LineageOS 24): the kernel and every module are compiled from the toolchain and
+> source revisions pinned by that OTA's `build-manifest.xml`, and only the
+> facilities the stock config lacks are built. Workflow usage, verified results
+> and field notes live in **[README-HUMMER.md](README-HUMMER.md)** (Chinese).
+
 ---
 
 ## User documentation
 
 | Document | What it covers |
 |----------|----------------|
+| [hummer exact-kernel build](README-HUMMER.md) | fork-specific: workflow inputs, config-driven module set, field notes (Chinese) |
 | [Releases](../../releases/latest) | pre-release downloads: combined + per-KMI zips + source snapshot |
 | [KMI coverage](docs/KMI-COVERAGE.en.md) | the exact per-KMI build matrix and the per-KMI build traps |
 | [Desktop & Anland guide](docs/ANLAND-DEPLOY.en.md) | Wayland desktop deployment, failure table, container tmpfs limits |
