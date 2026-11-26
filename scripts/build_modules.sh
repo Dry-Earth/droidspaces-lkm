@@ -19,6 +19,10 @@ KDIR="${2:?KDIR}"
 WS="${3:?WORKSPACE}"
 OUT="${4:?OUT}"
 NPROC="$(nproc 2>/dev/null || echo 4)"
+STOCK_CONFIG="${STOCK_CONFIG:-$WS/build-config/stock.config}"
+[ -s "$STOCK_CONFIG" ] || STOCK_CONFIG="$KDIR/.config"
+cfg_on() { grep -qE "^$1=(y|m)$" "$STOCK_CONFIG" 2>/dev/null; }
+log "config: $STOCK_CONFIG"
 
 mkdir -p "$OUT"
 FAILED=()
@@ -157,6 +161,9 @@ fi
 # 合成器(gbm_create_device + drmOpenRender)要的正是 render node。
 # ---------------------------------------------------------------------------
 log "=== vkms @ $KMI ==="
+if cfg_on CONFIG_DRM_VKMS; then
+    log "  skip: CONFIG_DRM_VKMS is already enabled"
+else
 SKIP_VKMS=0
 DST=/tmp/mod-vkms
 rm -rf "$DST"; mkdir -p "$DST"
@@ -206,10 +213,15 @@ else
     warn "vkms @ $KMI (内核树无源码)"
 fi
 
+fi
+
 # ---------------------------------------------------------------------------
 # 3) macvlan —— 内核树里的源码
 # ---------------------------------------------------------------------------
 log "=== macvlan @ $KMI ==="
+if cfg_on CONFIG_MACVLAN; then
+    log "  skip: CONFIG_MACVLAN is already enabled"
+else
 DST=/tmp/mod-macvlan
 rm -rf "$DST"; mkdir -p "$DST"
 if [ -n "$KSRC" ] && [ -f "$KSRC/drivers/net/macvlan.c" ]; then
@@ -227,12 +239,20 @@ else
     warn "macvlan @ $KMI (内核树无源码)"
 fi
 
+fi
+
 # ---------------------------------------------------------------------------
 # 4) devtmpfs_lkm / ip6table_nat —— 仓库内实现
 # ---------------------------------------------------------------------------
 for m in devtmpfs net_ip6nat; do
     SRC="$WS/extra/$m"
     [ -f "$SRC/Makefile" ] || continue
+    case "$m" in
+        devtmpfs)
+            cfg_on CONFIG_DEVTMPFS && { log "  skip: CONFIG_DEVTMPFS is already enabled"; continue; } ;;
+        net_ip6nat)
+            cfg_on CONFIG_IP6_NF_NAT && cfg_on CONFIG_IP6_NF_TARGET_MASQUERADE && { log "  skip: IPv6 nat is native"; continue; } ;;
+    esac
     log "=== $m @ $KMI ==="
     find "$SRC" -name '*.o' -delete 2>/dev/null || true
     find "$SRC" -name '.*.cmd' -delete 2>/dev/null || true
@@ -259,6 +279,10 @@ done
 for m in pids cpu; do
     SRC="$WS/extra/cgrouplimits"
     [ -f "$SRC/Makefile" ] || continue
+    case "$m" in
+        pids) cfg_on CONFIG_CGROUP_PIDS && { log "  skip: CONFIG_CGROUP_PIDS is already enabled"; continue; } ;;
+        cpu)  cfg_on CONFIG_CFS_BANDWIDTH && { log "  skip: CONFIG_CFS_BANDWIDTH is already enabled"; continue; } ;;
+    esac
     log "=== droid_lkm_$m @ $KMI ==="
     find "$SRC" -name '*.o' -delete 2>/dev/null || true
     find "$SRC" -name '.*.cmd' -delete 2>/dev/null || true
@@ -378,15 +402,23 @@ fi
   #
   # 所以这里明确点名缺失项并返回非 0：宁可这一格红，也不要发出残缺的包。
   # ---------------------------------------------------------------------
+  expected="lkm4ctr uart_guard"
+  cfg_on CONFIG_DEVTMPFS || expected="$expected devtmpfs_lkm"
+  cfg_on CONFIG_MACVLAN || expected="$expected macvlan"
+  { cfg_on CONFIG_IP6_NF_NAT && cfg_on CONFIG_IP6_NF_TARGET_MASQUERADE; } || expected="$expected ip6table_nat"
+  cfg_on CONFIG_CGROUP_PIDS || expected="$expected droid_lkm_pids"
+  cfg_on CONFIG_CFS_BANDWIDTH || expected="$expected droid_lkm_cpu"
+  cfg_on CONFIG_DRM_VKMS || expected="$expected vkms"
+  printf '%s\n' $expected > "$OUT/modules-built.txt"
   missing=""
-  for want in lkm4ctr devtmpfs_lkm ip6table_nat macvlan vkms droid_lkm_pids droid_lkm_cpu uart_guard; do
+  for want in $expected; do
       [ -f "$OUT/$want-$KMI.ko" ] || missing="$missing $want"
   done
   if [ -n "$missing" ]; then
-      echo "  [FAIL] $KMI 缺少模块:$missing"
-      echo "         残缺的模块包不能发布"
+      echo "  [FAIL] $KMI missing modules:$missing"
+      echo "         incomplete package is not published"
       exit 1
   fi
-  echo "  [OK] 8/8 模块齐全"
+  echo "  [OK] $(echo $expected | wc -w) modules built (config-driven)"
 
 exit 0
