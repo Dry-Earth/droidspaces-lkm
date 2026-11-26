@@ -7,7 +7,12 @@
 
 > [![Build](https://github.com/misaka5202/droidspaces-lkm/actions/workflows/build.yml/badge.svg)](https://github.com/misaka5202/droidspaces-lkm/actions/workflows/build.yml)
 
-> [**English**](README.md) | **简体中文**
+> [**English**](README-UPSTREAM.md) | **简体中文**
+
+> [!NOTE]
+> 本文件是**上游**中文文档。本 fork（一加 Ace 5 Pro / hummer）的精确内核构建、
+> 模块用法、`ko_switch` / `route`、工作流用法与验证记录见
+> **[README.md](README.md)**。
 
 ---
 
