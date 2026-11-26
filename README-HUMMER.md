@@ -19,8 +19,8 @@ ko_switch + i18n + lkm4ctr-lite），合并提交 `77901a4`。
 | kernel commit | `01ee97578159bc9cb2a60f559d20510ce33add6a` |
 | `droidspaces check` | **全部 ✓**（PID / IPC / userns / CPU limit / Process limit） |
 | userns | 真实 `struct user_namespace`：`unshare -Ur true` = 0，`uid_map` = `0 0 65536` |
-| 模块加载 | 本次应编的全部模块加载成功，`boot-completed` 正常，无卡死 |
-| App 识别 | `/proc/<init>/status` 有 `NSpid: <host> 1`，Droidspaces 显示“运行中” |
+| 模块加载 | `hummer-manifest-45852211799`：8/8 加载成功，`boot-completed` 正常，无卡死 |
+| App 识别 | 由 `0012` 补 `NSpid`；`/proc/<init>/status` 应出现 `NSpid: <host> 1`（待最新构建设备确认） |
 
 发布记录（ZIP 均为 `droidspaces-lkm-hummer-arm64.zip`）：
 
