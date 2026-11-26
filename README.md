@@ -87,6 +87,8 @@ init（`src/container/registry.c` 的 `is_container_init()`）。
 0012 用 `shadow_hook` 挂 `proc_pid_status`，按 `pid->numbers[]` 重建这段输出
 （逻辑与内核一致），只对 `pid->level > ns->level` 的进程追加，宿主进程不受影响。
 
+设备实测：装上带 0012 的包后，启动容器 App 立即显示“运行中”。
+
 ### 1.5 真实 user namespace
 
 userns 来自 lkm4ctr vendored 的 `vendor/kernel/user_namespace.c` / `nsproxy.c`，
@@ -360,7 +362,7 @@ lkm4ctr commit、每个 `.ko` 与 zip 的 sha256 —— 排查“装的哪一版
 
 ---
 
-## 5. 已验证状态（2026-11-26）
+## 5. 已验证状态（2026-11-27）
 
 设备：OnePlus Ace 5 Pro / LineageOS 24 / `boot-20261120-finasu-v3`
 
@@ -371,16 +373,27 @@ lkm4ctr commit、每个 `.ko` 与 zip 的 sha256 —— 排查“装的哪一版
 | `hummer-manifest-45862609906` | 同上 | + config-driven（本机 config 下产物相同） |
 | `hummer-manifest-45865204444` | `c3b9a92aa0de42def49a91f295de11f6d7adbaeaec13bb67b826e363b5b9ed76` | 上游 v0.1.29 + config-driven + 完整 WebUI + NSpid |
 
-已验证：
+已设备实测（`45865204444`）：
 
-- `droidspaces check` **全绿**，含 `Sandboxing (user namespaces)`
-- 8 个模块全部加载，`boot-completed` 正常，无卡死
-- `unshare -Ur true` = 0，`uid=0`，`uid_map`/`gid_map` = `0 0 1`，
-  范围映射 `0 0 65536` 通过
+- `droidspaces check` **全绿**：必需项全过；可选/推荐项里
+  `Sandboxing (user namespaces)`、`Macvlan`、`IPv6 NAT`、`CPU limit`、
+  `Process limit`、`Cgroup namespace` 全部打勾
+- **启动容器后 App 立即显示“运行中”** —— `0012` 的 NSpid 模拟生效
+  （`/proc/<init>/status` 出现 `NSpid: <host_pid> 1`）
+- 7 个模块加载：`lkm4ctr`、`devtmpfs_lkm`、`ip6table_nat`、`macvlan`、
+  `droid_lkm_pids`、`droid_lkm_cpu`、`uart_guard`
+- 两个 `[SKIP]` 均为预期：`vkms` 默认关闭（已有 Adreno 的 `renderD128`），
+  `mali_nsfix` 因无 `/dev/mali0` / `mali_kbase` 跳过
+- `droid_lkm_pids` 布局校验 `controllers=7 (built against 7)`；
+  `droid_lkm_cpu` `cpu.max emulation active`
+- `boot-completed` 已清零开机计数，无卡死
+
+早前 `45852211799` 的 userns 验证：
+
+- `unshare -Ur true` = 0，`uid=0`，`uid_map`/`gid_map` = `0 0 1`
+- 范围映射 `0 0 65536` 通过（父进程写子进程）
 - `unshare -Urm` + `mount -t tmpfs` 成功
-
-待设备确认：`NSpid` 出现后 App 是否立即显示“运行中”
-（`45865204444` 的 `lkm4ctr` 已确认含 `proc_pid_status` 补丁与正确 vermagic）。
+- 8 个模块（当时包含 `vkms`）全部加载
 
 ---
 
