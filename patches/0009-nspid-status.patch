@@ -1,0 +1,234 @@
+diff --git a/glue/vendor_kernel_status.c b/glue/vendor_kernel_status.c
+new file mode 100644
+index 0000000..db0be14
+--- /dev/null
++++ b/glue/vendor_kernel_status.c
+@@ -0,0 +1,108 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/*
++ * vendor_kernel_status.c - add the NStgid/NSpid/NSpgid/NSsid block that
++ * CONFIG_PID_NS=n compiles out of proc_pid_status().
++ *
++ * Droidspaces identifies a container init by the last field of
++ * /proc/<pid>/status NSpid.  Without CONFIG_PID_NS the kernel prints the
++ * whole block nowhere, even when a real (vendored) pid_namespace is in
++ * play, so the app concludes the container is not running.
++ *
++ * The block is rebuilt from struct pid->numbers[] exactly like
++ * fs/proc/array.c does when CONFIG_PID_NS is enabled.
++ */
++#include <linux/kernel.h>
++#include <linux/errno.h>
++#include <linux/sched.h>
++#include <linux/sched/signal.h>
++#include <linux/pid.h>
++#include <linux/pid_namespace.h>
++#include <linux/seq_file.h>
++#include <linux/string.h>
++
++#include "../vendor/vendor_kernel.h"
++#include "lkm4ctr_log.h"
++#include "shadow_hook.h"
++
++static int (*real_proc_pid_status)(struct seq_file *m,
++				   struct pid_namespace *ns, struct pid *pid,
++				   struct task_struct *task);
++static void (*vns_seq_puts_fn)(struct seq_file *m, const char *s);
++static void (*vns_seq_putc_fn)(struct seq_file *m, char c);
++static void (*vns_seq_dec_fn)(struct seq_file *m, const char *delimiter,
++			      unsigned long long num);
++static pid_t (*vns_task_pid_nr_ns_fn)(struct task_struct *task,
++				      enum pid_type type,
++				      struct pid_namespace *ns);
++static bool vns_status_resolved;
++
++static const char * const vendor_kernel_proc_pid_status_names[] = {
++	"proc_pid_status", NULL,
++};
++
++static void vns_status_resolve(void)
++{
++	if (READ_ONCE(vns_status_resolved))
++		return;
++
++	vns_seq_puts_fn = (void *)shadow_hook_resolve("seq_puts");
++	if (!vns_seq_puts_fn)
++		vns_seq_puts_fn = (void *)shadow_hook_resolve("__seq_puts");
++	vns_seq_putc_fn = (void *)shadow_hook_resolve("seq_putc");
++	vns_seq_dec_fn = (void *)shadow_hook_resolve("seq_put_decimal_ull");
++	vns_task_pid_nr_ns_fn =
++		(void *)shadow_hook_resolve("__task_pid_nr_ns");
++
++	WRITE_ONCE(vns_status_resolved, true);
++}
++
++static __nocfi noinline void vns_ns_lines(struct seq_file *m,
++					  struct task_struct *task,
++					  struct pid *pid, enum pid_type type,
++					  int from, int to)
++{
++	int g;
++
++	for (g = from; g <= to; g++)
++		vns_seq_dec_fn(m, "\t",
++			       (unsigned long long)vns_task_pid_nr_ns_fn(
++				       task, type, pid->numbers[g].ns));
++}
++
++static __nocfi noinline int vendor_kernel_hook_proc_pid_status(
++	struct seq_file *m, struct pid_namespace *ns, struct pid *pid,
++	struct task_struct *task)
++{
++	int ret;
++	int from, to;
++
++	ret = real_proc_pid_status(m, ns, pid, task);
++	if (ret || !task || !pid)
++		return ret;
++
++	vns_status_resolve();
++	if (!vns_seq_puts_fn || !vns_seq_putc_fn || !vns_seq_dec_fn ||
++	    !vns_task_pid_nr_ns_fn)
++		return ret;
++
++	from = READ_ONCE(ns->level);
++	to = READ_ONCE(pid->level);
++	if (to <= from)
++		return ret;
++
++	vns_seq_puts_fn(m, "\nNStgid:");
++	vns_ns_lines(m, task, pid, PIDTYPE_TGID, from, to);
++	vns_seq_puts_fn(m, "\nNSpid:");
++	vns_ns_lines(m, task, pid, PIDTYPE_PID, from, to);
++	vns_seq_puts_fn(m, "\nNSpgid:");
++	vns_ns_lines(m, task, pid, PIDTYPE_PGID, from, to);
++	vns_seq_puts_fn(m, "\nNSsid:");
++	vns_ns_lines(m, task, pid, PIDTYPE_SID, from, to);
++	vns_seq_putc_fn(m, '\n');
++
++	return ret;
++}
++
++struct shadow_hook vendor_kernel_proc_pid_status_hook =
++	SHADOW_HOOK(vendor_kernel_proc_pid_status_names,
++		    vendor_kernel_hook_proc_pid_status, &real_proc_pid_status);
+diff --git a/glue/vendor_kernel_syscalls.c b/glue/vendor_kernel_syscalls.c
+index 9334b4c..85f68be 100644
+--- a/glue/vendor_kernel_syscalls.c
++++ b/glue/vendor_kernel_syscalls.c
+@@ -61,6 +61,7 @@ static int (*real_copy_namespaces)(unsigned long flags,
+ 				   struct task_struct *task);
+ #endif
+ 
++extern struct shadow_hook vendor_kernel_proc_pid_status_hook;
+ static const char * const vendor_kernel_unshare_names[] = {
+ 	"__arm64_sys_unshare", "__x64_sys_unshare", "sys_unshare", NULL,
+ };
+@@ -528,9 +529,9 @@ void vns_native___put_user_ns(struct user_namespace *ns)
+ }
+ 
+ /*
+- * [MNT-USERNS] mount_capable() 补正。
++ * [MNT-USERNS] mount_capable() 补正�?
+  *
+- * 真实内核 fs/super.c：
++ * 真实内核 fs/super.c�?
+  *
+  *   bool mount_capable(struct fs_context *fc)
+  *   {
+@@ -539,20 +540,20 @@ void vns_native___put_user_ns(struct user_namespace *ns)
+  *       return ns_capable(fc->user_ns, CAP_SYS_ADMIN);
+  *   }
+  *
+- * 而 alloc_fs_context()（fs/fs_context.c）里的
++ * �?alloc_fs_context()（fs/fs_context.c）里�?
+  *
+  *   fc->user_ns = get_user_ns(fc->cred->user_ns);
+  *
+- * 在 CONFIG_USER_NS=n 下被编成 "= &init_user_ns"（get_user_ns() 的
+- * 该配置分支直接忽略参数），于是 fc->user_ns 永远是 init。tmpfs / proc /
+- * ramfs 都带 FS_USERNS_MOUNT，于是走到 ns_capable(init, CAP_SYS_ADMIN)，
+- * 而调用方的 cred 处在子 user namespace（level 1），cap_capable()
+- * 直接返回 -EPERM —— 表现为 userns 内 tmpfs/proc 挂载失败，而 bind
+- * mount（不新建 superblock，不经过 mount_capable）在同一环境里成功。
++ * �?CONFIG_USER_NS=n 下被编成 "= &init_user_ns"（get_user_ns() �?
++ * 该配置分支直接忽略参数），于�?fc->user_ns 永远�?init。tmpfs / proc /
++ * ramfs 都带 FS_USERNS_MOUNT，于是走�?ns_capable(init, CAP_SYS_ADMIN)�?
++ * 而调用方�?cred 处在�?user namespace（level 1），cap_capable()
++ * 直接返回 -EPERM —�?表现�?userns �?tmpfs/proc 挂载失败，�?bind
++ * mount（不新建 superblock，不经过 mount_capable）在同一环境里成功�?
+  *
+- * 这里只在"内核自己算错"的那一种情况下补正：fc->user_ns 仍是 init，
+- * 但当前 cred 已经在子 userns 里。符合该条件时按调用方真实 userns
+- * 重新判定一次 capability；其他情况一律用内核原本的结论，不改行为。
++ * 这里只在"内核自己算错"的那一种情况下补正：fc->user_ns 仍是 init�?
++ * 但当�?cred 已经在子 userns 里。符合该条件时按调用方真�?userns
++ * 重新判定一�?capability；其他情况一律用内核原本的结论，不改行为�?
+  */
+ static bool (*real_mount_capable)(struct fs_context *fc);
+ 
+@@ -568,20 +569,20 @@ static bool vendor_kernel_hook_mount_capable(struct fs_context *fc)
+ 		return true;
+ 
+ 	/*
+-	 * [SECURITY] 只补正"内核本来就会走 ns_capable()"的那一类文件系统。
++	 * [SECURITY] 只补�?内核本来就会�?ns_capable()"的那一类文件系统�?
+ 	 *
+ 	 * 真实 mount_capable() 分两种情况：
+ 	 *
+-	 *   带 FS_USERNS_MOUNT  -> ns_capable(fc->user_ns, CAP_SYS_ADMIN)
+-	 *   不带 FS_USERNS_MOUNT -> capable(CAP_SYS_ADMIN)   // 全局检查
++	 *   �?FS_USERNS_MOUNT  -> ns_capable(fc->user_ns, CAP_SYS_ADMIN)
++	 *   不带 FS_USERNS_MOUNT -> capable(CAP_SYS_ADMIN)   // 全局检�?
+ 	 *
+-	 * 前一种才是 CONFIG_USER_NS=n 把 fc->user_ns 钉死成 init 导致误判的
+-	 * 场景。后一种是内核刻意禁止在 user namespace 里挂载（ext4、块设备
+-	 * 文件系统等），绝不能改判成 ns_capable(cur) —— 那等于让容器内 root
+-	 * 拿到挂载任意文件系统的能力，是实打实的提权。
++	 * 前一种才�?CONFIG_USER_NS=n �?fc->user_ns 钉死�?init 导致误判�?
++	 * 场景。后一种是内核刻意禁止�?user namespace 里挂载（ext4、块设备
++	 * 文件系统等），绝不能改判�?ns_capable(cur) —�?那等于让容器�?root
++	 * 拿到挂载任意文件系统的能力，是实打实的提权�?
+ 	 *
+-	 * fc->user_ns 在 CONFIG_USER_NS=n 下恒为 init，无法用它区分这两种
+-	 * 情况，所以必须显式检查 FS_USERNS_MOUNT。
++	 * fc->user_ns �?CONFIG_USER_NS=n 下恒�?init，无法用它区分这两种
++	 * 情况，所以必须显式检�?FS_USERNS_MOUNT�?
+ 	 */
+ 	if (!fc || !fc->fs_type)
+ 		return false;
+@@ -681,16 +682,17 @@ struct shadow_hook *vendor_kernel_core_hooks[] = {
+ 	&vendor_kernel_copy_namespaces_hook,
+ 	&vendor_kernel_copy_creds_hook,
+ 	&vendor_kernel_mount_capable_hook,
++	&vendor_kernel_proc_pid_status_hook,
+ 	NULL,
+ };
+ 
+ /*
+- * [INLINE] 一个 hook 是否"就绪"。
++ * [INLINE] 一�?hook 是否"就绪"�?
+  *
+- * 原来这里只看 retprobe_installed：kprobe/ftrace 后端靠那个 retprobe 在重定向
+- * 期间持有模块引用。inline 后端不装 retprobe（见 shadow_hijack.c 的
+- * NO-RETPROBE 说明），卸载安全由"入口已恢复 + RCU 宽限期"保证，所以两种
+- * 任一成立都算就绪。
++ * 原来这里只看 retprobe_installed：kprobe/ftrace 后端靠那�?retprobe 在重定向
++ * 期间持有模块引用。inline 后端不装 retprobe（见 shadow_hijack.c �?
++ * NO-RETPROBE 说明），卸载安全�?入口已恢�?+ RCU 宽限�?保证，所以两�?
++ * 任一成立都算就绪�?
+  */
+ static bool vk_hook_ready(const struct shadow_hook *h)
+ {
+diff --git a/vendor/Makefile b/vendor/Makefile
+index fdba0e3..1fddae8 100644
+--- a/vendor/Makefile
++++ b/vendor/Makefile
+@@ -26,6 +26,7 @@ lkm4ctr-objs := \
+ 	../glue/helper.sh.o \
+ 	../glue/readme.txt.o \
+ 	../glue/shadow_hijack.o \
++	../glue/vendor_kernel_status.o \
+ 	../glue/shadow_inline.o \
+ 	../glue/vendor_hook_stubs.o \
+ 	../glue/hk/hk.o \
