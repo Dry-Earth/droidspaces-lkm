@@ -1,0 +1,4 @@
+# 统一行尾：这些文件在 Windows 上被编辑后也必须保持可直接使用
+*.sh      text eol=lf
+*.patch   -text
+*.py      text eol=lf

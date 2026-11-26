@@ -19,16 +19,37 @@ KDIR="${2:?KDIR}"
 WS="${3:?WORKSPACE}"
 OUT="${4:?OUT}"
 NPROC="$(nproc 2>/dev/null || echo 4)"
+LKM4CTR_DIR=${LKM4CTR_DIR:-/tmp/lkm4ctr}
+
+# 原厂 config：内核里已经有的能力不再编模块，只补缺的那几项。
+# CI 会把解包出来的 stock config 放在 build-config/stock.config。
 STOCK_CONFIG="${STOCK_CONFIG:-$WS/build-config/stock.config}"
 [ -s "$STOCK_CONFIG" ] || STOCK_CONFIG="$KDIR/.config"
 cfg_on() { grep -qE "^$1=(y|m)$" "$STOCK_CONFIG" 2>/dev/null; }
-log "config: $STOCK_CONFIG"
 
 mkdir -p "$OUT"
 FAILED=()
 
+# 构建期文案目录。i18n.sh 之后所有输出按 LKM4CTR_LANG / LANG 选语言，
+# 默认英文。里面的句子是 printf 格式串，变量在调用点替换。
+# $WS 在上面的 $3 已经赋值，直接用；从 $0 推路径在符号链接下会错。
+[ -f "$WS/scripts/i18n.sh" ] && . "$WS/scripts/i18n.sh"
+
 log() { echo ">>> $*"; }
 warn() { echo "::warning::$*"; FAILED+=("$*"); }
+
+log "config: $STOCK_CONFIG"
+
+# hk 引擎与 KallRecon 都是公共源码（仓库里只维护 extra/hk/ 与
+# extra/kallrecon/ 各一份），但 kbuild 的 M= 编译只接受模块目录内的对象，
+# 不能引用 ../*.o。所以编译前把源码复制进模块目录，构建结束随 .o 清理
+# 一起删掉（见 .gitignore）。
+stage_common() {
+    local src="$1"
+    rm -rf "$src/hk" "$src/kallrecon"
+    cp -r "$WS/extra/hk"      "$src/hk"
+    cp -r "$WS/extra/kallrecon" "$src/kallrecon"
+}
 
 
 # ---------------------------------------------------------------------------
@@ -49,7 +70,7 @@ reloc_audit() {
     bad=$(comm -12 "$objf" "$callf" 2>/dev/null)
     rm -f "$objf" "$callf"
     if [ -n "$bad" ]; then
-        warn "RELO C: $(basename "$ko") 对数据符号发起了函数调用（声明类型写错）:"
+        warn "$(printf "$B_RELOC_C" "$(basename "$ko")")"
         printf '%s
 ' "$bad" | while read -r x; do warn "        $x"; done
         return 1
@@ -62,13 +83,13 @@ reloc_audit() {
 KSRC=""
 if [ -n "${KSRC_OVERRIDE:-}" ] && [ -d "$KSRC_OVERRIDE" ]; then
     KSRC="$KSRC_OVERRIDE"
-else
+fi
 for c in "$KDIR" "$KDIR/../src" "/opt/ddk/src/$KMI" "/opt/ddk/kernel/$KMI"; do
+    [ -n "$KSRC" ] && break
     if [ -d "$c/drivers/gpu/drm" ] || [ -d "$c/drivers/net" ]; then
         KSRC="$c"; break
     fi
 done
-fi
 
 log "KMI=$KMI"
 log "KDIR=$KDIR"
@@ -106,17 +127,17 @@ if [ -n "$CFG" ]; then
         GUARD_CFLAGS="-fno-stack-protector"
         GUARD_MODE="global->disabled"
     fi
-    log "栈保护: 树=$GUARD_MODE 额外参数=[${GUARD_CFLAGS:-无}]"
+    log "$(printf "$B_STACK_PROBE" "$GUARD_MODE" "${GUARD_CFLAGS:-$B_NONE}")"
 else
-    warn "找不到 $KDIR/.config，栈保护模式无法判定；构建后会再做符号校验"
+    warn "$(printf "$B_NO_CONFIG" "$KDIR")"
 fi
 
 if [ -n "$KSRC" ]; then
-    log "源码树=$KSRC"
-    log "  vkms:    $([ -d "$KSRC/drivers/gpu/drm/vkms" ] && echo 有 || echo 无)"
-    log "  macvlan: $([ -f "$KSRC/drivers/net/macvlan.c" ] && echo 有 || echo 无)"
+    log "$B_SRC_TREE=$KSRC"
+    log "  vkms:    $([ -d "$KSRC/drivers/gpu/drm/vkms" ] && echo "$B_HAVE" || echo "$B_ABSENT")"
+    log "  macvlan: $([ -f "$KSRC/drivers/net/macvlan.c" ] && echo "$B_HAVE" || echo "$B_ABSENT")"
 else
-    warn "找不到内核源码树, 将退回仓库内副本"
+    warn "$B_NO_KSRC"
 fi
 
 # 把一组 .c 编成 obj-m := <mod>.o 形式的 Makefile
@@ -146,11 +167,35 @@ gen_makefile() {
 # 1) lkm4ctr —— 上游已做跨版本适配, 直接用
 # ---------------------------------------------------------------------------
 log "=== lkm4ctr @ $KMI ==="
-LKM4CTR_DIR=${LKM4CTR_DIR:-/tmp/lkm4ctr}
 if make -C "$KDIR" M="$LKM4CTR_DIR/vendor" LKM4CTR_LOG_DMESG=y KCFLAGS="$GUARD_CFLAGS" modules -j"$NPROC"; then
     cp "$LKM4CTR_DIR/vendor/lkm4ctr.ko" "$OUT/lkm4ctr-$KMI.ko" && log "  [OK]"
 else
     warn "lkm4ctr @ $KMI"
+fi
+
+# ---------------------------------------------------------------------------
+# 2) lkm4ctr_lite —— 不带 vendored overlayfs 的精简版
+#
+# 厂商裁掉一批 VFS EXPORT_SYMBOL 时，完整版会因为 overlayfs 那 19 个专属符号
+# 妆不上，连命名空间一起废掉。精简版把 overlayfs 全部排除，至少保住
+# PID/IPC/UTS namespace，也就是 Droidspaces 的硬性前提；overlay 用内核自带的
+# 那份（绝大多数 GKI 内核都有 CONFIG_OVERLAY_FS=y）。
+#
+# 必须是独立的 KBUILD_MODNAME（lkm4ctr_lite），不能只改文件名 —— 模块名来自
+# KBUILD_MODNAME，同名会让第二次 insmod 报 EEXIST，两个都装不上。
+#
+# 编之前先 clean：两个变体共用同一批 .o，不清理会拿到上一次的产物。
+# ---------------------------------------------------------------------------
+log "=== lkm4ctr_lite @ $KMI ==="
+make -C "$KDIR" M="$LKM4CTR_DIR/vendor" clean >/dev/null 2>&1 || true
+if make -C "$KDIR" M="$LKM4CTR_DIR/vendor" VNS_LITE=1 LKM4CTR_LOG_DMESG=y KCFLAGS="$GUARD_CFLAGS" modules -j"$NPROC"; then
+    if [ -f "$LKM4CTR_DIR/vendor/lkm4ctr_lite.ko" ]; then
+        cp "$LKM4CTR_DIR/vendor/lkm4ctr_lite.ko" "$OUT/lkm4ctr-lite-$KMI.ko" && log "  [OK]"
+    else
+        warn "lkm4ctr_lite @ $KMI (无产物)"
+    fi
+else
+    warn "lkm4ctr_lite @ $KMI"
 fi
 
 # ---------------------------------------------------------------------------
@@ -160,10 +205,10 @@ fi
 # 不会分配 render minor, 于是只有 card 没有 /dev/dri/renderD*。而 Wayland
 # 合成器(gbm_create_device + drmOpenRender)要的正是 render node。
 # ---------------------------------------------------------------------------
-log "=== vkms @ $KMI ==="
 if cfg_on CONFIG_DRM_VKMS; then
-    log "  skip: CONFIG_DRM_VKMS is already enabled"
+    log "=== vkms @ $KMI: skip (CONFIG_DRM_VKMS already enabled) ==="
 else
+log "=== vkms @ $KMI ==="
 SKIP_VKMS=0
 DST=/tmp/mod-vkms
 rm -rf "$DST"; mkdir -p "$DST"
@@ -177,13 +222,13 @@ if [ -n "$KSRC" ] && [ -d "$KSRC/drivers/gpu/drm/vkms" ]; then
     # 正则失效, 补丁静默没打上, 产物里的 vkms 只建 card 没有 render node。
     if ! grep -q 'DRIVER_RENDER' "$DST/vkms_drv.c" 2>/dev/null; then
         if ! python3 "$WS/scripts/patch_vkms_driver_features.py" "$DST/vkms_drv.c"; then
-            warn "vkms @ $KMI (DRIVER_RENDER 补丁失败)"
+            warn "$(printf "$B_VKMS_DR_PATCH" "$KMI")"
         fi
     fi
     # 二次确认: 没打上就不出货 —— 没有 DRIVER_RENDER 的 vkms 只能建 card,
     # 拿不到 render node, 对 Wayland 合成器完全没用
     if ! grep -q 'DRIVER_RENDER' "$DST/vkms_drv.c" 2>/dev/null; then
-        warn "vkms @ $KMI (driver_features 里没有 DRIVER_RENDER, 跳过出货)"
+        warn "$(printf "$B_VKMS_NO_DR" "$KMI")"
         SKIP_VKMS=1
     fi
 
@@ -193,14 +238,14 @@ if [ -n "$KSRC" ] && [ -d "$KSRC/drivers/gpu/drm/vkms" ]; then
     # "Unknown symbol" 装不上（实测 5.10.269-gki）。
     # 两处都是纯调试功能，去掉不影响 render node。
     if ! python3 "$WS/scripts/patch_vkms_debugfs.py" "$DST"; then
-        warn "vkms @ $KMI (DEBUG_FS 兼容补丁失败, 跳过出货)"
+        warn "$(printf "$B_VKMS_DEBUGFS" "$KMI")"
         SKIP_VKMS=1
     fi
 
     log "  driver_features: $(grep -h 'driver_features' "$DST/vkms_drv.c" 2>/dev/null | head -1 | tr -s ' ')"
 
     if [ "${SKIP_VKMS:-0}" = "1" ]; then
-        warn "vkms @ $KMI (补丁未生效, 不编译)"
+        warn "$(printf "$B_VKMS_PATCH_NOEFF" "$KMI")"
     else
         gen_makefile "$DST" vkms "-DCONFIG_DRM_VKMS=1"
         if make -C "$KDIR" M="$DST" KCFLAGS="$GUARD_CFLAGS" modules -j"$NPROC"; then
@@ -210,18 +255,17 @@ if [ -n "$KSRC" ] && [ -d "$KSRC/drivers/gpu/drm/vkms" ]; then
         fi
     fi
 else
-    warn "vkms @ $KMI (内核树无源码)"
+    warn "$(printf "$B_VKMS_NO_SRC" "$KMI")"
 fi
-
 fi
 
 # ---------------------------------------------------------------------------
 # 3) macvlan —— 内核树里的源码
 # ---------------------------------------------------------------------------
-log "=== macvlan @ $KMI ==="
 if cfg_on CONFIG_MACVLAN; then
-    log "  skip: CONFIG_MACVLAN is already enabled"
+    log "=== macvlan @ $KMI: skip (CONFIG_MACVLAN already enabled) ==="
 else
+log "=== macvlan @ $KMI ==="
 DST=/tmp/mod-macvlan
 rm -rf "$DST"; mkdir -p "$DST"
 if [ -n "$KSRC" ] && [ -f "$KSRC/drivers/net/macvlan.c" ]; then
@@ -229,6 +273,15 @@ if [ -n "$KSRC" ] && [ -f "$KSRC/drivers/net/macvlan.c" ]; then
     # 那个头必须从内核树的 include 路径解析。把副本塞进模块目录反而会因为它
     # 自己内部又 include 别的东西而失败 (表现为 "No such file or directory")
     cp "$KSRC/drivers/net/macvlan.c" "$DST/"
+    # [TRIM] 去掉三个在部分厂商内核上不导出的符号依赖：
+    #   ndo_dflt_fdb_dump  删掉赋值（NULL 时 rtnl_fdb_dump 本来就会回退到它）
+    #   __netif_rx         → netif_rx（同一条收包路径，后者所有内核都导出）
+    #   ip_check_defrag    → 恒等内联，跳过分片重组（唯一有语义损失的替换）
+    # 依据与取舍写在 scripts/patch_macvlan.py 的头注释里。
+    if [ -f "$WS/scripts/patch_macvlan.py" ]; then
+        python3 "$WS/scripts/patch_macvlan.py" "$DST/macvlan.c" || \
+            warn "$(printf "$B_MACVLAN_REWRITE" "$KMI")"
+    fi
     gen_makefile "$DST" macvlan "-DCONFIG_MACVLAN=1"
     if make -C "$KDIR" M="$DST" KCFLAGS="$GUARD_CFLAGS" modules -j"$NPROC"; then
         cp "$DST/macvlan.ko" "$OUT/macvlan-$KMI.ko" && log "  [OK]"
@@ -236,9 +289,8 @@ if [ -n "$KSRC" ] && [ -f "$KSRC/drivers/net/macvlan.c" ]; then
         warn "macvlan @ $KMI"
     fi
 else
-    warn "macvlan @ $KMI (内核树无源码)"
+    warn "$(printf "$B_MACVLAN_NO_SRC" "$KMI")"
 fi
-
 fi
 
 # ---------------------------------------------------------------------------
@@ -249,13 +301,15 @@ for m in devtmpfs net_ip6nat; do
     [ -f "$SRC/Makefile" ] || continue
     case "$m" in
         devtmpfs)
-            cfg_on CONFIG_DEVTMPFS && { log "  skip: CONFIG_DEVTMPFS is already enabled"; continue; } ;;
+            cfg_on CONFIG_DEVTMPFS && { log "=== $m @ $KMI: skip (CONFIG_DEVTMPFS already enabled) ==="; continue; } ;;
         net_ip6nat)
-            cfg_on CONFIG_IP6_NF_NAT && cfg_on CONFIG_IP6_NF_TARGET_MASQUERADE && { log "  skip: IPv6 nat is native"; continue; } ;;
+            cfg_on CONFIG_IP6_NF_NAT && cfg_on CONFIG_IP6_NF_TARGET_MASQUERADE && \
+                { log "=== $m @ $KMI: skip (IPv6 NAT already enabled) ==="; continue; } ;;
     esac
     log "=== $m @ $KMI ==="
     find "$SRC" -name '*.o' -delete 2>/dev/null || true
     find "$SRC" -name '.*.cmd' -delete 2>/dev/null || true
+    stage_common "$SRC"
     if make -C "$KDIR" M="$SRC" KCFLAGS="$GUARD_CFLAGS" modules -j"$NPROC"; then
         case "$m" in
             devtmpfs)   cp "$SRC"/devtmpfs_lkm.ko "$OUT/devtmpfs_lkm-$KMI.ko" ;;
@@ -280,11 +334,12 @@ for m in pids cpu; do
     SRC="$WS/extra/cgrouplimits"
     [ -f "$SRC/Makefile" ] || continue
     case "$m" in
-        pids) cfg_on CONFIG_CGROUP_PIDS && { log "  skip: CONFIG_CGROUP_PIDS is already enabled"; continue; } ;;
-        cpu)  cfg_on CONFIG_CFS_BANDWIDTH && { log "  skip: CONFIG_CFS_BANDWIDTH is already enabled"; continue; } ;;
+        pids) cfg_on CONFIG_CGROUP_PIDS && { log "=== droid_lkm_$m @ $KMI: skip (CONFIG_CGROUP_PIDS already enabled) ==="; continue; } ;;
+        cpu)  cfg_on CONFIG_CFS_BANDWIDTH && { log "=== droid_lkm_$m @ $KMI: skip (CONFIG_CFS_BANDWIDTH already enabled) ==="; continue; } ;;
     esac
     log "=== droid_lkm_$m @ $KMI ==="
     find "$SRC" -name '*.o' -delete 2>/dev/null || true
+    stage_common "$SRC"
     find "$SRC" -name '.*.cmd' -delete 2>/dev/null || true
     find "$SRC" -name '*.ko' -delete 2>/dev/null || true
     find "$SRC" -name '*.mod' -delete 2>/dev/null || true
@@ -297,13 +352,13 @@ for m in pids cpu; do
           # 符号类型自检：防止"函数指针变量被误声明成函数"这类
           # 符号名对得上、运行时语义全错的问题流出去
           if ! reloc_audit "$OUT/droid_lkm_$m-$KMI.ko"; then
-              warn "droid_lkm_$m @ $KMI 符号类型自检失败，已删除产物"
+              warn "$(printf "$B_DLM_AUDIT" "$m" "$KMI")"
               rm -f "$OUT/droid_lkm_$m-$KMI.ko"
               continue
           fi
             log "  [OK]"
         else
-            warn "droid_lkm_$m @ $KMI (没有产物)"
+            warn "$(printf "$B_DLM_NOPROD" "$m" "$KMI")"
         fi
     else
         warn "droid_lkm_$m @ $KMI"
@@ -334,7 +389,7 @@ if [ -d "$UG" ]; then
         if [ -f "$UG/uart_guard.ko" ]; then
             cp "$UG/uart_guard.ko" "$OUT/uart_guard-$KMI.ko" && log "  [OK]"
         else
-            warn "uart_guard @ $KMI (没有产物)"
+            warn "$(printf "$B_UART_NOPROD" "$KMI")"
         fi
     else
         warn "uart_guard @ $KMI"
@@ -344,8 +399,55 @@ if [ -d "$UG" ]; then
     find "$UG" -name '*.ko' -delete 2>/dev/null || true
     rm -f "$UG"/modules.order "$UG"/Module.symvers 2>/dev/null || true
 else
-    warn "uart_guard @ $KMI (缺少 extra/uart_guard)"
+    warn "$(printf "$B_UART_NOSRC" "$KMI")"
 fi
+
+# ---------------------------------------------------------------------------
+# mali_nsfix —— 让 Mali kbase 驱动在 PID namespace 里可用
+#
+# kbase_create_context() 用 task_struct->tgid（init ns 的值）去 find_get_pid()，
+# 而 find_get_pid → find_vpid 在调用者的 ns 里查；容器内两者不等，查找失败，
+# GPU context 创建被拒（-ESRCH，"Failed to get pid pointer"）。
+# 本模块 kprobe find_get_pid，调用者位于 mali_kbase* 模块内时返回调用者自己的
+# group_leader —— 宿主机进程本来就是这个结果，所以对 Android 是无操作。
+#
+# 实验性：只编译，不进完整性断言；编译失败只警告，不阻断发布。
+# ---------------------------------------------------------------------------
+log "=== mali_nsfix @ $KMI ==="
+# ftrace 后端能否编译进去取决于构建树的 config。DDK 是构建树，设备内核是
+# 厂商自己编的 —— 两者 config 不一定相同，所以这里把实际值打出来。
+# CONFIG_DYNAMIC_FTRACE_WITH_REGS 决定 struct ftrace_regs / ftrace_get_regs
+# 是否存在；没有它整个 ftrace 路径会被 #if 编译掉，只剩 kprobe。
+if [ -f "$KDIR/.config" ]; then
+    _ft=$(grep -E '^#? ?CONFIG_(DYNAMIC_FTRACE|DYNAMIC_FTRACE_WITH_REGS|FUNCTION_TRACER|HAVE_DYNAMIC_FTRACE_WITH_REGS)' "$KDIR/.config" 2>/dev/null | tr '\n' ' ')
+    log "  ftrace config: ${_ft:-未找到相关项}"
+else
+    log "  ftrace config: 无 $KDIR/.config"
+fi
+
+MN="$WS/extra/mali_nsfix"
+if [ -d "$MN" ]; then
+    find "$MN" -name '*.o' -delete 2>/dev/null || true
+    find "$MN" -name '.*.cmd' -delete 2>/dev/null || true
+    find "$MN" -name '*.ko' -delete 2>/dev/null || true
+    rm -f "$MN"/modules.order "$MN"/Module.symvers 2>/dev/null || true
+    if make -C "$KDIR" M="$MN" KCFLAGS="$GUARD_CFLAGS" modules -j"$NPROC"; then
+        if [ -f "$MN/mali_nsfix.ko" ]; then
+            cp "$MN/mali_nsfix.ko" "$OUT/mali_nsfix-$KMI.ko" && log "  [OK]"
+        else
+            warn "$(printf "$B_MALI_NOPROD" "$KMI")"
+        fi
+    else
+        warn "$(printf "$B_MALI_FAIL" "$KMI")"
+    fi
+    find "$MN" -name '*.o' -delete 2>/dev/null || true
+    find "$MN" -name '.*.cmd' -delete 2>/dev/null || true
+    find "$MN" -name '*.ko' -delete 2>/dev/null || true
+    rm -f "$MN"/modules.order "$MN"/Module.symvers 2>/dev/null || true
+else
+    warn "$(printf "$B_MALI_NOSRC" "$KMI")"
+fi
+
 
 
 # ---------------------------------------------------------------------------
@@ -355,22 +457,77 @@ fi
 # "unknown symbol in module"，我们这边什么信号都没有。这里把已知在部分
 # 内核上不存在的符号直接查出来，在 CI 就报。
 #
-# 已知清单：
+# 已知清单（按来源分组）：
+#
+# A. 内核配置差异（不是裁剪）
 #   __stack_chk_guard      5.10 GKI 是 PER_TASK 模式，全局符号不存在
+#                          -> 构建期用 -fno-stack-protector 规避
 #   cgroup_rm_cftypes      5.10 里存在但没 EXPORT_SYMBOL_GPL（6.1 才加）
+#                          -> cpu_mod/pids_mod 走 cpu_ksym() 运行时解析
 #   drm_crtc_add_crc_entry 属 drm.ko 的模块依赖，加载时序不对就缺
-#   任何 _trace_android_vh_*  vendor hook，不是所有厂商内核都开
+#                          -> patch_vkms_debugfs.py 去掉调用
+#   drmm_crtc_init_with_planes
+#                          6.12 厂商内核（小米系）只裁了较新的 drmm_ 版
+#                          -> 换成签名完全相同的 drm_crtc_init_with_planes
+#                          （两者都 variadic，上游都 EXPORT_SYMBOL）
+#                          实测：K90PM / 一加15 / 6.12.23-android16-5
+#
+# B. CONFIG_TRIM_UNUSED_KSYMS 一类（厂商只保留树内模块用到的导出）
+#   以下全部已通过 VNS_OVL_VFS_COMPAT_LIST + shadow_hook_resolve 运行时解析，
+#   或同名转发函数（/glue/vendor_kernel_ovl_vfs_compat.c）处理：
+#
+#   file_remove_privs / seq_escape_mem / kill_pid
+#       来自 vendored overlayfs 与 diag 路径。实测 Meizu 21 Pro /
+#       Flyme 12.7 / 6.1.25-android14-11（issue #2）。
+#   path_put / kern_path
+#       droid_lkm_cpu 的路径解析用。
+#   ip_check_defrag / __netif_rx / ndo_dflt_fdb_dump
+#       macvlan 从内核树源码编出来时引用的 IPv4/netdev 符号。
+#       注意 __netif_rx 在 5.18 之后已从主线移除 —— 出现它说明
+#       编译用的内核树比目标内核老，这类符号永远不可能在目标上解析到。
+#   get_next_ino
+#       mqueue / diagfs 用。6.12 厂商内核裁掉（issue #3 / #4）。
+#       -> 三层清单都列 + 同名转发函数
+#   cgroup_add_dfl_cftypes
+#       droid_lkm_cpu / droid_lkm_pids 用。原来直接调用，6.12 上未导出
+#       （issue #3 / #4）-> 改走 cpu_ksym() / kallrecon_klp()
+#   __dev_forward_skb / dev_forward_skb / dev_mc_add_excl / dev_uc_add_excl
+#   eth_header_cache / eth_header_cache_update
+#       macvlan 用。6.12 上连 dev_forward_skb 都没导出，所以不能靠「换名字」
+#       -> 同名转发函数 + 运行时解析（MACVLAN_SYMRES shim）
+#   backing_file_user_path
+#       6.12 实机报缺（issue #3 / #4），但源码里唯一调用点在
+#       #if >= 6.18 分支内 —— 矛盾未查清，暂按「可能被裁」列入
+#
+# C. 任何 _trace_android_vh_*  vendor hook，不是所有厂商内核都开
+#
+# 这份清单的作用：任何一次改动如果让某个 .ko 重新带上这些符号，CI 立刻
+# 报出来，而不是等用户装完只看到一句 "unknown symbol in module"。
 # ---------------------------------------------------------------------------
 echo
-echo "=== $KMI 符号自检 ==="
-BAD_SYMS="__stack_chk_guard cgroup_rm_cftypes drm_crtc_add_crc_entry"
+echo "$(printf "$B_SYMCHECK_HEAD" "$KMI")"
+BAD_SYMS="__stack_chk_guard cgroup_rm_cftypes cgroup_add_dfl_cftypes \
+drm_crtc_add_crc_entry drmm_crtc_init_with_planes \
+file_remove_privs seq_escape_mem kill_pid path_put kern_path get_next_ino \
+ip_check_defrag __netif_rx ndo_dflt_fdb_dump \
+__dev_forward_skb dev_forward_skb dev_mc_add_excl dev_uc_add_excl \
+eth_header_cache eth_header_cache_update \
+backing_file_user_path \
+d_instantiate d_obtain_alias d_splice_alias ihold clear_inode clear_nlink \
+drop_nlink inc_nlink set_nlink inode_init_once inode_init_owner \
+inode_set_flags init_special_inode unlock_new_inode iget5_locked ilookup5 \
+insert_inode_hash __insert_inode_hash finish_open notify_change \
+setattr_prepare sync_filesystem touch_atime truncate_inode_pages_final \
+vfs_fsync generic_permission generic_file_splice_read kmem_cache_alloc_lru \
+in_group_p current_umask \
+__percpu_counter_init percpu_counter_destroy"
 bad=0
 for ko in "$OUT"/*-"$KMI".ko; do
     [ -f "$ko" ] || continue
     undef=$(nm -u "$ko" 2>/dev/null | awk '{print $2}')
     for sym in $BAD_SYMS; do
         if echo "$undef" | grep -qx "$sym"; then
-            echo "  [SYM] $(basename "$ko") 依赖 $sym —— 部分内核不导出"
+            echo "  [SYM] $(printf "$B_SYM_BAD" "$(basename "$ko")" "$sym")"
             bad=$((bad + 1))
         fi
     done
@@ -378,23 +535,65 @@ for ko in "$OUT"/*-"$KMI".ko; do
     [ -n "$vh" ] && { echo "  [SYM] $(basename "$ko") 依赖 vendor hook:"; echo "$vh" | sed 's/^/         /'; bad=$((bad + 1)); }
 done
 if [ "$bad" -eq 0 ]; then
-    echo "  [OK] 无已知不可移植符号"
+    echo "  [OK] $B_SYM_OK"
 else
-    echo "  [WARN] 共 $bad 处，装机前请确认目标内核的导出表"
+    echo "  [WARN] $(printf "$B_SYM_WARN" "$bad")"
+fi
+
+# ---------------------------------------------------------------------------
+# 回归检查：这些符号已经改成运行时解析/同名转发，**不允许再出现在 nm -u 里**。
+#
+# BAD_SYMS 上面那条是软告警（历史包袱里有几个还没修完，见清单 C 组）；
+# 这一条是硬的：一旦某个已修好的符号重新变成静态导入，说明有人改回去或者
+# 补丁顺序被打乱，必须当场失败，不能等用户装完报 "unknown symbol"。
+#
+# 维护：每修好一个符号，就把它加到 MUST_NOT_APPEAR。
+# ---------------------------------------------------------------------------
+MUST_NOT_APPEAR="get_next_ino cgroup_add_dfl_cftypes \
+dev_forward_skb eth_header_cache eth_header_cache_update \
+drmm_crtc_init_with_planes \
+file_remove_privs seq_escape_mem kill_pid \
+__dev_forward_skb dev_mc_add_excl dev_uc_add_excl \
+ip_check_defrag __netif_rx ndo_dflt_fdb_dump"
+
+regress=0
+for ko in "$OUT"/*-"$KMI".ko; do
+    [ -f "$ko" ] || continue
+    undef=$(nm -u "$ko" 2>/dev/null | awk '{print $2}')
+    for sym in $MUST_NOT_APPEAR; do
+        if echo "$undef" | grep -qx "$sym"; then
+            echo "  [REGRESS] $(basename "$ko") 重新静态导入了 $sym"
+            echo "            这个符号已改成运行时解析/同名转发，不该再出现在 nm -u 里"
+            regress=$((regress + 1))
+        fi
+    done
+done
+
+if [ "$regress" -gt 0 ]; then
+    # 符号回退是代码缺陷，不是「这台设备不支持」，所以直接让这一格红。
+    # （模块编译失败才是宽松处理 —— 见上面 FAILED 的注释。）
+    echo
+    echo "  [FATAL] $KMI: $regress 个已修好的符号重新变成静态导入"
+    echo "          改回去会重现 issue #2/#3/#4 的装机失败，拒绝出货"
+    exit 1
 fi
 
 echo
-echo "=== $KMI 产物 ==="
+echo "$(printf "$B_PROD_HEAD" "$KMI")"
 ls -lh "$OUT" 2>/dev/null
 echo
 if [ ${#FAILED[@]} -gt 0 ]; then
-    echo "=== 本 KMI 失败项 (${#FAILED[@]}) ==="
+    echo "$(printf "$B_FAIL_HEAD" "${#FAILED[@]}")"
     printf '  - %s\n' "${FAILED[@]}"
 fi
 # 不返回非 0: 部分模块失败不应中断整条矩阵, 其余 KMI 还应继续产出。
 
   # ---------------------------------------------------------------------
-  # 产物完整性：8 个模块一个都不能少
+  # 产物完整性：本次「应该编」的模块一个都不能少
+  #
+  # 模块集合由原厂 config 决定：内核里已经启用的能力（DEVTMPFS / MACVLAN /
+  # IPv6 NAT / CGROUP_PIDS / CFS_BANDWIDTH / DRM_VKMS）不再重复编，
+  # 只补缺的。lkm4ctr 与 uart_guard 始终需要。
   #
   # 教训：v0.1.18 里我加的 reloc_audit 因为定义在调用点之后而「永远失败」，
   # 失败分支是「删产物 + continue」，构建照样绿 —— 结果所有 KMI 的 pids/cpu
@@ -409,16 +608,51 @@ fi
   cfg_on CONFIG_CGROUP_PIDS || expected="$expected droid_lkm_pids"
   cfg_on CONFIG_CFS_BANDWIDTH || expected="$expected droid_lkm_cpu"
   cfg_on CONFIG_DRM_VKMS || expected="$expected vkms"
-  printf '%s\n' $expected > "$OUT/modules-built.txt"
+  printf '%s\n' $expected > "$OUT/modules-built-$KMI.txt"
+
   missing=""
   for want in $expected; do
       [ -f "$OUT/$want-$KMI.ko" ] || missing="$missing $want"
   done
   if [ -n "$missing" ]; then
-      echo "  [FAIL] $KMI missing modules:$missing"
-      echo "         incomplete package is not published"
+      echo "  $(printf "$B_MISSING" "$KMI" "$missing")"
+      echo "         $B_INCOMPLETE"
       exit 1
   fi
-  echo "  [OK] $(echo $expected | wc -w) modules built (config-driven)"
+  echo "  [OK] $B_ALL_PRESENT ($(echo $expected | wc -w): $expected)"
+
+  # ---------------------------------------------------------------------
+  # 内核导出依赖清单
+  #
+  # 装机失败最常见的原因是「这个内核没导出某个符号」，而 insmod 只回一句
+  # "unknown symbol in module"，具体是哪个符号只在 dmesg 里，很多设备上
+  # dmesg 还读不到（issue 里两台设备，一台能抓一台抓不到）。
+  #
+  # 所以在构建期把每个 .ko 的**未定义符号**固化成一个清单打进模块包，
+  # 装机时拿清单逐条查 /proc/kallsyms 的 __ksymtab_，直接报出缺哪几个。
+  # 不依赖 dmesg，也不依赖设备上有 nm。
+  # ---------------------------------------------------------------------
+  SYMFILE="$OUT/symcheck-$KMI.txt"
+  : > "$SYMFILE"
+  # DDK 容器里是 clang 工具链，不一定有 binutils 的 nm；llvm-nm 通常有
+  NM=""
+  for c in nm llvm-nm "$CROSS_COMPILE"nm; do
+      if command -v "$c" >/dev/null 2>&1; then NM="$c"; break; fi
+  done
+  if [ -z "$NM" ]; then
+      echo "  [WARN] $B_NO_NM"
+  else
+      echo "  [OK] $(printf "$B_NM_TOOL" "$NM")"
+  fi
+  for ko in "$OUT"/*-"$KMI".ko; do
+      [ -f "$ko" ] || continue
+      mod=$(basename "$ko" "-$KMI.ko")
+      [ -n "$NM" ] || continue
+      "$NM" -u "$ko" 2>/dev/null | awk '{print $2}' | \
+          grep -vE '^(__this_module|_GLOBAL_OFFSET_TABLE_)$' | \
+          while read -r s; do echo "$mod $s"; done >> "$SYMFILE"
+  done
+  n_syms=$(wc -l < "$SYMFILE" 2>/dev/null || echo 0)
+  echo "  [OK] $(printf "$B_MANIFEST" "$(basename "$SYMFILE")" "$n_syms")"
 
 exit 0

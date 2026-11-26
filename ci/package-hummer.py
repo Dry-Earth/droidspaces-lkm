@@ -15,8 +15,6 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 TEMPLATE = ROOT / 'module'
-SCRIPTS = ('module.prop', 'customize.sh', 'post-fs-data.sh', 'service.sh',
-           'uninstall.sh', 'action.sh', 'boot-completed.sh')
 REQUIRED = ('lkm4ctr',)
 OPTIONAL = ('devtmpfs_lkm', 'macvlan', 'ip6table_nat', 'vkms',
             'droid_lkm_pids', 'droid_lkm_cpu', 'uart_guard')
@@ -70,9 +68,16 @@ def main() -> None:
         f'virtual DRM, cgroup CPU/PID limits.',
         prop, count=1, flags=re.M)
 
+    # Ship the whole module template: scripts, i18n.sh, route and the
+    # prebuilt WebUI (webroot/). Only module.prop is replaced above.
     files = {'module.prop': prop.encode()}
-    for name in SCRIPTS[1:]:
-        files[name] = (TEMPLATE / name).read_bytes()
+    for src in sorted(TEMPLATE.rglob('*')):
+        if not src.is_file():
+            continue
+        rel = src.relative_to(TEMPLATE).as_posix()
+        if rel == 'module.prop':
+            continue
+        files[rel] = src.read_bytes()
     for stem, (name, data) in built.items():
         files[f'ko/{name}'] = data
 
