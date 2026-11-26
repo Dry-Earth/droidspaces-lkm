@@ -1,0 +1,62 @@
+# ORIGIN / provenance
+
+mali_nsfix 的技术与依据来源，记录在此以便日后核对结构体漂移与先例。
+
+## 针对的上游代码
+
+- ARM Mali DDK `drivers/gpu/arm/midgard/context/mali_kbase_context.c`
+  的 `kbase_context_common_init()`（旧版本里叫 `kbase_create_context()`
+  路径的一部分）：
+      kctx->tgid = current->tgid;          /* init PID namespace 的值 */
+      pid_struct = find_get_pid(kctx->tgid); /* 在调用者的 ns 里解析 */
+  `find_get_pid()` → `find_vpid()` → `find_pid_ns(nr,
+  task_active_pid_ns(current))`；容器内两者不等，查找失败，GPU context
+  创建被拒。
+- 本仓库不修改上述驱动，也不链接它的符号；只在运行时 kprobe
+  `find_get_pid()`，按调用者模块名前缀识别 mali_kbase* 调用。
+- 构建基线：各 KMI 对应的 DDK 内核树（CI 镜像
+  `ghcr.io/ylarod/ddk-min:<kmi>-<ddk_release>`）所带的内核头文件。
+
+## 先例（均未使用「独立 .ko 运行时重定向」这一形态）
+
+- Droidian / Halium 移植笔记（2026-07-28 公开）：
+  https://github.com/note10lite-droidian/docs/blob/main/docs/research/porting-notes.md
+  第 3 节记录了同一 bug 与源码级修法 `get_pid(task_tgid(current))`，
+  并指出部分厂商 DDK 副本（bv_r26p0/r32p1/r38p1）已含该修复。
+- shr-distribution/meta-smartphone（2026-10-18）：
+  https://github.com/shr-distribution/meta-smartphone/commit/1c9d86e1e8af42483507e1e894f8c75ad6f8692a
+  为 Q25/Waydroid 自编译 `mali_kbase_mt6789.ko` 并通过 vendor_dlkm
+  override 抢先 insmod —— 仍需驱动源码与 CRC 匹配。
+- insterbridge/live-gpu-driver（KernelSU/APatch 模块）：
+  https://github.com/insterbridge/live-gpu-driver
+  运行时 bind mount 替换用户态 GPU 驱动；其文档明确 kernel-side 驱动
+  不能热替换 —— 这正是 mali_nsfix 选择「改行为而非换驱动」的原因。
+- Shikochin/Droidspaces-LKM：
+  https://github.com/Shikochin/Droidspaces-LKM
+  同为 Droidspaces 生态的 LKM，提供 PID/IPC/devtmpfs/userns，
+  不含 Mali；其 activate= 自测模式、BTF 指纹门禁与 validation.json
+  发布证据被本项目借鉴。
+
+## 本模块的落地记录
+
+- 首次实现：commit 596c5a2（2026-11-16），kprobe find_get_pid。
+- 同日在 OPPO PHZ110 / MT6989 / 6.1.157 容器内实测通过。
+- 0.4.0：加入干跑模式（nshf_activate=0）与状态参数
+  （nshf_active / nshf_probe_ok / nshf_driver），供 doctor 输出使用。
+
+## 适配取舍：为什么不做严格的 BTF/notes 指纹门禁
+
+Shikochin/Droidspaces-LKM 的做法是「一个产物对应一个精确内核版本」，所以可以
+把 `/sys/kernel/btf/vmlinux` 或 `/sys/kernel/notes` 的哈希作为门禁。本项目
+不同：产物按 KMI 覆盖一族内核（同一 KMI 下 6.1.75 / 6.1.118 / 6.1.157 等
+vermagic 都不同），设备侧没有可预先捆绑的精确指纹，硬抄会直接把大量在用的
+设备挡在外面。
+
+因此这里改为两层：
+
+1. 构建期按 KMI 用真实 DDK 头文件编译，CI 对每个 KMI 单独出货并记录 SHA256；
+2. 运行期由 `nshf_layout_ok()` 做自洽性绊线（不通过就拒绝挂钩），另有
+   `nshf_activate=0` 干跑可以在不动内核行为的前提下先验证一次。
+
+若将来某个型号需要像 Shikochin 那样锁死单一内核版本，可在打包器里加一张
+`预期 BTF 哈希` 表，service.sh 比对后再 insmod。

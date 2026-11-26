@@ -6,7 +6,8 @@
  * OPPO Find X7 / MT6989 / 6.1.157-android14-11 / KMI android14-6.1。
  *
  * 与 6.12 原版的差异：
- *   - 不依赖 HooKern / Type_info / KernCall 框架，用标准 register_kprobe()；
+ *   - 不依赖 HooKern / Type_info / KernCall 框架，探针用 KallRecon 解析后的
+ *     可选 register_kprobe()（见 common.c，解析不到就降级不装）；
  *   - hk_regs_return() 等价为 regs->pc = regs->regs[30]（arm64 LR）；
  *   - 显示层用 kretprobe 追加输出，不用 inline hook；
  *   - KallRecon 复用本仓库 net_ip6nat/kr/ 的 6.1 版。
@@ -39,8 +40,11 @@
 #include <linux/seq_file.h>
 #include <linux/version.h>
 #include <linux/smp.h>
+#include <linux/spinlock.h>
 
-#include "kr/core.h"
+#include "kallrecon/core.h"
+#include "hk/hk.h"
+#include "hk/hk_inline.h"
 #include "common.h"
 
 #define TAG "droid_lkm_pids"
@@ -250,6 +254,13 @@ static void ctl_blank_name(char *buf, size_t nbytes, const char *name)
  */
 static char ctl_rw_buf[32];
 
+/*
+ * 两张观测表（rewritten / mem_seen）的锁。kprobe pre-handler 可能在多个 CPU
+ * 上并发进入（它跑在被钩函数拿 cgroup_mutex 之前），表访问必须串行。
+ * spin_lock_irqsave 在原子上下文合法，不会睡眠。
+ */
+static DEFINE_SPINLOCK(ctl_obs_lock);
+
 #define CTL_REWRITTEN_MAX 8
 static unsigned long ctl_rewritten[CTL_REWRITTEN_MAX];
 static int ctl_n_rewritten;
@@ -257,18 +268,167 @@ static int ctl_n_rewritten;
 static bool ctl_already_rewritten(unsigned long cgrp)
 {
 	int i;
+	bool found = false;
+	unsigned long flags;
 
-	for (i = 0; i < ctl_n_rewritten; i++)
-		if (ctl_rewritten[i] == cgrp)
-			return true;
-	return false;
+	if (!cgrp)
+		return false;
+	spin_lock_irqsave(&ctl_obs_lock, flags);
+	for (i = 0; i < ctl_n_rewritten; i++) {
+		if (ctl_rewritten[i] == cgrp) {
+			found = true;
+			break;
+		}
+	}
+	spin_unlock_irqrestore(&ctl_obs_lock, flags);
+	return found;
 }
 
 static void ctl_note_rewritten(unsigned long cgrp)
 {
-	if (ctl_n_rewritten >= CTL_REWRITTEN_MAX || !cgrp)
+	int i;
+	unsigned long flags;
+
+	if (!cgrp || ctl_n_rewritten >= CTL_REWRITTEN_MAX)
 		return;
-	ctl_rewritten[ctl_n_rewritten++] = cgrp;
+	spin_lock_irqsave(&ctl_obs_lock, flags);
+	for (i = 0; i < ctl_n_rewritten; i++)
+		if (ctl_rewritten[i] == cgrp)
+			break;
+	if (i == ctl_n_rewritten && ctl_n_rewritten < CTL_REWRITTEN_MAX)
+		ctl_rewritten[ctl_n_rewritten++] = cgrp;
+	spin_unlock_irqrestore(&ctl_obs_lock, flags);
+}
+
+static void ctl_forget_rewritten(unsigned long cgrp)
+{
+	int i, j;
+	unsigned long flags;
+
+	if (!cgrp)
+		return;
+	spin_lock_irqsave(&ctl_obs_lock, flags);
+	for (i = 0; i < ctl_n_rewritten; i++) {
+		if (ctl_rewritten[i] != cgrp)
+			continue;
+		for (j = i + 1; j < ctl_n_rewritten; j++)
+			ctl_rewritten[j - 1] = ctl_rewritten[j];
+		ctl_n_rewritten--;
+		break;
+	}
+	spin_unlock_irqrestore(&ctl_obs_lock, flags);
+}
+
+/*
+ * memory 启用状态的观测表。
+ *
+ * 为什么不能查 kernfs：本文件是 kprobe pre-handler，原子上下文（关抢占、
+ * 关中断），任何可能睡眠的调用都不允许。老实现用
+ * kernfs_find_and_get(of->kn->parent, "memory.current") 判断 memory 是否
+ * 已启用，而 kernfs_find_and_get_ns() 会 down_read(&kernfs_rwsem) ——
+ * 一旦有竞争就 schedule。实测（PHZ110 / Anland 5.x）就是这条路径：
+ *
+ *   BUG: scheduling while atomic: systemd/29572
+ *   __schedule -> schedule_preempt_disabled -> down_read
+ *   -> kernfs_find_and_get_ns -> ctl_subtree_pre [droid_lkm_pids]
+ *
+ * 之后 preempt 计数被破坏，连锁出 del_timer_sync / GIC warning 和看门狗
+ * 重启。kprobe 处理器不是"偶尔不能睡"，是绝不能睡。
+ *
+ * 改为只信自己的观测：所有对 cgroup.subtree_control 的写都经过本钩子，
+ * 见过 +memory 就把该 cgroup 记下来；后续 +pids 的 rewrite 先查这张表。
+ * 表操作只用 spin_lock_irqsave，原子安全，不引入新的睡眠点。
+ *
+ * 盲区：模块加载之前就已启用 memory 的 cgroup 观测不到。那种情况下 +pids
+ * 仍会被 rewrite 成 +memory 并拿到 -EFAULT（与加这道检查之前的行为一致），
+ * 不会 panic。容器 cgroup 都是开机后创建的，不受这个盲区影响。
+ */
+#define CTL_MEM_MAX 16
+static unsigned long ctl_mem_seen[CTL_MEM_MAX];
+static int ctl_n_mem_seen;
+
+static bool ctl_memory_seen(unsigned long cgrp)
+{
+	int i;
+	bool found = false;
+	unsigned long flags;
+
+	if (!cgrp)
+		return false;
+	spin_lock_irqsave(&ctl_obs_lock, flags);
+	for (i = 0; i < ctl_n_mem_seen; i++) {
+		if (ctl_mem_seen[i] == cgrp) {
+			found = true;
+			break;
+		}
+	}
+	spin_unlock_irqrestore(&ctl_obs_lock, flags);
+	return found;
+}
+
+static void ctl_note_memory(unsigned long cgrp)
+{
+	int i;
+	unsigned long flags;
+
+	if (!cgrp)
+		return;
+	spin_lock_irqsave(&ctl_obs_lock, flags);
+	for (i = 0; i < ctl_n_mem_seen; i++)
+		if (ctl_mem_seen[i] == cgrp)
+			break;
+	if (i == ctl_n_mem_seen && ctl_n_mem_seen < CTL_MEM_MAX)
+		ctl_mem_seen[ctl_n_mem_seen++] = cgrp;
+	spin_unlock_irqrestore(&ctl_obs_lock, flags);
+}
+
+static void ctl_forget_memory(unsigned long cgrp)
+{
+	int i, j;
+	unsigned long flags;
+
+	if (!cgrp)
+		return;
+	spin_lock_irqsave(&ctl_obs_lock, flags);
+	for (i = 0; i < ctl_n_mem_seen; i++) {
+		if (ctl_mem_seen[i] != cgrp)
+			continue;
+		for (j = i + 1; j < ctl_n_mem_seen; j++)
+			ctl_mem_seen[j - 1] = ctl_mem_seen[j];
+		ctl_n_mem_seen--;
+		break;
+	}
+	spin_unlock_irqrestore(&ctl_obs_lock, flags);
+}
+
+/*
+ * 在写 buffer 里找带 +/- 前缀的 name token。
+ * 返回 1=启用, -1=禁用, 0=没提。token 边界规则与 ctl_blank_name 一致，
+ * 避免把 "memoryfoo" 之类误判成 memory。裸名字不是合法输入（内核会
+ * 自己回 -EINVAL），这里也不认。
+ */
+static int ctl_buf_token(const char *buf, size_t nbytes, const char *name)
+{
+	size_t nlen = strlen(name);
+	size_t i;
+
+	for (i = 0; i + nlen <= nbytes; i++) {
+		size_t start = i, end = i + nlen;
+		char sign;
+
+		if (memcmp(buf + i, name, nlen) != 0)
+			continue;
+		if (end < nbytes && buf[end] != ' ' && buf[end] != '\n' &&
+		    buf[end] != '\t' && buf[end] != '\0')
+			continue;
+		if (start == 0 || (buf[start - 1] != '+' &&
+				   buf[start - 1] != '-'))
+			continue;
+		start--;
+		sign = buf[start];
+		return sign == '+' ? 1 : -1;
+	}
+	return 0;
 }
 
 static struct kprobe ctl_subtree_probe;
@@ -291,6 +451,17 @@ static int ctl_subtree_pre(struct kprobe *p, struct pt_regs *regs)
 
 	if (of && of->kn && of->kn->parent)
 		cgrp = (unsigned long)of->kn->parent->priv;
+
+	/*
+	 * 记下本次写对 memory 的意图。用户自己写 +memory（不经我们的 rewrite）
+	 * 也走这条路径，所以这是唯一能看到"谁把 memory 打开过"的地方。
+	 * 只做原子标记，不碰 kernfs、不加可能睡眠的锁。
+	 */
+	switch (ctl_buf_token(buf, nbytes, "memory")) {
+	case 1:  ctl_note_memory(cgrp);   break;
+	case -1: ctl_forget_memory(cgrp); break;
+	default: break;
+	}
 
 	for (i = 0; i + 4 <= nbytes; i++) {
 		if (memcmp(buf + i, "pids", 4) != 0)
@@ -326,17 +497,12 @@ static int ctl_subtree_pre(struct kprobe *p, struct pt_regs *regs)
 	}
 
 	/* 用户先写过 +memory（不经我们）的 cgroup：memory 已启用，
-	 * 再 rewrite 会重复 enable 得 EFAULT。用 kernfs 检查子文件。 */
-	if (cgrp && of && of->kn && of->kn->parent) {
-		struct kernfs_node *mc =
-			kernfs_find_and_get(of->kn->parent, "memory.current");
-
-		if (mc) {
-			kernfs_put(mc);
-			memset(buf, ' ', nbytes);
-			ctl_note_rewritten(cgrp);
-			return 0;
-		}
+	 * 再 rewrite 会重复 enable 得 EFAULT。查自己的观测表；不再走
+	 * kernfs_find_and_get()，那是睡眠调用，这里不能做。 */
+	if (cgrp && ctl_memory_seen(cgrp)) {
+		memset(buf, ' ', nbytes);
+		ctl_note_rewritten(cgrp);
+		return 0;
 	}
 
 	/* 全局 buffer：写路径由 cgroup_mutex 串行，无需 per-CPU */
@@ -344,6 +510,7 @@ static int ctl_subtree_pre(struct kprobe *p, struct pt_regs *regs)
 	regs->regs[1] = (unsigned long)ctl_rw_buf;
 	regs->regs[2] = 7;
 	ctl_note_rewritten(cgrp);
+	ctl_note_memory(cgrp);
 	atomic_inc(&ctl_n_rewrite);
 
 	return 0;
@@ -352,6 +519,92 @@ static int ctl_subtree_pre(struct kprobe *p, struct pt_regs *regs)
 /* ---------------------------------------------------- B2 fork 拦截 --- */
 
 static struct kprobe ctl_can_fork_probe;
+static struct hk_inline ctl_can_fork_inline;
+static bool ctl_can_fork_inline_live;
+
+static struct hk_inline ctl_post_fork_inline;
+static bool ctl_post_fork_inline_live;
+
+static struct hk_inline ctl_exit_inline;
+static bool ctl_exit_inline_live;
+
+/*
+ * inline 路由的 wrapper，只在**签名已确认**的版本编译。
+ *
+ * kprobe 的 pre_handler 只从 regs 取参数，天然跨版本；inline wrapper 必须
+ * 逐字匹配原函数签名，签名一变就是错的参数。6.1 的 cgroup_can_fork 是
+ * (child, kargs)，这里按它写；其它版本一律走 kprobe（见 ctl_route 说明）。
+ */
+/* 6.1 全系（含 6.1.138 这类 patchlevel 非 0 的 GKI）：
+ * 必须用区间判断，写成 == KERNEL_VERSION(6,1,0) 在 6.1.138 上是**假**
+ * （LINUX_VERSION_CODE 含 patchlevel），wrapper 会静默不编译、静默退回
+ * kprobe —— 编译照样通过，只有看符号才发现的。
+ * 签名（find_x7_kernel/kernel/cgroup/cgroup.c）：
+ *   int cgroup_can_fork(struct task_struct *, struct kernel_clone_args *)
+ *   void cgroup_post_fork(struct task_struct *, struct kernel_clone_args *)
+ *   void cgroup_exit(struct task_struct *)
+ */
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 1, 0) && \
+    LINUX_VERSION_CODE < KERNEL_VERSION(6, 2, 0)
+#define CTL_CAN_FORK_INLINE 1
+typedef int (*ctl_can_fork_fn)(struct task_struct *, struct kernel_clone_args *);
+typedef void (*ctl_post_fork_fn)(struct task_struct *, struct kernel_clone_args *);
+typedef void (*ctl_exit_fn)(struct task_struct *);
+
+static ctl_can_fork_fn ctl_can_fork_orig;
+static ctl_post_fork_fn ctl_post_fork_orig;
+static ctl_exit_fn ctl_exit_orig;
+
+__nocfi noinline int ctl_can_fork_wrap(struct task_struct *child,
+					      struct kernel_clone_args *kargs)
+{
+	struct cgroup *cgrp;
+
+	atomic_inc(&ctl_n_fork);
+	if (ctl_layout_ok) {
+		/* 与 pre_handler 同：entry 时 child->cgroups 还没填，
+		 * current 的 cgroup 就是 child 将继承的那个 */
+		cgrp = ctl_task_dfl_cgrp(current);
+		if (cgrp) {
+			atomic_inc(&ctl_n_charged);
+			if (pids_check(cgrp)) {
+				atomic_inc(&ctl_n_refused);
+				return -EAGAIN;
+			}
+		}
+	}
+	return ctl_can_fork_orig(child, kargs);
+}
+
+/* post_fork：记账 +1。pre_handler 在入口记账，wrapper 也先记账再调原函数 */
+__nocfi noinline void ctl_post_fork_wrap(struct task_struct *child,
+						struct kernel_clone_args *kargs)
+{
+	unsigned long v;
+	struct cgroup *cgrp;
+
+	if (ctl_layout_ok && kargs &&
+	    ctl_read_ptr((unsigned long)kargs + ctl_kargs_cset_off, &v)) {
+		cgrp = ctl_css_dfl_cgrp((struct css_set *)v);
+		if (cgrp)
+			pids_charge(cgrp, 1);
+	}
+	ctl_post_fork_orig(child, kargs);
+}
+
+/* exit：记账 -1，同样在调原函数之前 */
+__nocfi noinline void ctl_exit_wrap(struct task_struct *tsk)
+{
+	struct cgroup *cgrp;
+
+	if (ctl_layout_ok && tsk) {
+		cgrp = ctl_task_dfl_cgrp(tsk);
+		if (cgrp)
+			pids_charge(cgrp, -1);
+	}
+	ctl_exit_orig(tsk);
+}
+#endif /* 6.1 */
 
 static int ctl_can_fork_pre(struct kprobe *p, struct pt_regs *regs)
 {
@@ -443,6 +696,16 @@ static int ctl_rmdir_pre(struct kprobe *p, struct pt_regs *regs)
 			atomic_set(&cp->dead, 1);
 	}
 	rcu_read_unlock();
+
+	/*
+	 * 观测表按 cgroup 指针索引，被删的 cgroup 必须清掉：不清的话指针
+	 * 被复用后会假命中（新 cgroup 被当成"memory 已启用"，+pids 被静默
+	 * 清空、限额不生效）。这里只动整数下标，原子安全。
+	 */
+	if (v) {
+		ctl_forget_rewritten(v);
+		ctl_forget_memory(v);
+	}
 	return 0;
 }
 
@@ -468,6 +731,19 @@ static void pids_reap_fn(struct work_struct *w)
 		if (!atomic_read(&p->dead))
 			continue;
 		mutex_lock(&pids_lock);
+		/*
+		 * 锁外的 dead 快检只是筛子，不能据此直接摘除：读到 1 到拿
+		 * 锁之间，条目状态可能被改动——复用方（pids_max_write 全程
+		 * 持 pids_lock）会把同一个条目的 dead 复位，另一条路径也可能
+		 * 先摘掉它。所以拿锁后必须重验"idx 上仍是这个 p、且 dead 仍
+		 * 为 1"才动手。与 droid_lkm_cpu 的 tick 回收（cpu_mod.c
+		 * 拿锁后 xa_load(...)==p 才 erase）同一写法。
+		 */
+		if (xa_load(&pids_xa, idx) != p ||
+		    !atomic_read(&p->dead)) {
+			mutex_unlock(&pids_lock);
+			continue;
+		}
 		victim = xa_erase(&pids_xa, idx);
 		mutex_unlock(&pids_lock);
 		if (victim)
@@ -691,6 +967,9 @@ static bool ctl_live_files;
  * 时摘不掉，cgroup 子系统会留着指向已卸载模块的悬空指针（UAF）。
  */
 static int (*p_cgroup_rm_cftypes)(struct cftype *cfts);
+/* [TRIM] 6.12 等厂商内核未导出；未解析时不安装 cftype */
+static int (*p_cgroup_add_dfl_cftypes)(struct cgroup_subsys *ss,
+					struct cftype *cfts);
 static bool ctl_live_display;
 
 static void ctl_probe_one(struct kprobe *h, const char *sym,
@@ -700,7 +979,7 @@ static void ctl_probe_one(struct kprobe *h, const char *sym,
 
 	h->symbol_name = sym;
 	h->pre_handler = pre;
-	ret = register_kprobe(h);
+	ret = ctl_probe_register(h);
 	if (ret) {
 		pids_warn("probe %s failed: %d\n", sym, ret);
 		return;
@@ -712,7 +991,132 @@ static void ctl_probe_one(struct kprobe *h, const char *sym,
 static void ctl_unprobe(struct kprobe *h, bool live)
 {
 	if (live)
-		unregister_kprobe(h);
+		ctl_probe_unregister(h);
+}
+
+/*
+ * cgroup_can_fork 的安装：每次 fork 都命中，是唯一的热路径，所以优先 inline。
+ *
+ * route=0(auto)：inline 装不上就退回 kprobe
+ * route=1       ：只用 inline，装不上就放弃（该 KMI 上限额不生效）
+ * route=2       ：只用 kprobe（改动前行为）
+ */
+static void ctl_install_can_fork(void)
+{
+	int ret;
+
+#ifdef CTL_CAN_FORK_INLINE
+	if (ctl_route != 2) {
+		ret = hk_inline_hook(&ctl_can_fork_inline, "cgroup_can_fork",
+				     "ctl_can_fork_wrap");
+		if (!ret) {
+			ctl_can_fork_orig = (ctl_can_fork_fn)(unsigned long)ctl_can_fork_inline.orig;
+			ctl_can_fork_inline_live = true;
+			pids_info("cgroup_can_fork on the inline route\n");
+			return;
+		}
+		pids_warn("cgroup_can_fork inline failed %d%s\n", ret,
+			  ctl_route == 1 ? " (route=inline, giving up)"
+					 : ", falling back to kprobe");
+		if (ctl_route == 1)
+			return;
+	}
+#endif
+	ctl_probe_one(&ctl_can_fork_probe, "cgroup_can_fork",
+		      ctl_can_fork_pre, &ctl_live_can_fork);
+}
+
+static void ctl_install_post_fork(void)
+{
+	int ret;
+
+#ifdef CTL_CAN_FORK_INLINE
+	if (ctl_route != 2) {
+		ret = hk_inline_hook(&ctl_post_fork_inline, "cgroup_post_fork",
+				     "ctl_post_fork_wrap");
+		if (!ret) {
+			ctl_post_fork_orig = (ctl_post_fork_fn)(unsigned long)ctl_post_fork_inline.orig;
+			ctl_post_fork_inline_live = true;
+			pids_info("cgroup_post_fork on the inline route\n");
+			return;
+		}
+		pids_warn("cgroup_post_fork inline failed %d%s\n", ret,
+			  ctl_route == 1 ? " (route=inline, giving up)"
+					 : ", falling back to kprobe");
+		if (ctl_route == 1)
+			return;
+	}
+#endif
+	ctl_probe_one(&ctl_fork_probe, "cgroup_post_fork",
+		      ctl_fork_pre, &ctl_live_fork);
+}
+
+static void ctl_install_exit(void)
+{
+	int ret;
+
+#ifdef CTL_CAN_FORK_INLINE
+	if (ctl_route != 2) {
+		ret = hk_inline_hook(&ctl_exit_inline, "cgroup_exit",
+				     "ctl_exit_wrap");
+		if (!ret) {
+			ctl_exit_orig = (ctl_exit_fn)(unsigned long)ctl_exit_inline.orig;
+			ctl_exit_inline_live = true;
+			pids_info("cgroup_exit on the inline route\n");
+			return;
+		}
+		pids_warn("cgroup_exit inline failed %d%s\n", ret,
+			  ctl_route == 1 ? " (route=inline, giving up)"
+					 : ", falling back to kprobe");
+		if (ctl_route == 1)
+			return;
+	}
+#endif
+	ctl_probe_one(&ctl_exit_probe, "cgroup_exit", ctl_exit_pre,
+		      &ctl_live_exit);
+}
+
+/* ------------------------------------------------ hk 引擎（inline 路由）---
+ *
+ * 引擎的 resolve 回调直接用 KallRecon —— 它已经能查任意符号。write 传 NULL，
+ * 走内核自己的 aarch64_insn_patch_text（hk_write_kernel）：MTK 上模块自造的
+ * fixmap 直写会 fault，内核原语不会（zram_list 已实机证明这条路径可用）。
+ *
+ * 只有 pids 链入引擎：inline 路由只给 cgroup_can_fork（pids 的执行层），
+ * cpu 那边只有 cgroup_rmdir 一个冷路径探针，不背这几百 KB。
+ */
+unsigned int ctl_route = 0;
+module_param_named(route, ctl_route, uint, 0444);
+MODULE_PARM_DESC(ctl_route,
+		 "0 auto (inline 优先, kprobe 兜底), 1 inline only, 2 kprobe only");
+
+static unsigned long __nocfi ctl_hk_resolve_cb(const char *name)
+{
+	if (!kallrecon_klp)
+		return 0;
+	return kallrecon_klp(name);
+}
+
+int ctl_hk_init(void)
+{
+	static const struct hk_cfg cfg = {
+		.resolve = ctl_hk_resolve_cb,
+		.write = NULL,
+	};
+	int ret;
+
+	ret = hk_init(&cfg);
+	if (ret == -EALREADY)
+		return 0;
+	if (ret)
+		pids_warn("hk_init failed: %d (route falls back to kprobe)\n",
+			  ret);
+	return ret;
+}
+
+void ctl_hk_exit(void)
+{
+	hk_exit();
 }
 
 static int __init droid_lkm_pids_init(void)
@@ -727,6 +1131,10 @@ static int __init droid_lkm_pids_init(void)
 		return -ENODATA;
 	}
 
+	/* hk 引擎：给 can_fork 提供 inline 路由。失败不致命 —— 路由会退回
+	 * kprobe，限额功能照旧（只是每次 fork 多陷一次异常）。 */
+	ctl_hk_init();
+
 	/* memory 控制器：pids.max 挂在它上面 */
 	mem_ss_addr = kallrecon_klp("memory_cgrp_subsys");
 	if (!mem_ss_addr) {
@@ -740,6 +1148,7 @@ static int __init droid_lkm_pids_init(void)
 	 * 解析不到就不安装 cftype，见声明处的注释。
 	 */
 	p_cgroup_rm_cftypes = (void *)kallrecon_klp("cgroup_rm_cftypes");
+	p_cgroup_add_dfl_cftypes = (void *)kallrecon_klp("cgroup_add_dfl_cftypes");
 
 	ctl_layout_init();
 
@@ -752,12 +1161,9 @@ static int __init droid_lkm_pids_init(void)
 
 	/* B2：fork 拦截，只在布局校验通过时装 */
 	if (ctl_layout_ok) {
-		ctl_probe_one(&ctl_can_fork_probe, "cgroup_can_fork",
-			      ctl_can_fork_pre, &ctl_live_can_fork);
-		ctl_probe_one(&ctl_fork_probe, "cgroup_post_fork",
-			      ctl_fork_pre, &ctl_live_fork);
-		ctl_probe_one(&ctl_exit_probe, "cgroup_exit", ctl_exit_pre,
-			      &ctl_live_exit);
+		ctl_install_can_fork();
+		ctl_install_post_fork();
+		ctl_install_exit();
 		ctl_probe_one(&ctl_rmdir_probe, "cgroup_rmdir", ctl_rmdir_pre,
 			      &ctl_live_rmdir);
 	} else {
@@ -766,10 +1172,11 @@ static int __init droid_lkm_pids_init(void)
 	}
 
 	/* B1：pids.max 文件 */
-	if (!p_cgroup_rm_cftypes) {
-		pids_warn("cgroup_rm_cftypes unresolved; skipping cftypes (installing them would leave a dangling cftype on unload)\n");
+	if (!p_cgroup_rm_cftypes || !p_cgroup_add_dfl_cftypes) {
+		pids_warn("cgroup_rm_cftypes/cgroup_add_dfl_cftypes unresolved; skipping cftypes\n"
+			  "  (installing them without a working rm would leave a dangling cftype on unload)\n");
 	} else {
-		ret = cgroup_add_dfl_cftypes(memory_ss, pids_max_files);
+		ret = p_cgroup_add_dfl_cftypes(memory_ss, pids_max_files);
 		if (ret)
 			pids_err("cgroup_add_dfl_cftypes failed: %d\n", ret);
 		else
@@ -791,14 +1198,14 @@ static int __init droid_lkm_pids_init(void)
 	ctl_cgroupstats_krp.maxactive = 16;
 	ctl_cgroupstats_krp.data_size = sizeof(void *);
 
-	if (!register_kretprobe(&ctl_ctrl_show_krp) &&
-	    !register_kretprobe(&ctl_cgroupstats_krp)) {
+	if (!ctl_kretprobe_register(&ctl_ctrl_show_krp) &&
+	    !ctl_kretprobe_register(&ctl_cgroupstats_krp)) {
 		ctl_live_display = true;
 		pids_info("display hooks installed\n");
 	} else {
 		pids_warn("display hooks failed\n");
-		unregister_kretprobe(&ctl_ctrl_show_krp);
-		unregister_kretprobe(&ctl_cgroupstats_krp);
+		ctl_kretprobe_unregister(&ctl_ctrl_show_krp);
+		ctl_kretprobe_unregister(&ctl_cgroupstats_krp);
 	}
 
 	if (ctl_live_can_fork && ctl_live_fork && ctl_live_exit &&
@@ -826,14 +1233,20 @@ static void __exit droid_lkm_pids_exit(void)
 		pids_reap_live = false;
 	}
 	if (ctl_live_display) {
-		unregister_kretprobe(&ctl_ctrl_show_krp);
-		unregister_kretprobe(&ctl_cgroupstats_krp);
+		ctl_kretprobe_unregister(&ctl_ctrl_show_krp);
+		ctl_kretprobe_unregister(&ctl_cgroupstats_krp);
 	}
 	if (ctl_live_files)
 		p_cgroup_rm_cftypes(pids_max_files);
 	ctl_unprobe(&ctl_rmdir_probe, ctl_live_rmdir);
+	if (ctl_exit_inline_live)
+		hk_inline_unhook(&ctl_exit_inline);
 	ctl_unprobe(&ctl_exit_probe, ctl_live_exit);
+	if (ctl_post_fork_inline_live)
+		hk_inline_unhook(&ctl_post_fork_inline);
 	ctl_unprobe(&ctl_fork_probe, ctl_live_fork);
+	if (ctl_can_fork_inline_live)
+		hk_inline_unhook(&ctl_can_fork_inline);
 	ctl_unprobe(&ctl_can_fork_probe, ctl_live_can_fork);
 	ctl_unprobe(&ctl_subtree_probe, ctl_live_subtree);
 
@@ -850,6 +1263,7 @@ static void __exit droid_lkm_pids_exit(void)
 		}
 	}
 	xa_destroy(&pids_xa);
+	ctl_hk_exit();
 	pids_info("unloaded\n");
 }
 

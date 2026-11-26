@@ -13,6 +13,597 @@
 `10001`–`10003` 这种小数字；如果新版本还用 `100`，KernelSU 更新器会认为
 100 < 10003 而不推送更新。日期编码天然单调递增，不会再因为版本号重置而倒退。
 
+## v0.1.29
+
+### 新增
+
+**WebUI「模块」页：逐个 `.ko` 选择开机是否加载。** 底栏新增第五个页签
+（主页 / 切换路线 / 模块 / 诊断 / 关于）。每个模块三档——**默认**（跟随内置
+路线判定，与没有改动等价）、**开**（强制加载，覆盖路线，例如在 anland6 下加载
+vkms）、**关**（永不加载，覆盖路线与旧的 `enable_*` 文件）。应用时写入
+`module/ko_switch`（每行一条 `name=0|1`，选「默认」的不落盘），重启生效。
+
+`service.sh` 的读取优先级：`ko_switch` 显式值 > 旧的单文件开关
+（`disable_pids` / `disable_cpu` / `disable_uart_guard` / `disable_mali`）>
+路线判定与默认。文件缺失 / 为空 / 全畸形都安全回落到默认，单行坏数据（未知
+模块名、值不是 0/1、缺 `=`）只记一条警告并忽略，绝不影响其它模块。关掉
+`lkm4ctr` 会在页面和开机日志里显著警告（它提供容器必需的命名空间）。
+`action.sh doctor` 为每个模块补一行机器可读的 `ko_mod <name> switch=…
+loaded=…`。
+
+### 修复
+
+**「操作」按钮的诊断不再被 Android 的 `printf` 参数上限打断。** Android 上的
+`printf` 是外部命令（toybox），单个参数受 `MAX_ARG_STRLEN`（128KB）限制；v0.1.28
+把整份约 260KB 的内核 config 塞进一个变量再交给 `printf`，直接 `Argument list too
+long`，导致 tmpfs ACL/xattr 与 netfilter 两块判定拿到空输入、报错误结论（例如在
+`CONFIG_IP_NF_NAT=y` 的内核上报 `ipv4_nat=no`）。现在所有 config 读取统一走管道。
+
+**mali_nsfix 探针与布局校验不再恒报 FAIL。** `nshf_probe_ok` / `nshf_layout_valid`
+是 bool 模块参数，sysfs 渲染成 `Y`/`N`，而 `nshf_active` 是 int 渲染成 `1`/`0`；
+判定原来只认 `1`，把明明通过的 bool 校验报成 `[FAIL]`。现在 `1`/`Y`/`y` 都接受。
+
+### 文档与说明
+
+- README §1.2（中英文）：逐模块加载开关、`ko_switch` 文件格式与优先级规则。
+- WebUI 五页签描述、目录结构、安全说明（WebUI 现在只写 `route` 与 `ko_switch`
+  两个配置文件）同步更新。
+
+## v0.1.28
+
+### 修复
+
+**`update.json` 指向的 changelog 不再丢英文段。** `scripts/gen_release_meta.py`
+切版本条目时只按传入的 `--version` 原样匹配标题，而两份 changelog 的标题形状
+不同：`docs/CHANGELOG.md` 是 `## v0.1.28`，`docs/CHANGELOG.en.md` 是
+`## 0.1.28 - 2026-11-20`（不带 `v`）。于是 `--version v0.1.28` 在英文那份上
+永远匹配不到，`docs/CHANGELOG-latest.md` 静默丢掉整段英文——KernelSU 更新
+弹窗只剩中文。现在两种形状都试。
+
+### 新增
+
+**「操作」按钮新增 Docker / iptables 能力诊断（[#5](https://github.com/misaka5202/droidspaces-lkm/issues/5)）。**
+从 `/proc/config.gz` 读 `CONFIG_NF_TABLES`、`CONFIG_BRIDGE_NETFILTER`、
+`CONFIG_IP_NF_IPTABLES`、`CONFIG_NETFILTER_XTABLES_COMPAT`、`CONFIG_IP_NF_NAT`，
+如实报出并给一行机器可读的 `nft_status`。这条诊断回答的是用户实际卡住的地方：
+
+```
+  [--]   没有 nf_tables —— iptables-nft 与本内核无法通信，请改用 iptables-legacy
+  [OK]   legacy iptables + IPv4 NAT（docker --bridge=none --network=host 可用）
+  [--]   docker bridge 拿不到 NAT（没有 BRIDGE_NETFILTER）—— 请用 --network=host
+  nft_status nf_tables=no legacy=yes ipv4_nat=y bridge_netfilter=no
+```
+
+**「操作」按钮新增 tmpfs ACL/xattr 诊断（[#6](https://github.com/misaka5202/droidspaces-lkm/issues/6)）。**
+读 `CONFIG_TMPFS_XATTR` 与 `CONFIG_TMPFS_POSIX_ACL`，让用户一眼看到「容器内
+`setfacl` / `setcap` 会不会失败」。（该诊断的代码自 `4f8ed4be` 起就在仓库里，
+但那两次提交都晚于 v0.1.27 tag，所以已发布的包里没有它——本版本第一次把它
+发出去。）
+
+### 文档与说明
+
+- **README §10.5：Docker 起不来的完整排查**（中英文）。两个根因都是编译期内核
+  配置，任何内核模块都补不齐：七个 GKI KMI 的 `gki_defconfig` 全都没有
+  `CONFIG_NF_TABLES`（`iptables-nft` 没有可用的 netfilter ABI），也没有
+  `CONFIG_BRIDGE_NETFILTER`（GKI 树里连 `br_netfilter.c` 都没有，docker 默认的
+  bridge 模式因此拿不到 NAT）。给出两条可行路径：宿主
+  `dockerd --bridge=none` + 容器 `--network=host`（与上游 `lkm4ctr` 手册一致），
+  或在容器内切 `iptables-legacy`。
+- **部署文档 §11.1：容器内 tmpfs 的 setfacl / setcap**（[#[6](https://github.com/misaka5202/droidspaces-lkm/issues/6)）。
+  给出四条容器侧规避：静态 `resolv.conf`、`security.wrappers = { }`、关掉
+  bpf-firewall，以及用 `lxc.mount.entry` 把 `/run` 预挂到 ACL/xattr 可用的
+  data 分区。
+- WebUI 的性能与开机状态改进（缓存刷新、开机选项开关、黑名单提示、两次点击
+  确认重启）在 [PR #7](https://github.com/misaka5202/droidspaces-lkm/pull/7) 中，
+  等待真机回归后再合入——本版本**不含**这部分改动。
+
+### 引用
+
+- [#5 — Docker 启动失败：failed to create NAT chain DOCKER](https://github.com/misaka5202/droidspaces-lkm/issues/5)
+- [#6 — tmpfs xattr missing on MEIZU 21 Pro](https://github.com/misaka5202/droidspaces-lkm/issues/6)
+- [PR #7 — WebUI speed/UX + boot-state handling](https://github.com/misaka5202/droidspaces-lkm/pull/7)
+
+## v0.1.27
+
+### 修复
+
+**`droid_lkm_pids` 不再在 kprobe 原子上下文里睡眠（修 `scheduling while atomic`
+重启）。** `ctl_subtree_pre()` 是 pre-handler，却用 `kernfs_find_and_get()` 判断
+memory 是否已启用；该调用会 `down_read(&kernfs_rwsem)`，一旦有竞争就 `schedule`。
+实测（PHZ110 / Anland 5.x / 6.1.157）在 systemd 写 `cgroup.subtree_control` 时打出
+`BUG: scheduling while atomic ... ctl_subtree_pre [droid_lkm_pids]`，随后 preempt
+计数被破坏，连锁看门狗重启。改为**原子观测表**：见过 `+memory` 的 cgroup 记进
+`ctl_mem_seen[]`（`spin_lock_irqsave`），`-memory` 与 `cgroup_rmdir` 清条目；盲区只有
+「模块加载前就已启用 memory 的 cgroup」，退回老行为（rewrite 后 `-EFAULT`），不再
+panic。
+
+### 新增
+
+**显示路线（route）三态**：`auto` / `anland6` / `desktop5`。MediaTek 且无旧配置
+时，安装/更新用音量键选择（上 = Anland 6.x，下 = 标准桌面 5.x；读不到键 =
+`auto`）；升级默认保留原选择。可用 WebUI 或 `action.sh route auto|anland6|
+desktop5` 随时修改，重启生效；非 MTK 设备一律 `auto`，WebUI 隐藏「切换路线」
+页签。语义：`anland6` 挂 `mali_nsfix` 且不装 vkms；`desktop5` 强制装 vkms 且不装
+`mali_nsfix`。
+
+**WebUI 重做**：Material You 风格 + 底栏四页签（主页 / 切换路线 / 诊断 / 关于），
+MD3 与 MIUIx 两套主题、19 个语言 locale、内联图标；关于页放仓库与 5.x / 6.x 两个
+懒人包跳转。配套 `action.sh` 增加显示链路诊断（`/dev/mali0`、`mali_kbase`、render
+node、`nshf_*`）与机器可读 `nshf_status`。
+
+### 文档与说明
+
+- README（中英）明确 vkms / mali_nsfix 的适用路线与 5.x / 6.x 差异，补齐安装期
+  路线提示、WebUI 验证、`route` 文件与安全约束（pids 原子上下文、布局绊线、
+  WebUI 只做本地 root exec）。
+- 排障新增「显示路线问题」与历史 `scheduling while atomic` 条目。
+
+### CI
+
+- 静态检查覆盖 route 链路（安装器/加载器/操作页/WebUI）与既有 pids 睡眠调用回归
+  守卫；构建矩阵与打包流程不变。
+
+### 验证
+
+- 7 个 KMI 全量构建 + 打包通过；小测（单桌面 × 双架构 × 双语言）通过。
+- pids 修复与 route/WebUI 在 OPPO PHZ110（MTK）与 2410CRP4CG（Qualcomm）上核对。
+
+## v0.1.26
+
+### 修复
+
+**修掉 `unshare()` 必现的 CFI 失败（issue #1 的「一跑 droidspaces check 就卡死」）。**
+
+`patches/0003` 给 `vns_copy_cgroup_ns()` 加了对运行期解析指针
+`vns_copy_cgroup_ns_fn`（真实 `copy_cgroup_ns`）的间接调用，但漏了 `__nocfi`。
+官方 GKI 与厂商内核都是 `CONFIG_CFI_CLANG=y`，于是**任何 `unshare()`** 都会在
+`create_new_namespaces → vns_copy_cgroup_ns` 处 kCFI 校验失败：
+
+```
+Kernel panic - not syncing: CFI failure (target: copy_cgroup_ns+0x0/0x608)
+  vns_copy_cgroup_ns+0x44/0x118 [lkm4ctr]
+  create_new_namespaces+0x254/0x548 [lkm4ctr]
+  vendor_kernel_hook_unshare+0x188/0x2e4 [lkm4ctr]
+```
+
+`droidspaces check` 的第一个 MUST HAVE 探针就是
+`fork() + unshare(CLONE_NEWPID)`，所以一跑就死。本版本给该函数补上
+`__nocfi`（与上游对 `vns_copy_mnt_ns_fn`、`vns_real_copy_pid_ns_fn` 等
+同类调用的处理一致）。
+
+**单 KMI 包安装期校验 5.10/5.15 代际。** `customize.sh` 用出厂
+`ro.board.first_api_level` 与包名里的 `androidNN` 比对，不一致直接中止；
+`service.sh` 的独子回退补同一道校验；README 补双代际说明。
+（这是防呆，不是上面那个卡死的原因。）
+
+### 验证
+
+- 全 KMI 矩阵编译通过（`ci.yml` `full_matrix=true`，7/7）。
+- 官方未修改的 GKI android12-5.10 镜像 + QEMU：修复前必现上述 panic，
+  修复后 mount / pid / user 命名空间探针全部通过、干净关机。
+- 真机回归待报告者确认（自定义内核的 `.config` 与 DDK 一致）。
+
+## v0.1.25
+
+### 修复
+
+**`register_kprobe` 系列改为可选。** 内核没导出这四个探针 API（或没编
+`CONFIG_KPROBES`）时，`droid_lkm_pids` / `droid_lkm_cpu` 会直接 Unknown symbol
+整个装不上。现在它们经 KallRecon 运行时解析，解析不到就按 best-effort 跳过
+探针 —— 模块照常加载，只是限额/显示功能降级。
+
+**回收循环在锁内重验条目状态。** `pids_reap_fn()` 与 `cpu_tick()` 原来在
+mutex 外判断"该回收"，而从判断到拿锁之间，写 `pids.max` / `cpu.max` 的一方
+（全程持锁）可能把同一条目重新激活；现在拿锁后重算条件再摘除。
+
+### 性能
+
+**`cgroup_can_fork` / `cgroup_post_fork` / `cgroup_exit` 改 inline 优先。**
+这三个每次 fork/exit 都命中，kprobe 每命中一次要陷一次异常（约 1-3 us），
+inline 是一条 `b` 指令。装不上 inline 时自动退回 kprobe。
+
+**新增 `route` 模块参数**（只读）：`0` auto（默认，inline 优先）、
+`1` inline only、`2` kprobe only（改动前行为）。用于同机 A/B 与一键回退。
+
+### 变更
+
+**KallRecon 三份副本合并为 `extra/kallrecon/`。** devtmpfs、net_ip6nat、
+cgrouplimits 原先各拷贝一份且已分叉，现在共用一份（构建期 staging 进各模块
+目录，因为 kbuild 的 `M=` 不接受跨目录对象）。
+
+**hk 引擎提升为公共目录 `extra/hk/`**，devtmpfs 与 cgrouplimits 共用。
+
+**`mali_nsfix` 增加 `struct module` 布局自校验，并实测了开销。**
+
+`within_module()` 读的是 `struct module` 的 `core_layout` 字段偏移，而模块按
+DDK 头文件编译、设备内核是厂商编的 —— 任何改动该结构体的配置都会让偏移错位。
+错位时假阴性只是不重定向；**假阳性会把无关的 `find_get_pid(nr)` 改写成调用者
+自己的 group leader**，于是 `waitid` / `kill` / `pidfd_open` 拿到错误任务，
+且不产生任何报错。现在装钩子前先自校验（本模块两个地址必须判为落在
+`THIS_MODULE` 内，且 `core_layout.size` 合理），不通过就拒绝加载。
+
+计数导出为 `nshf_seen` / `nshf_hits`，可直接读，不用卸载模块。真机实测
+（PHZ110 / MT6989 / 6.1.157）：60 秒全系统拦截 5 次，累计 1800 次中 44 次是
+Mali 调用者；按每次陷入 1-3 µs 折合 **0.000008% - 0.000025% CPU**。
+
+**`vkms` 改为默认不加载**，需要时在模块目录放 `enable_vkms`。实测卸掉
+`vkms` 后 anland 的 `waylandbridge` 仍用 `/dev/mali0` 正常渲染上屏
+（`renderD128` 的 fd 数为 0），Mali 平台不需要它；而它提供的 render node
+背后没有 GPU，一旦被当作渲染后端只会落回 llvmpipe（CPU）。
+
+**写了一版 ftrace 后端，最终没有保留。** 它在七个 KMI 上都编译通过，但每一个
+都编译成了空：DDK 构建树与设备内核都是 `# CONFIG_FUNCTION_TRACER is not set`，
+没有 `__fentry__` 调用点可 patch。加上面实测的 kprobe 开销（十万分之几 CPU），
+这条路没有价值，作为死代码删掉而不是发布。
+
+**死代码清理**：`hk_binder.c` / `hk_lsm.c` 未被任何 Makefile 链入，移除。
+
+### 验证
+
+全 KMI 矩阵编译通过。真机（PHZ110 / 6.1.157）确认三个 hook 实际走 inline
+路由，pids 记账与 kprobe 版行为一致。
+
+## v0.1.24
+
+### 修复
+
+**`get_fs_type("overlay")` 劫持改为默认关闭。**
+
+该 hook 把全局的 `get_fs_type("overlay")` 全部重定向到模块自带的 overlayfs。
+运行内核已有 `CONFIG_OVERLAY_FS` 时这不是必要功能，却会和其它在 VFS 层动手脚
+的模块争用同一块状态 —— 典型是 NoMount（`nomount.ko`，劫持 `s_d_op` / `d_op` /
+`d_revalidate`，见 `nm_hijack_dentry_ops`）。
+
+两者叠加会产生 `d_op` 与 `d_fsdata` 不配对的 dentry。实测崩溃：
+
+```
+Unable to handle kernel NULL pointer dereference at virtual address 0x10
+pc : ovl_dentry_revalidate_common+0x38/0xac
+Call trace:
+  ovl_dentry_revalidate_common
+  ovl_dentry_revalidate
+  path_openat
+  __arm64_sys_openat
+  vendor_kernel_hook_openat [lkm4ctr]
+```
+
+即一次普通 `openat` 访问 overlayfs 上的文件时，`dentry->d_fsdata` 为空。
+
+改为模块参数 `overlay_override`（bool，默认 `N`）。需要在没有 overlayfs 的内核上
+使用自带实现时：
+
+```sh
+insmod lkm4ctr.ko overlay_override=Y
+```
+
+未启用时 `vns_ovl_init()` 不执行（不创建 `ovl_inode` slab），`vns_ovl_exit()` 有
+`vns_ovl_ready` 保护。诊断输出会报告当前状态：
+
+```
+overlay_override: off (running kernel's overlayfs in use)
+```
+
+### 变更
+
+`vns_ovl_exit()` 的 `kmem_cache_destroy()` 增加 NULL 保护并清空指针。
+
+### 安全性审计修复
+
+全仓库审计带来的一批加固。这些都不是回归修复，而是堵上「可达但尚未被触发」
+的路径。
+
+**符号解析失败时拒绝接管 overlayfs。**
+`vns_ovl_vfs_compat_resolve()` 刻意对单个符号失败继续执行（精简版依赖这一点：
+提前返回会让 `mq_init_ns` 以 `-ENOMEM` 失败）。但在 `overlay_override=Y` 下，
+宏形式 `(*vns_ovl_vfsc_notify_change)(...)` 在指针未解析时就是**对 NULL 的调用**，
+同名转发函数还会把 vendored overlayfs 依赖的权限/属性操作静默变成空操作。
+解析本身仍然非致命；现在只拒绝「接管」这一步，退回运行内核自带的 overlayfs。
+新增访问器 `vns_ovl_vfs_compat_resolve_failed()` 位于
+`glue/vendor_kernel_ovl_vfs_compat.c`（属 `LKM4CTR_BASE_OBJS`，full/lite 都能链接）。
+
+**没有真正等到宽限期就不释放 trampoline。**
+`hk_wait_tasks_rcu()` 原本返回 `void`，`synchronize_rcu_tasks` 解析不到时只警告，
+调用方照样释放——已跑进 trampoline 的 CPU 随即 use-after-free。现在它返回
+是否真的等到了宽限期，三处释放点（`hk_inline_unhook`、`hk_inline_exit`、
+`shadow_inline_remove`）改为保留该页；pending 条目同时会挡住 `rmmod`，所以结果
+是有界泄漏 + 拒绝卸载，绝不会留下悬空可执行页。`shadow_inline_remove()` 原来
+用普通 `synchronize_rcu()`，等不到已取跳板、还没被调度走的 CPU，现改用与引擎
+其余部分一致的 tasks-RCU helper。两份引擎副本（`extra/devtmpfs/hk/` 与
+0005 里的 `glue/hk/`）都改了。`hk_binder.c` 未动——它是死代码，不在任何 obj 列表里。
+
+**GPL 源码快照把本地补丁打到了错误路径。**
+`git -C /tmp/src/lkm4ctr apply "PWD/$p"` 少了 `$`（字面量 `PWD`），末尾的
+`2>/dev/null || true` 又吞掉全部失败——源码包实际**没带** 0001–0010 补丁，而
+`.ko` 来自打过补丁的源码，且毫无报错。现改为解析 `"$PWD"/patches/*.patch`，
+失败即中断任务。
+
+**root 脚本经由全局可写路径写入。**
+`action.sh` 的 `/proc` 挂载探针用 `/data/local/tmp/.dsp_proctest`，任何用户都能
+预置符号链接，让 root 的 `mount` 跟到攻击者选定的目标上。已移到 `/mnt`
+（root 独有）并加 `-L` 兜底检查，`rm -rf` 换成 `mkdir`/`rmdir`。
+
+**回收 cgroup 条目前用了过期判断。**
+`pids_reap_fn()` 与 `cpu_tick()` 的「该回收」判断都在 mutex 之外，而写方
+（`pids_max_write` / `cpu_max_write`，全程持同一把 mutex）可以把同一条目重新激活
+——复用沿用同一个指针、只清 `dead`，原有的 `xa_load(...) == p` 复校验挡不住它。
+现在改为拿锁后重算条件再 erase。
+
+**`msg()` 拒绝 `%n`。** 模板是仓库内静态字符串，`%n` 进不了格式位；这道守卫属于
+纵深防御，防将来有人塞入带 `%n` 的模板或误传外部值。
+
+### 验证
+
+全 KMI 矩阵（7 个）全部编译通过，含聚合模块与精简变体，证明新访问器在两种构建下
+都能链接。真机冒烟（PHZ110 / MT6989 / `6.1.157`）：PID/IPC/UTS/user/net/cgroup
+命名空间、容器内挂 `/proc`（214 节点）、devtmpfs、`/dev/dri/renderD128`、veth 创建、
+binder 节点、仿真 `pids.max`/`cpu.max`、导出符号检查（781 行中缺失 0）全部通过，
+`dmesg` 无内核异常。
+
+## v0.1.23
+
+`versionCode` 由构建时写入（`YYYYMMDDnn` = 日期×100 + 小时×4 + 分钟/15，
+见 `.github/workflows/build.yml`）。该值必须落在 int32 范围内。
+
+### 修复
+
+
+**`versionCode` 超出 int32 范围，KernelSU 从未能解析。**
+
+KernelSU 的 `Module.kt` 将 `versionCode` 声明为 `Int`，`Downloader.kt` 用
+`.toInt()` 解析。此前 `build.yml` 生成的值为 `%Y%m%d%H%M`（12 位），
+本应为 `202611170004`，超出 `Integer.MAX_VALUE` (2147483647) 94 倍，
+`.toInt()` 抛出 `NumberFormatException`，更新检查失败。
+
+v0.1.22（`202611161425`）同样超出范围，因此该问题自引入以来一直存在。
+
+改为 `YYYYMMDDnn`：
+
+```
+versionCode = YYYYMMDD * 100 + 小时 * 4 + 分钟 / 15
+```
+
+取值范围 `2026111700`–`2026111795`，上限 2,026,117,995 < 2,147,483,647，
+每日 96 个槽位。超出范围时构建直接失败。分 KMI 包改为读取
+`dist/version-code.txt`，与全 KMI 包使用同一个值。
+`scripts/gen_release_meta.py` 增加 int32 上限校验。
+
+
+**符号兼容层扩展到全部七个 KMI。** v0.1.22 仅覆盖 MID 层（5.15 / 6.1），
+OLD（5.10）与 NEW（6.6 / 6.12）的兼容清单缺少相应条目。
+
+`lkm4ctr` 的 VFS 类静态导入（`nm -u` 实测）：
+
+| KMI | 层 | v0.1.22 | v0.1.23 | 降幅 |
+|---|---|---|---|---|
+| android12-5.10 | OLD | 29 | 1 | −97% |
+| android13-5.10 | OLD | 29 | 1 | −97% |
+| android13-5.15 | MID | 29 | 1 | −97% |
+| android14-5.15 | MID | 29 | 1 | −97% |
+| android14-6.1 | MID | 6 | 2 | −67% |
+| android15-6.6 | NEW | 37 | 2 | −95% |
+| android16-6.12 | NEW | 40 | 2 | −95% |
+
+统计范围为 VFS 辅助函数类（`d_` / `i_` / `inode` / `clear_` / `vfs_` / `iget` /
+`percpu_` 等前缀），不含全部未定义符号。残余项为 `__percpu_down_read` 与
+`percpu_counter_add_batch`，属内核内置原语，无裁剪先例。
+
+新增覆盖的符号（均经 `nm -u` 确认不再静态导入）：`d_instantiate`、`d_obtain_alias`、
+`d_splice_alias`、`d_add`、`d_make_root`、`d_path`、`ihold`、`clear_inode`、
+`clear_nlink`、`drop_nlink`、`inc_nlink`、`set_nlink`、`inode_init_once`、
+`unlock_new_inode`、`iget5_locked`、`ilookup5`、`init_special_inode`、
+`inode_set_flags`、`inode_init_owner`、`setattr_prepare`、`touch_atime`、
+`sync_filesystem`、`vfs_fsync`、`vfs_fsync_range`、`truncate_inode_pages_final`、
+`current_umask`、`in_group_p`、`capable_wrt_inode_uidgid`、`notify_change`、
+`finish_open`、`generic_read_dir`、`backing_file_user_path`、`get_next_ino`、
+`__insert_inode_hash`。
+
+**`capable_wrt_inode_uidgid`（issue #2 根因）。** 由 `vendor/fs/overlayfs/inode.c`
+调用。经 Meizu 21 Pro（6.1.25）boot.img 提取的 `__ksymtab_strings`（6594 项）确认：
+该内核导出 `lkm4ctr` 需要的 207 个符号中的 206 个，唯一缺失项即为本符号。
+已为 OLD / MID / NEW 三层分别配置重定向。
+
+**macvlan。** `dev_mc_add`、`dev_mc_del`、`netdev_is_rx_handler_busy`、
+`dev_forward_skb`、`eth_header_cache`、`eth_header_cache_update` 改为同名转发
+函数 + 运行时解析。v0.1.22 将 `dev_mc_add_excl` 改写为 `dev_mc_add`，但后者在
+部分内核同样未导出，未解决问题。
+
+**vkms。** `drmm_crtc_init_with_planes` 替换为 `drm_crtc_init_with_planes`。
+两者签名一致（均为 variadic），上游均 `EXPORT_SYMBOL`。CRTC 由
+`drm_mode_config_cleanup()` 统一释放。
+
+**droid_lkm_cpu / droid_lkm_pids。** `cgroup_add_dfl_cftypes` 改为运行时解析
+（`cpu_ksym()` / `kallrecon_klp()`），与同模块内已有的 `cgroup_rm_cftypes`
+处理方式一致。
+
+### 新增
+
+**`scripts/gen_vfs_compat.py`。** 从内核 BTF 提取函数原型，生成指针声明、
+同名转发函数与解析表。用于新增符号，避免手工书写签名错误。
+
+**`scripts/verify_against_bootimg.py`。** 从 `boot.img` 提取 `__ksymtab_strings`，
+与 `.ko` 的未定义符号表比对，输出每个模块的缺失项。
+
+**`lkm4ctr_lite`。** 不含 vendored overlayfs 的变体（`VNS_LITE=1`）。`service.sh`
+优先加载完整版，失败时回退。适用于裁掉 overlayfs 独占符号的内核。
+
+**崩溃现场采集。** `post-fs-data.sh` 检测 `/sys/fs/pstore/`，非空时复制到
+`/data/adb/droidspaces_lkm.d/pstore-<timestamp>.txt`。
+
+### 变更
+
+**构建期符号检查。** `scripts/build_modules.sh` 的 `BAD_SYMS` 清单由 12 项扩至
+53 项；新增 `MUST_NOT_APPEAR` 15 项硬性检查，命中即 `exit 1`。
+
+**`zram-lkm`。** 增加构建期导出检查（见该仓库 `2ba41c3`）。
+
+### 版本变体
+
+| 符号 | 变化 | 处理 |
+|---|---|---|
+| `kmem_cache_alloc_lru` | 6.10 起为宏，符号名 `_noprof` | 条件条目宏 + 同名函数 |
+| `__percpu_counter_init` | 6.6 起为 `_many`（多 `nr_counters`） | 条件条目宏 + 同名函数 |
+| `d_tmpfile` | 6.7 起更名 `d_mark_tmpfile` | 条件条目宏 |
+| `d_parent_ino` | 6.12 新增 | 条件条目宏 + 同名函数 |
+| `generic_encode_ino32_fh` | 6.9 新增 | 条件条目宏 |
+
+符号由内核头文件的 `static inline` 调用时，`#define` 无法覆盖（内联体在
+compat 头之前解析），须使用同名转发函数。`generic_read_dir`、`kmem_cache_alloc_lru`、
+`__percpu_counter_init_many`、`percpu_counter_destroy_many`、`d_parent_ino` 属此类。
+
+### 验证
+
+- 七个 KMI 构建通过；`BAD_SYMS` 检查结果全部为 0。
+- Meizu 21 Pro（6.1.25）：10 个模块，缺失 0。数据源为报告者提供的 `boot.img`。
+- PHZ110（MediaTek mt6989 / 6.1.157）：10 个模块，缺失 0。数据源为
+  `/proc/kallsyms` 的 `__ksymtab_` 条目（22081 项）。
+- PHZ110 实机加载：`macvlan` 模块 `insmod` 成功（`rc=0`），
+  `ip link add ... type macvlan` 成功；容器能力检查 8/8 通过，`Unknown symbol` 计数 0。
+
+### 已知问题
+
+- issue #1（Redmi Note 12 Turbo / 5.10.269）报告的无限重启未复现确认。
+  该设备 `/sys/fs/pstore` 为空，表明为挂起而非 panic；需报告者后续反馈。
+- issue #3 / #4（6.12.23-android16-5）报告的符号已修复，但缺少对应设备内核，
+  未做同类验证。
+
+## v0.1.22 — 符号兼容性、日志诊断、国际化
+
+`versionCode` 2026111600。
+
+这一版主要解决一件事：**模块在部分厂商内核上装不上，而用户报上来的日志里看不出
+缺哪个符号**。围绕这个问题改了三层，并顺带补上 Mali 命名空间修复和全仓国际化。
+
+### 符号兼容性
+
+起因是 issue #2：Meizu 21 Pro（6.1.25）上 `lkm4ctr` 和 `macvlan` 装不上，报
+`Unknown symbol`。用报告者提供的 `boot.img` 确认这些符号**在 kallsyms 里存在，
+只是没有 `EXPORT_SYMBOL`** —— 模块加载只查导出表，所以失败；而运行时按名查
+kallsyms 能拿到。
+
+| 模块 | 原静态导入 | 修法 |
+|---|---|---|
+| `droid_lkm_cpu` | `path_put`、`kern_path`、`memory_cgrp_subsys` | 运行时解析，双重回退 + shim 撞名保护 |
+| `lkm4ctr` | `file_remove_privs`、`seq_escape_mem`、`kill_pid` | 同名函数转发（参照上游 PR #13），内部调运行时解析 |
+| `macvlan` | `ip_check_defrag`、`__netif_rx`、`ndo_dflt_fdb_dump` | 构建期源码改写，见 `scripts/patch_macvlan.py` |
+
+`droid_lkm_cpu` 另补两处 `__nocfi`：改成间接调用后，`CONFIG_CFI_CLANG=y` 的内核
+会在调用点做类型校验，不标注会 panic。这个内核我们自己就有。
+
+`macvlan` 的三处替换里只有 `ip_check_defrag` 有语义损失（不再重组 IP 分片），
+另两处等价：`.ndo_fdb_dump = NULL` 时 `rtnl_fdb_dump()` 本来就会回退到
+`ndo_dflt_fdb_dump`；`__netif_rx` 与 `netif_rx` 是同一收包路径的两个入口。
+
+产物已用 `nm -u` 逐项验证，八个符号不再出现在任何 `.ko` 的未定义符号里。
+
+### 日志诊断
+
+`insmod` 失败只回一句 `unknown symbol in module`，具体符号在 `dmesg` 里。但
+issue #2 里两台设备，一台能读 `dmesg` 一台读不到 —— 后者提供的报告完全没有信息量。
+
+现在构建期用 `nm -u` 把每个 `.ko` 的未定义符号导成 `ko/symcheck-<kmi>.txt` 打进包；
+运行期（`action.sh`、`service.sh`）拿清单查 `/proc/kallsyms` 的 `__ksymtab_` 条目，
+直接报出本内核缺哪几个符号，不依赖 `dmesg`。
+
+第一版实现逐条 `grep` 整个 `/proc/kallsyms`，641 条依赖 × 二十多万行，在 KernelSU
+的「操作」按钮里表现为卡死。改成一次读取 + awk 单趟比对后 25 ms。
+
+### Mali 命名空间（首次发布）
+
+`mali_nsfix`：kprobe `find_get_pid()`，把 `mali_kbase` 调用者的查找重定向到
+`get_task_pid(current->group_leader, ...)`。`task_struct->tgid` 永远是初始命名空间
+的值，而原函数查的是调用者的活动命名空间，容器里两者不一致，`kbase_create_context()`
+因此失败并映射成 `-ENOMEM`。详见 `extra/mali_nsfix/README.md`。
+
+容器内已实测能创建 GPU context（5/5 成功）。
+
+### 国际化
+
+模块文案按系统语言显示（zh / ja / en，未翻译语言回退英文），英文为默认。
+覆盖安装期（`customize.sh`）、「操作」按钮（`action.sh`）、开机日志（`service.sh`）。
+
+**机器可读的部分不翻译**：`[OK]` / `[FAIL]` / `[MISS]` / `[SYM]` 标记、符号名、
+KMI 标签、内核版本串、路径。只翻译标记后面的人读描述 —— 这样用户贴出来的日志
+既能被人读懂，也能被 grep。
+
+顺带把两个中文标记改成语言中立的：`[缺]` / `[缺符号]` → `[SYM]`。
+
+构建脚本同样国际化：`scripts/i18n.sh`（shell）与 `scripts/i18n.py`（Python），
+判定规则一致。`release_notes.sh` 的输出直接成为 Release 正文，GitHub 不按用户语言
+分发正文，所以中英两段并列输出。
+
+### 平台条件加载
+
+`vkms` 之前是无条件加载的；`mali_nsfix` 更糟 —— 它被构建、被打包，但 `service.sh`
+里**完全没引用**，从不加载，用户得自己 `insmod`。
+
+现在两个模块按平台条件加载，判据用可观测事实，不写死厂商名：
+
+| 模块 | 加载条件 | 跳过的理由 |
+|---|---|---|
+| `vkms.ko` | 还没有 `/dev/dri/renderD128` | 高通多数由 kgsl 原生提供 render node |
+| `mali_nsfix.ko` | 存在 `/dev/mali0` 或已加载 `mali_kbase` | 没有 Mali GPU，而它在 `find_get_pid` 这个热点上挂 kprobe |
+
+`mali_nsfix` 不是 MTK 专用：它补的是 `mali_kbase` 的假设，三星等 Mali 机型同样
+适用。`vkms` 也不是：它解决的是"缺 render node"，缺少 render node 的高通机型
+仍然需要。
+
+实测确认 MTK 确实需要 vkms：`mediatek-drm` 只创建 `card0`，
+**不提供 render node**；`renderD128` 是 vkms 提供的。
+
+`action.sh` 的能力验证新增一行 `Mali GPU context`，`service.sh` 的开机日志输出
+判定结果。`disable_mali` 可以关掉它。
+
+### 能力验证的假 FAIL
+
+`action.sh` 的「操作」按钮长期显示
+
+```text
+[FAIL] PID + mount + user namespace 组合
+[FAIL] 容器内挂载 /proc
+```
+
+而同一份输出下方 `service.sh` 写的日志是 `[OK] PID namespace` / `[OK] IPC
+namespace` —— 同一个能力两种结论。
+
+根因是测试写法多了 `-U`。逐级实测：
+
+| 命令 | 结果 |
+|---|---|
+| `unshare -Urmpf true` | OK |
+| `unshare -Urmpf mount ...` | **FAIL: Operation not permitted** |
+| `unshare -pf mount ...` | OK（209 个节点） |
+| 不 `unshare` 直接 `mount` | OK |
+
+加 `-U` 之后只是**新用户命名空间里的 root**，而挂载 proc 要求 proc 的 pid 命名
+空间归属于同一个 userns —— 内核的 userns 挂载限制，与模块提供的容器能力无关。
+容器用的是宿主的 user namespace。
+
+改成 `unshare -pmf`（与 `service.sh` 一致），并把 `mount -t proc` 的目标从 `/proc`
+改成临时目录 —— 往已存在的挂载点上挂在 userns 下同样 EPERM，真挂上去还会污染
+当前会话。
+
+### 其他
+
+- **`customize.sh` 曾被写成 CRLF**：`sh` 解析 `case ... in` 时报
+  `Syntax error: word unexpected (expecting "in")`，**安装脚本会直接崩**，
+  刷进去什么都不会发生。已统一为 LF，`module/` 下 7 个 `.sh` 全部通过 `sh -n`。
+- **包名带版本号**：`droidspaces-lkm-arm64-<ver>.zip`。之前所有版本都叫
+  `droidspaces-lkm-arm64.zip`，下多个版本后本地分不清哪个是哪个，Release 页面上
+  不同发布的资产名也完全相同。
+- **`module.prop` 的 version 之前从不更新**：仓库里写死 `v0.1.21`，所有测试构建
+  都报同一个号，用户贴日志时无法判断装的是哪一版。现在按 tag 写入。
+- **`action.sh` 的 KMI 推导缺回退**：只抄了 `service.sh` 的第一段模式，而那个模式
+  要求内核串里出现字面量 `-6.1`，实际串是 `6.1.157-android14-11-...`，永远匹配
+  不上。现在按 `androidNN` + `X.Y` 拼接，并从日志兜底读取。
+- **`extra/` 补中英文 README**，英文为默认。
+- `description` 从 195 字符压到 91，`virtual DRM render node` → `vkms`、
+  `cgroup CPU/PID limits` → `cgroup cpu.max/pids`。
+
+### 已知限制
+
+`macvlan` 在 source 模式下不再重组 IP 分片。分片流量在容器场景少见，而代价是整个
+模块装不上 —— 取舍偏向可用性。
+
 ## v0.1.21 — 升级 KallRecon 到上游最新
 
 `versionCode` 20261136。

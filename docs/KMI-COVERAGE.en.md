@@ -1,6 +1,6 @@
 # Module × KMI coverage
 
-**8 modules × 7 KMIs = 56/56, all present.**
+**9 modules × 7 KMIs = 63/63, all present.**
 
 [**English**](KMI-COVERAGE.en.md) | [简体中文](KMI-COVERAGE.md)
 
@@ -14,12 +14,13 @@
 | `droid_lkm_pids` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | `droid_lkm_cpu` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | `uart_guard` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| `mali_nsfix` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 
-Download the combined `droidspaces-lkm-arm64.zip` (picks the right build at boot
-from the kernel release), or a per-KMI `droidspaces-lkm-<kmi>-arm64.zip`.
+Download the combined `droidspaces-lkm-arm64-<version>.zip` (picks the right build at boot
+from the kernel release), or a per-KMI `droidspaces-lkm-<kmi>-arm64-<version>.zip`.
 
 > **Do not trust the CI job status alone.** Since v0.1.20 the build fails the job
-> when any of the eight modules is missing, but before that a partial build could
+> when any of the nine modules is missing, but before that a partial build could
 > still show green. The authoritative check is the artifact list — see
 > [How to verify coverage](#how-to-verify-coverage).
 
@@ -37,6 +38,8 @@ Every KMI is compiled against **its own kernel tree** (the DDK image's
 | `ip6table_nat` | implemented here (three signature branches: 5.10 / 5.15 / 6.1+) |
 | `droid_lkm_pids` / `droid_lkm_cpu` | `extra/cgrouplimits/` (shares the layout probe in `common.c`) |
 | `uart_guard` | `extra/uart_guard/` (kprobes, no version-dependent code) |
+| `mali_nsfix` | `extra/mali_nsfix/` (kprobe, no version-dependent code; auto-loads on Mali only; self-checks the `struct module` layout before arming) |
+| `vkms` | kernel-tree source + patch; **not loaded by default**, needs `enable_vkms` |
 
 ## The vkms `DRIVER_RENDER` patch
 

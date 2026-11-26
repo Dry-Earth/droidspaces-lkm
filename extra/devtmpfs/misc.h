@@ -13,7 +13,7 @@
 #include <linux/kernel.h>
 #include <linux/printk.h>
 
-#include "core.h"
+#include "kallrecon/core.h"
 
 #define DROID_LKM_MISC_TAG "devtmpfs_lkm"
 

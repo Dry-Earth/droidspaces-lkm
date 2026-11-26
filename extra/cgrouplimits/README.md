@@ -1,203 +1,243 @@
-# cgroup limits 仿真模块（--cpus / --pids-limit）
+# cgroup Limits Emulation (`--cpus` / `--pids-limit`)
 
-在 `CONFIG_CFS_BANDWIDTH=n`、`CONFIG_CGROUP_PIDS=n` 的原厂内核上，
-让 Droidspaces 的 `--cpus` 和 `--pids-limit` **真正生效**。
+[中文](README.zh-CN.md)
 
-真机验证：OPPO Find X7 (MT6989, 6.1.157-android14-11, KMI android14-6.1)。
+Makes Droidspaces' `--cpus` and `--pids-limit` functional on stock kernels
+built with `CONFIG_CFS_BANDWIDTH=n` and `CONFIG_CGROUP_PIDS=n`.
+
+Verified on OPPO Find X7 (MT6989, `6.1.157-android14-11`, KMI `android14-6.1`).
 
 ```
-droid_lkm_pids.ko   移植自 ai-luo2006/droidspaces-6.12-pmb110 的 Plan B
-droid_lkm_cpu.ko    自研时间片限流
+droid_lkm_pids.ko   ported from Plan B of ai-luo2006/droidspaces-6.12-pmb110
+droid_lkm_cpu.ko    time-slice throttling, original implementation
 ```
 
 ---
 
-## 为什么需要这两个模块
+## Motivation
 
-| 能力 | 内核现状 | 后果 |
-|------|---------|------|
-| `--pids-limit` | `CONFIG_CGROUP_PIDS=n`，pids 子系统不存在 | 写 `pids.max` 失败，检查项 ✗ |
-| `--cpus` | `CONFIG_CFS_BANDWIDTH=n`，`cpu.max` 写路径和执行体（`tg_set_cfs_bandwidth`/`throttle_cfs_rq`）整个被 `#ifdef` 删除 | 写 `cpu.max` 失败，检查项 ✗ |
+| Feature | Kernel state | Symptom |
+|---|---|---|
+| `--pids-limit` | `CONFIG_CGROUP_PIDS=n`; the pids subsystem does not exist | Writing `pids.max` fails; the preflight check reports failure |
+| `--cpus` | `CONFIG_CFS_BANDWIDTH=n`; `cpu.max` write path and enforcement (`tg_set_cfs_bandwidth`, `throttle_cfs_rq`) are compiled out entirely | Writing `cpu.max` fails; the preflight check reports failure |
 
-两个配置的共同点：**代码路径在编译期被删除，LKM 无法"开启"它们**，
-只能**模拟**——自己实现文件、记账、执行。
+Both configurations remove code at compile time. An LKM cannot re-enable removed
+code paths; it can only emulate them — supplying the interface, the accounting,
+and the enforcement.
 
 ---
 
-## pids 模块（Plan B，移植自 6.12）
+## pids module (Plan B, ported from 6.12)
 
-四层设计，与上游一致：
+Four layers, matching upstream structure:
 
-| 层 | 手段 |
-|----|------|
-| 显示层 | kretprobe `cgroup_controllers_show` / `proc_cgroupstats_show`，追加 "pids cpu" |
-| 文件层 | `cgroup_add_dfl_cftypes(memory_cgrp_subsys, ...)` 挂 `pids.max`/`pids.current`/`pids.stats` |
-| 执行层 | kprobe `cgroup_can_fork` 超限时 `regs->pc = regs->regs[30]` + x0=-EAGAIN（函数体不执行）；`cgroup_post_fork` 记账 +1；`cgroup_exit` -1 |
-| 翻译层 | kprobe `cgroup_subtree_control_write`，把 "+pids"/"+cpu" 抹掉、必要时换成 "+memory" |
+| Layer | Mechanism |
+|---|---|
+| Visibility | kretprobe on `cgroup_controllers_show` / `proc_cgroupstats_show`, appending `"pids cpu"` |
+| Files | `cgroup_add_dfl_cftypes(memory_cgrp_subsys, ...)` to attach `pids.max`, `pids.current`, `pids.stats` |
+| Enforcement | **inline-first** on `cgroup_can_fork`: on limit the wrapper returns `-EAGAIN` without running the original body; `cgroup_post_fork` increments; `cgroup_exit` decrements. Falls back to kprobe when inline cannot be installed (module parameter `route`: `0` auto / `1` inline / `2` kprobe) |
+| Translation | kprobe on `cgroup_subtree_control_write`: strip `+pids` / `+cpu`, substitute `+memory` where required |
 
-fork 拒绝的送达方式：kprobe 观察调用，超限时写返回寄存器直接返回，
-`fork()` 用户态收到 EAGAIN——与真实控制器行为一致。
+Fork rejection returns `-EAGAIN` to userspace without executing the original
+function, so the errno matches what a real controller would produce. The three
+enforcement hooks are hit on every fork/exit, which is why they are inline-first:
+a kprobe costs an exception round trip per hit.
+controller would produce.
 
-关键坑：
-- **布局自校验**：`struct css_set` 以 `subsys[CGROUP_SUBSYS_COUNT]` 开头，
-  运行时从 `cgroup_subsys[]` 数实际控制器数并修正偏移，双重校验
-  （`init_css_set.dfl_cgrp`、`init_task.cgroups`）失败则不装 fork 探针。
-- **`+pids` 重复 enable 会 EFAULT**：B3 翻译只在 memory 未启用时 rewrite，
-  已启用则清空 buffer 无事返回。
-- **显示层必须加 "cpu"**：Droidspaces 读 `cgroup.controllers` 判断 v2 路径，
-  只加 "pids" 会让 `--cpus` 走 v1 路径而失败。
+Constraints:
 
-### 真机证据
+- **Layout self-check.** `struct css_set` begins with
+  `subsys[CGROUP_SUBSYS_COUNT]`. The runtime controller count is read from
+  `cgroup_subsys[]` and used to correct the offset. Two independent checks
+  (`init_css_set.dfl_cgrp`, `init_task.cgroups`) must both pass, otherwise the
+  fork probes are not installed.
+- **Repeated `+pids` enable returns EFAULT.** The translation layer rewrites the
+  buffer only when memory is not yet enabled; when it is, the write buffer is
+  cleared and the call returns without effect.
+- **Never sleep in a kprobe handler.** The "is memory already enabled?" check
+  must not use `kernfs_find_and_get()`: it goes through
+  `down_read(&kernfs_rwsem)` and can schedule, while a pre-handler runs in
+  atomic context with preemption and interrupts disabled. Measured on PHZ110 /
+  Anland 5.x as `BUG: scheduling while atomic` followed by watchdog reboot.
+  The module now trusts only its own observation table: any cgroup whose write
+  mentioned `+memory` (including a direct user write, which passes through the
+  same hook) is remembered, and later `+pids` writes consult that table. The
+  table is guarded by `spin_lock_irqsave`; `-memory` and `cgroup_rmdir` clear
+  entries. Only blind spot: cgroups where memory was enabled before this module
+  loaded - those fall back to the old behaviour (`-EFAULT` after rewrite), never
+  a panic.
+- **The visibility layer must also advertise `cpu`.** Droidspaces reads
+  `cgroup.controllers` to select the v2 path. Advertising only `pids` routes
+  `--cpus` through the v1 path, which then fails.
+
+### On-device verification
 
 ```
 $ dmesg | grep droid_lkm_pids
 layout verified: controllers=7 (built against 7)
 pids limit enforcement active (emulated pids controller)
 
-# 手工实验（pids.max=5）
-第1次 current=2 ... 第4次 current=5   ← 涨到上限
-第5次 current=2 ... refused=3         ← 被拦截
+# manual test, pids.max=5
+iteration 1 current=2 ... iteration 4 current=5   <- reaches the limit
+iteration 5 current=2 ... refused=3                <- rejected
 
-# Droidspaces 容器（--pids-limit=64）
+# Droidspaces container, --pids-limit=64
 pids.max = 64
-fork 60 个后 refused=2
-容器内: /bin/sh: can't fork: Resource temporarily unavailable
+after 60 forks: refused=2
+in container: /bin/sh: can't fork: Resource temporarily unavailable
 ```
 
 ---
 
-## cpu 模块（自研）
+## cpu module (original implementation)
 
-CFS 带宽控制执行体不存在，用**时间片限流**替代：
+CFS bandwidth enforcement is absent from the kernel, so this module substitutes
+time-slice throttling:
 
 ```
-cpu.max 文件   → 挂 memory 子系统，解析 "<quota_us> <period_us>"
-记账           → delayed_work 每 10ms 采样：遍历 cgroup 子树进程，
-                 task_sched_runtime() 累加 CPU 时间（ns）
-窗口判定       → window_used = 当前累计 - 窗口基准；>= quota 即超限
-超限动作       → css_task_iter 遍历进程发 SIGSTOP
-窗口结束       → 重置基准 + SIGCONT
+cpu.max file    attached to the memory subsystem; parses "<quota_us> <period_us>"
+accounting      delayed_work samples every 10 ms: walks the cgroup subtree,
+                accumulates task_sched_runtime() in ns
+window check    window_used = accumulated - window_base; over quota when >= quota
+over quota      css_task_iter walks tasks and sends SIGSTOP
+window end      reset base, send SIGCONT
 ```
 
-### 走过的五个大坑（每个都导致过 panic 或失效）
+### Failure modes encountered
 
-1. **hrtimer 上下文 panic**：`filp_open` 走 vfs 路径，在 hrtimer 中断上下文
-   调用 → `do_mem_abort` → kernel panic。改 delayed_work（进程上下文）。
+Each of these produced a panic or a silent no-op during development.
 
-2. **CFI 陷阱 panic**：`CONFIG_CFI_CLANG=y` 下，通过 KallRecon 解析的函数
-   指针间接调用触发 CFI 陷阱。所有含间接调用的函数标 `__nocfi`。
+1. **hrtimer context panic.** `filp_open` enters the VFS layer, which cannot be
+   called from hrtimer interrupt context; it faults in `do_mem_abort` and panics.
+   Moved to `delayed_work` (process context).
 
-3. **vfs 读 cpu.stat 被 SELinux 拒**（EACCES）：`filp_open` 打不开 cgroup
-   文件。改用内核内部数据。
+2. **CFI trap panic.** With `CONFIG_CFI_CLANG=y`, indirect calls through
+   function pointers resolved via KallRecon trip the CFI check. Every function
+   containing such a call is annotated `__nocfi`.
 
-4. **`struct cgroup.bstat` 偏移不匹配**：设备内核与本地树 commit 不同，
-   布局校验通过但 bstat 读到 0。改进程级 `task_sched_runtime` 累加。
+3. **SELinux denies reading `cpu.stat` through the VFS (EACCES).** `filp_open`
+   cannot open cgroup files under the module's domain. Switched to kernel
+   internal data.
 
-5. **采样间隔=窗口周期**：tick 100ms = period 100ms，每次采样要么设基准
-   要么窗口重置，永远走不到配额检查。tick 改 10ms。
+4. **`struct cgroup.bstat` offset mismatch.** The device kernel is at a
+   different commit than the local tree; layout validation passed but `bstat`
+   read as zero. Replaced with per-task `task_sched_runtime` accumulation.
 
-### 真机证据
+5. **Sample interval equal to window period.** With a 100 ms tick and a 100 ms
+   period, every sample either set the base or reset the window, so the quota
+   check was never reached. Tick reduced to 10 ms.
+
+### On-device verification
 
 ```
 $ dmesg | grep droid_lkm_cpu
 layout ok: controllers=7 bstat_off=984
-over quota (62593 >= 50000), SIGSTOP     ← --cpus=0.5 窗口内超限
+over quota (62593 >= 50000), SIGSTOP     <- --cpus=0.5, over within window
 window reset, SIGCONT
 over quota (57774 >= 50000), SIGSTOP
 window reset, SIGCONT
 
-容器内 ps 出现 T(stopped) 进程            ← 真的冻结了
+ps inside container shows T (stopped)    <- processes actually frozen
 ```
 
 ---
 
-## 已知限制
+## Known limitations
 
-| 项 | 说明 |
-|----|------|
-| pids 迁移进程不计 | 计数只统计"在 cgroup 内 fork 的"，迁移进去的那一个不计入（真实控制器差异） |
-| cpu 是时间片而非平滑 throttle | SIGSTOP 冻结比 CFS 的 throttle 暴力；窗口粒度内进程可能整段暂停 |
-| cpu 记账采样有 10ms 粒度 | busy-loop 场景准确；短突发可能漏计 |
-| rmmod 清空配置 | 重载后需重新写 cpu.max/pids.max（Droidspaces 重启容器即可） |
-| 冻结只对进程发 SIGSTOP | 容器内进程忽略 SIGSTOP 的场景不存在（STOP 不可捕获） |
+| Item | Detail |
+|---|---|
+| Migrated processes are not counted | Accounting covers processes forked inside the cgroup; a process migrated in is not counted. Diverges from a real controller. |
+| cpu uses time slices, not smooth throttling | SIGSTOP is coarser than CFS throttling; a process can be paused for the remainder of a window. |
+| 10 ms accounting granularity | Accurate for busy loops; may miss short bursts. |
+| `rmmod` clears configuration | `cpu.max` / `pids.max` must be written again after reload. Restarting the container through Droidspaces suffices. |
+| Freezing sends SIGSTOP only | SIGSTOP cannot be caught or ignored, so this covers all container processes. |
 
 ---
 
-## 加载方式（insmod，不进开机自启）
+## Loading
 
 ```bash
 su -c 'insmod /data/local/tmp/droid_lkm_pids.ko'
 su -c 'insmod /data/local/tmp/droid_lkm_cpu.ko'
 
-# 卸载（先停容器）
+# unload (stop containers first)
 su -c 'rmmod droid_lkm_cpu; rmmod droid_lkm_pids'
 ```
 
-**重要**：加载顺序无关，但 Droidspaces 创建容器时**必须两个模块都在**，
-否则限制写入失败后被跳过（需要重启容器重试）。
+Load order is irrelevant. Both modules must be present when Droidspaces creates
+a container; otherwise the limit write fails and is skipped, and the container
+must be restarted to retry.
 
 ---
 
-## 构建
+## Building
 
 ```bash
-# WSL，内核树 ~/zram/common（6.1.157）
+# WSL, kernel tree at ~/zram/common (6.1.157)
 bash /mnt/c/nomount/wsl/build_pids.sh
 bash /mnt/c/nomount/wsl/build_cpu.sh
 ```
 
-需要：clang20、内核树 with out/ 已配置、`net_ip6nat/kr/` 的 KallRecon
-（复制到本目录）。
+Requirements: clang 20, a configured kernel tree with `out/`, and KallRecon
+from `net_ip6nat/kr/` copied into this directory.
 
-## 文件
+## Files
 
 ```
 extra/cgrouplimits/
 ├── Makefile
-├── pids_mod.c          pids 仿真（6.12 Plan B 移植 + "cpu" 显示）
-├── cpu_mod.c           cpu.max 时间片限流
-└── kr/                 KallRecon（复制自 net_ip6nat/kr）
+├── pids_mod.c          pids emulation (6.12 Plan B port, plus "cpu" in visibility layer)
+├── cpu_mod.c           cpu.max time-slice throttling
+└── kr/                 KallRecon (copied from net_ip6nat/kr)
 ```
 
-## 两个模块共用的部分（common.c）
+## Shared code (`common.c`)
 
-原先两个模块各写了一套 cgroup 布局校验，901 / 902 行里只有 15% 逐字相同
-—— cpu 那份照着 pids 抄的（`cpu_mod.c` 里还留着「同 droid_lkm_pids 的做法」
-这条注释）。真正的问题是**校验强度漂移了**：
+Both modules originally carried their own cgroup layout validation. Of the
+901 / 902 lines, only 15% were byte-identical — the cpu copy was derived from
+the pids one, and `cpu_mod.c` still carries the comment "same approach as
+droid_lkm_pids". The real defect was that validation strength had diverged:
 
-| 校验 | pids | cpu（改前） |
+| Check | pids | cpu (before) |
 |---|---|---|
-| `init_css_set.dfl_cgrp == &cgrp_dfl_root.cgrp` | ✅ | ✅ |
-| `init_task.cgroups == &init_css_set` | ✅ | ❌ **缺失** |
+| `init_css_set.dfl_cgrp == &cgrp_dfl_root.cgrp` | yes | yes |
+| `init_task.cgroups == &init_css_set` | yes | **missing** |
 
-只做第一重时，若 `task_struct.cgroups` 的偏移算错，会在 fork 路径上写坏内存，
-而且现场离肇事点很远。
+With only the first check, a miscalculated `task_struct.cgroups` offset writes
+into the wrong memory on the fork path, and the resulting corruption surfaces
+far from the faulting access.
 
-现在抽到 `common.c` / `common.h`：
+Both are now in `common.c` / `common.h`:
 
 ```
-ctl_read_ptr()        安全读内核指针（copy_from_kernel_nofault）
-ctl_is_kptr()         判内核指针
-ctl_anchors_resolve() 解析 4 个布局锚点符号
-ctl_subsys_count()    数 cgroup_subsys[] 里真实的控制器数
-ctl_layout_probe()    修正编译期偏移 + 两重校验
+ctl_read_ptr()         safe kernel pointer read (copy_from_kernel_nofault)
+ctl_is_kptr()          kernel pointer range test
+ctl_anchors_resolve()  resolve the four layout anchor symbols
+ctl_subsys_count()     count real controllers in cgroup_subsys[]
+ctl_layout_probe()     correct compile-time offsets, run both checks
 ```
 
-两边都调 `ctl_layout_probe()`，**cpu 侧因此自动获得之前缺的第二重校验**。
+Both modules call `ctl_layout_probe()`, so the cpu side gains the second check
+it previously lacked.
 
-`common.o` 分别链进两个 `.ko`，两个模块仍各自独立、可单独 insmod / rmmod。
-这一点和 `kr/`（KallRecon 也是各链一份）一样是**刻意的重复**，不能合并成一个模块。
+`common.o` is linked into both `.ko` files; the modules remain independent and
+can be inserted and removed separately. This duplication is intentional, as
+with `kr/` (KallRecon is likewise linked into each).
 
-## IPC key 索引不用内核 rhashtable
+## Why IPC key indexing does not use the kernel rhashtable
 
-`struct ipc_namespace` 是模块自己 `kzalloc` 的（按编译期 `sizeof`），但
-`rhashtable_init()` 是内核函数，它按**内核的** `struct rhashtable` 布局去初始化
-嵌在 `ids[]` 里的 `key_ht`。目标内核的结构体一旦比构建时大，这次初始化就写穿
-我们自己的结构体 —— 堆破坏，表现为随机 panic 或卡死。
+`struct ipc_namespace` is allocated by the module with `kzalloc` using the
+compile-time `sizeof`, but `rhashtable_init()` is a kernel function that
+initialises the embedded `key_ht` inside `ids[]` according to the **kernel's**
+`struct rhashtable` layout. If the target kernel's structure is larger than the
+one used at build time, the initialisation writes past the end of the allocation
+— heap corruption that surfaces as a random panic or hang.
 
-（`Dere3046/_patchHarmony` issue #12 在一台 MT6989 6.1.145 上实测差 `0x18`：
-`sizeof(ipc_ids)` 272 vs 280 × 3。）
+(`Dere3046/_patchHarmony` issue #12 measured a `0x18` difference on an MT6989
+`6.1.145`: `sizeof(ipc_ids)` 272 versus 280, three times.)
 
-修法：`vendor/ipc/` 里把 key 索引换成模块私有单链表
-（`ipc_keylist_lookup/insert/unlink/clear`），`nm -u *.ko | grep rhashtable` 归零。
-容器里 SysV IPC 对象很少，线性扫描开销可忽略，换来的是对内核布局完全不敏感。
+Resolution: `vendor/ipc/` replaces key indexing with a module-private singly
+linked list (`ipc_keylist_lookup/insert/unlink/clear`), so
+`nm -u *.ko | grep rhashtable` reports nothing. SysV IPC object counts inside a
+container are small, making linear scan cost negligible in exchange for complete
+insensitivity to kernel structure layout.

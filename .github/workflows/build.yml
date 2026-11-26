@@ -1,4 +1,5 @@
-name: build
+name: Module Build
+run-name: Module build · KMI ${{ inputs.kmis || 'all' }}${{ inputs.package && ' · packaged' || '' }}${{ inputs.version && format(' · {0}', inputs.version) || '' }}
 
 # 为全部支持的 arm64 GKI KMI 构建 Droidspaces 所需的可加载模块，
 # 并打包成按 KMI 自动选择的 KernelSU 模块。
@@ -8,8 +9,8 @@ name: build
 #   devtmpfs_lkm-<kmi>.ko   注册 devtmpfs 文件系统
 #   macvlan-<kmi>.ko        容器独立局域网 IP
 #   ip6table_nat-<kmi>.ko   IPv6 NAT
-#   droidspaces-lkm-<kmi>-arm64.zip   单 KMI 的模块包
-#   droidspaces-lkm-arm64.zip         全 KMI 合并包, 开机按 osrelease 自动选
+#   droidspaces-lkm-<kmi>-arm64-<ver>.zip   单 KMI 的模块包
+#   droidspaces-lkm-arm64-<ver>.zip         全 KMI 合并包, 开机按 osrelease 自动选
 #   source-<tag>.tar.gz               对应源码快照 (GPL-2.0 要求)
 #
 # 构建用 SukiSU-Ultra 的 DDK 容器, 内含该 KMI 真实的
@@ -44,6 +45,14 @@ on:
         required: false
         type: boolean
         default: false
+      version:
+        # 写进 jar 里的 module.prop。不传就沿用仓库里的值（v0.1.21），
+        # 那样所有测试版报的版本号都一样，用户贴日志时分不清装的是哪个 ——
+        # issue #2 就因为这个把排查带偏过。
+        description: '写进模块包的版本号，例如 v0.1.22-test.10；留空则用 module.prop 里的'
+        required: false
+        type: string
+        default: ''
   workflow_dispatch:
     inputs:
       kmis:
@@ -61,6 +70,13 @@ on:
         required: false
         type: string
         default: 'lkm4ctr'
+      # 手动跑全量时通常也想要 zip 产物；这个开关只影响是否打包，
+      # 不发布 —— 发布始终走 release.yml 打 tag。
+      package:
+        description: '是否打包模块 zip 与源码快照（只产出 artifact，不发布）'
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -71,13 +87,13 @@ env:
 
 jobs:
   prepare:
-    name: Prepare matrix
+    name: Resolve build matrix
     runs-on: ubuntu-latest
     outputs:
       matrix: ${{ steps.set.outputs.matrix }}
       ddk_release: ${{ steps.set.outputs.ddk_release }}
     steps:
-      - name: 检出
+      - name: Checkout
         uses: actions/checkout@v6
 
       - name: Compute KMI matrix
@@ -86,14 +102,29 @@ jobs:
           REQUESTED: ${{ inputs.kmis }}
         run: |
           set -euo pipefail
-          kmis="${REQUESTED:-$DEFAULT_KMIS}"
+          # '' 和 'all' 都表示全量。不能用 ${REQUESTED:-...} 单独处理，
+          # 因为调用方（ci.yml 的 full_matrix）传的哨兵值必须显式识别。
+          case "$REQUESTED" in
+            ''|all|ALL) kmis="$DEFAULT_KMIS" ;;
+            *)          kmis="$REQUESTED" ;;
+          esac
           json=$(python3 scripts/make_matrix.py "$kmis")
           echo "matrix=$json" >> "$GITHUB_OUTPUT"
           echo "ddk_release=${{ inputs.ddk_release }}" >> "$GITHUB_OUTPUT"
           echo "KMI 列表: $kmis"
 
+  static-check:
+    name: Static checks
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Run static checks
+        run: sh scripts/ci_static_check.sh
+
   build:
-    name: Build (${{ matrix.kmi }})
+    name: Compile ${{ matrix.kmi }}
     needs: prepare
     runs-on: ubuntu-latest
     container:
@@ -104,10 +135,10 @@ jobs:
       matrix: ${{ fromJson(needs.prepare.outputs.matrix) }}
 
     steps:
-      - name: 检出
+      - name: Checkout
         uses: actions/checkout@v6
 
-      - name: 拉取上游源码并打补丁
+      - name: Fetch upstream and apply patches
         run: |
           set -euxo pipefail
           command -v git >/dev/null || { apt-get update -qq && apt-get install -y -qq git ca-certificates; }
@@ -126,7 +157,7 @@ jobs:
             done
           fi
 
-      - name: 编译模块
+      - name: Compile modules
         env:
           KMI: ${{ matrix.kmi }}
         run: |
@@ -136,7 +167,7 @@ jobs:
           chmod +x "$GITHUB_WORKSPACE/scripts/build_modules.sh"
           bash "$GITHUB_WORKSPACE/scripts/build_modules.sh"                "$KMI" "$KDIR" "$GITHUB_WORKSPACE" "$GITHUB_WORKSPACE/out"
 
-      - name: 校验
+      - name: Verify artifacts
         env:
           KMI: ${{ matrix.kmi }}
         run: |
@@ -176,7 +207,7 @@ jobs:
           done
           exit $FAIL
 
-      - name: 上传
+      - name: Upload artifacts
         if: always()
         uses: actions/upload-artifact@v7
         with:
@@ -184,37 +215,82 @@ jobs:
           path: out/
           if-no-files-found: warn
 
-  package:
-    name: Package
+  validate:
+    name: Generate validation evidence
     needs: [prepare, build]
-    # CI 只用 ko-* artifact 做汇总，不需要模块 zip 和源码快照；
-    # 打包只在发布时做，省掉 CI 关键路径上的一次压缩。
-    if: always() && needs.build.result != 'cancelled' && inputs.package
+    # 与 package 同一门槛：构建被取消就不做；失败也照实记录已有产物，
+    # 这样 validation.json 反映的是「实际产出了什么」，不是「本该产出什么」。
+    if: always() && needs.build.result != 'cancelled'
     runs-on: ubuntu-latest
     steps:
-      - name: 检出
+      - name: Checkout
         uses: actions/checkout@v6
 
-      - name: 下载所有产物
+      - name: Download build artifacts
         uses: actions/download-artifact@v8
         with:
           pattern: ko-*
           path: ko-all
           merge-multiple: true
 
-      - name: 整理
+      - name: Generate validation.json
+        run: |
+          set -euo pipefail
+          python3 scripts/gen_validation.py \
+            --ko-dir ko-all \
+            --out validation.json \
+            --commit "$GITHUB_SHA" \
+            --source-root "$GITHUB_WORKSPACE"
+          cat validation.json
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: droidspaces-lkm-validation
+          path: validation.json
+          if-no-files-found: error
+
+  package:
+    name: Assemble release packages
+    needs: [prepare, build, validate]
+    # CI 只用 ko-* artifact 做汇总，不需要模块 zip 和源码快照；
+    # 打包只在发布时做，省掉 CI 关键路径上的一次压缩。
+    if: always() && needs.build.result != 'cancelled' && inputs.package
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@v8
+        with:
+          pattern: ko-*
+          path: ko-all
+          merge-multiple: true
+
+      - name: Download validation evidence
+        uses: actions/download-artifact@v8
+        continue-on-error: true
+        with:
+          name: droidspaces-lkm-validation
+          path: dist
+
+      - name: Stage artifacts
         run: |
           set -euo pipefail
           mkdir -p dist
           if [ -d ko-all ]; then
             find ko-all -name '*.ko' -exec cp -v {} dist/ \;
+            # 符号依赖清单（build_modules.sh 生成）也要进 dist，
+            # 否则装到模块包里就没有 —— 见 module/action.sh 的「内核导出检查」
+            find ko-all -name 'symcheck-*.txt' -exec cp -v {} dist/ \; || true
           else
             echo "::warning::没有下载到任何 ko"
           fi
           echo "=== dist ==="
           ls -lh dist/ || true
 
-      - name: 生成源码快照 (GPL-2.0 要求)
+      - name: Create source snapshot (GPL-2.0)
         run: |
           set -euo pipefail
           rm -rf /tmp/src
@@ -227,8 +303,17 @@ jobs:
             git clone --depth=1 https://github.com/cyanmint/lkm4ctr.git /tmp/src/lkm4ctr
           fi
           if [ -d patches ]; then
-            for p in patches/*.patch; do
-              [ -f "$p" ] && git -C /tmp/src/lkm4ctr apply "PWD/$p" 2>/dev/null || true
+            # 必须用 $PWD 拼绝对路径：git -C 把 git 的工作目录切到 /tmp/src/lkm4ctr，
+            # 而 $p 是仓库内相对路径（patches/00xx-*.patch）。原来写成字面量 "PWD/$p"
+            # 少了 $，路径永远解析不到；末尾又 || true 把失败全吞了 —— 结果是 GPL
+            # 源码快照里的源码没打这些补丁，和实际出货的 .ko 不一致，而且没有任何
+            # 报错。现在解析绝对路径、失败就明确中断（补丁本应按序干净应用）。
+            for p in "$PWD"/patches/*.patch; do
+              [ -f "$p" ] || continue
+              if ! git -C /tmp/src/lkm4ctr apply "$p"; then
+                echo "::error::补丁应用失败: $p —— GPL 源码快照会与出货 .ko 不一致"
+                exit 1
+              fi
             done
           fi
           rm -rf /tmp/src/lkm4ctr/.git
@@ -237,7 +322,7 @@ jobs:
           tar czf dist/source-$(date +%Y%m%d).tar.gz -C /tmp/src .
           ls -lh dist/source-*.tar.gz
 
-      - name: 构建 KernelSU 模块
+      - name: Assemble KernelSU module packages
         run: |
           set -euo pipefail
           command -v zip >/dev/null || { sudo apt-get update -qq && sudo apt-get install -y -qq zip unzip; }
@@ -246,20 +331,77 @@ jobs:
           rm -rf "$STAGE"; mkdir -p "$STAGE/ko"
 
           cp dist/*.ko "$STAGE/ko/"
+          # 符号清单随 ko 一起进包：action.sh 与 service.sh 用它查
+          # /proc/kallsyms 的 __ksymtab_，直接报出本内核缺哪些符号
+          cp dist/symcheck-*.txt "$STAGE/ko/" 2>/dev/null || echo "::warning::没有 symcheck 清单"
           cp module/module.prop module/customize.sh module/post-fs-data.sh module/service.sh \
-          module/uninstall.sh module/action.sh module/boot-completed.sh "$STAGE/"
+          module/uninstall.sh module/action.sh module/boot-completed.sh module/i18n.sh "$STAGE/"
+          # WebUI（KernelSU 模块页）：页面与脚本一起进包
+          cp -R module/webroot "$STAGE/"
+          # 默认显示路线配置
+          cp module/route "$STAGE/route"
+          # 验证证据随包走：用户拿到 zip 就能核对二进制哈希与产出 commit。
+          cp dist/validation.json "$STAGE/" 2>/dev/null || echo "::warning::没有 validation.json"
           chmod 755 "$STAGE"/*.sh
-          sed -i 's/\r$//' "$STAGE"/*.sh "$STAGE/module.prop"
+          sed -i 's/\r$//' "$STAGE"/*.sh "$STAGE/module.prop" "$STAGE"/ko/symcheck-*.txt 2>/dev/null || true
+          # 把本次构建的版本号写进 module.prop。
+          # 不写的话所有测试版都报仓库里那个固定的 v0.1.21，用户贴日志时
+          # 分不清装的是哪个版本 —— issue #2 的排查就因为这个走偏过。
+          if [ -n "${{ inputs.version }}" ]; then
+            v="${{ inputs.version }}"
+            sed -i "s|^version=.*|version=$v|" "$STAGE/module.prop"
+            # versionCode 必须落在 int32 范围内。
+            #
+            # KernelSU 的 Module.kt 把 versionCode 声明成 Int，Downloader.kt
+            # 用 .toInt() 解析；超过 Integer.MAX_VALUE (2147483647) 时 Kotlin
+            # 直接抛 NumberFormatException，更新检查整个失败 —— 表现为
+            # 「永远收不到更新」。
+            #
+            # 所以不能用 %Y%m%d%H%M（12 位，2026 亿，超了 94 倍）。
+            # 用 YYYYMMDD + 2 位当日序号：
+            #   seq = 小时*4 + 分钟/15  -> 00..95，4 槽/小时、96 槽/天
+            #   2026111700 .. 2026111795，最大 2,026,117,995 < 2,147,483,647
+            # 到 2147 年都不会溢出。
+            #
+            # 只算一次并落盘到 dist/version-code.txt：release.yml 要靠这个
+            # 文件把完全相同的值写进 update.json。
+            VC=$(( $(date +%Y%m%d) * 100 + $(date +%H) * 4 + $(date +%M) / 15 ))
+            if [ "$VC" -gt 2147483647 ]; then
+              echo "::error::versionCode $VC 超出 int32，KernelSU 将无法解析"
+              exit 1
+            fi
+            sed -i "s|^versionCode=.*|versionCode=$VC|" "$STAGE/module.prop"
+            echo "$VC" > "$GITHUB_WORKSPACE/dist/version-code.txt"
+            echo "$v"  > "$GITHUB_WORKSPACE/dist/version-name.txt"
+            echo "=== module.prop ==="
+            cat "$STAGE/module.prop"
+            echo "versionCode for update.json: $(cat "$GITHUB_WORKSPACE/dist/version-code.txt")"
+          else
+            echo "::warning::没有传 version，模块包会沿用 module.prop 里的固定版本号"
+          fi
+
+          # 文件名带上版本号。
+          #
+          # 之前固定叫 droidspaces-lkm-arm64.zip，用户下了好几个版本之后
+          # 本地全叫同一个名字，浏览器只会加 (1)(2) 后缀，分不清哪个是哪个。
+          # release 页面上也一样：两个 release 的资产名完全相同。
+          #
+          # 没传 version 时保持旧名（ci.yml 那种只验证编译的路径）。
+          VERSUF=""
+          if [ -n "${{ inputs.version }}" ]; then
+            VERSUF="-${{ inputs.version }}"
+          fi
+          echo "包名后缀: [${VERSUF}]"
 
           # 全 KMI 合并包
-          ( cd "$STAGE" && zip -qr1 "$GITHUB_WORKSPACE/dist/droidspaces-lkm-arm64.zip" . )
+          ( cd "$STAGE" && zip -qr1 "$GITHUB_WORKSPACE/dist/droidspaces-lkm-arm64${VERSUF}.zip" . )
           echo "=== 合并包内容 ==="
-          unzip -l "$GITHUB_WORKSPACE/dist/droidspaces-lkm-arm64.zip"
+          unzip -l "$GITHUB_WORKSPACE/dist/droidspaces-lkm-arm64${VERSUF}.zip"
 
           # 按 KMI 拆分单包
           for f in dist/*.ko; do
             [ -f "$f" ] || continue
-            kmi=$(basename "$f" | sed -E 's/^(lkm4ctr|devtmpfs_lkm|macvlan|ip6table_nat|vkms|droid_lkm_pids|droid_lkm_cpu|uart_guard)-(.*)\.ko$/\2/')
+            kmi=$(basename "$f" | sed -E 's/^(lkm4ctr|devtmpfs_lkm|macvlan|ip6table_nat|vkms|droid_lkm_pids|droid_lkm_cpu|uart_guard|mali_nsfix)-(.*)\.ko$/\2/')
             case "$kmi" in
               android*) ;;
               *) continue ;;
@@ -267,17 +409,28 @@ jobs:
             S="$RUNNER_TEMP/one-$kmi"
             rm -rf "$S"; mkdir -p "$S/ko"
             cp dist/*-"$kmi".ko "$S/ko/"
+            cp "dist/symcheck-$kmi.txt" "$S/ko/" 2>/dev/null || true
             cp module/module.prop module/customize.sh module/post-fs-data.sh module/service.sh \
-            module/uninstall.sh module/action.sh module/boot-completed.sh "$S/"
+            module/uninstall.sh module/action.sh module/boot-completed.sh module/i18n.sh "$S/"
+            cp -R module/webroot "$S/"
+            cp module/route "$S/route"
+            cp dist/validation.json "$S/" 2>/dev/null || echo "::warning::没有 validation.json"
             chmod 755 "$S"/*.sh
-            sed -i 's/\r$//' "$S"/*.sh "$S/module.prop"
-            ( cd "$S" && zip -qr1 "$GITHUB_WORKSPACE/dist/droidspaces-lkm-$kmi-arm64.zip" . )
+            sed -i 's/\r$//' "$S"/*.sh "$S/module.prop" "$S"/ko/symcheck-*.txt 2>/dev/null || true
+            if [ -n "${{ inputs.version }}" ]; then
+              v="${{ inputs.version }}"
+              sed -i "s|^version=.*|version=$v|" "$S/module.prop"
+              # 和上面全 KMI 合并包用同一个值：从 dist/version-code.txt 读，
+              # 保证同一次发布里所有产物的 versionCode 完全一致
+              sed -i "s|^versionCode=.*|versionCode=$(cat "$GITHUB_WORKSPACE/dist/version-code.txt")|" "$S/module.prop"
+            fi
+            ( cd "$S" && zip -qr1 "$GITHUB_WORKSPACE/dist/droidspaces-lkm-$kmi-arm64${VERSUF}.zip" . )
           done
 
           echo "=== 最终 dist ==="
           ls -lh dist/
 
-      - name: 上传
+      - name: Upload artifacts
         uses: actions/upload-artifact@v7
         with:
           name: droidspaces-lkm-dist

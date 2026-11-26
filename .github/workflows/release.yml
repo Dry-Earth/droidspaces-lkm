@@ -1,4 +1,5 @@
 name: Release
+run-name: Release ${{ inputs.tag || github.ref_name }}
 
 # 真发布：只有打 tag 才会走到这里。
 #
@@ -30,20 +31,23 @@ concurrency:
 
 jobs:
   build:
-    name: build
+    name: Build release artifacts
     uses: ./.github/workflows/build.yml
     with:
       package: true
+      # 把 tag 写进模块包的 module.prop，否则所有版本都报同一个固定号，
+      # 用户贴日志时无法区分装的是哪个构建（issue #2 就这么被带偏过）
+      version: ${{ inputs.tag || github.ref_name }}
 
   publish:
-    name: publish
+    name: Publish GitHub release
     needs: [build]
     runs-on: ubuntu-latest
     steps:
-      - name: 检出
+      - name: Checkout
         uses: actions/checkout@v6
 
-      - name: 下载构建产物
+      - name: Download build artifacts
         # Package job 已经把 .ko、模块 zip 和源码快照都做好了（artifact
         # droidspaces-lkm-dist）。这里不再重新打包一遍 —— 之前那版会重新
         # 压所有 zip 和源码快照，多花约 35 秒，而且两份逻辑容易走偏。
@@ -52,14 +56,14 @@ jobs:
           name: droidspaces-lkm-dist
           path: dist
 
-      - name: 列出产物
+      - name: List release assets
         run: |
           set -euo pipefail
           ls -lh dist/
           compgen -G "dist/*.zip" > /dev/null || { echo "::error::没有模块包"; exit 1; }
           compgen -G "dist/*.ko" > /dev/null || { echo "::error::没有 .ko"; exit 1; }
 
-      - name: 创建 pre-release
+      - name: Create pre-release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -74,9 +78,76 @@ jobs:
 
           # --prerelease 是当前阶段的硬性要求：还没有经过完整真机回归的
           # 正式版本，任何发布都只能是预览版。
+          # 标题只写 tag（与 zram-lkm 一致）：KernelSU 的更新弹窗显示的是
+          # update.json 的 changelog，Release 标题不参与更新判断，保持简洁。
           gh release create "$TAG" \
             --repo "$GITHUB_REPOSITORY" \
-            --title "Droidspaces LKM $TAG (preview)" \
+            --title "$TAG" \
             --prerelease \
             --notes-file notes.md \
-            dist/*.ko dist/*.zip dist/source-*.tar.gz
+            dist/*.zip dist/source-*.tar.gz
+
+  # ---------------------------------------------------------------------------
+  # 发布后同步 update.json 与 docs/CHANGELOG-latest.md
+  #
+  # 这两样是 KernelSU 更新弹窗实际读的东西（GitHub Release 正文它不看）：
+  #   update.json 的 versionCode 决定「要不要提示更新」
+  #   update.json 的 changelog  决定弹窗里显示什么
+  #
+  # 手工维护出过两次错：
+  #   1. versionCode 写成 10 位（2026111700），而包里是 12 位（202611170004）。
+  #      数值比较下 20 亿 < 2026 亿，KernelSU 永远判定已是最新，用户收不到更新。
+  #   2. changelog 指向整个 CHANGELOG.md（64 KB 全部历史），弹窗里是一堵墙。
+  #
+  # 所以改成从构建产物里取 versionCode（dist/version-code.txt，由 build.yml
+  # 写包时一并落盘，与包内完全一致），从 CHANGELOG 里切当前版本那一段。
+  #
+  # 提交带 [skip ci]，避免又触发一轮 CI。
+  # ---------------------------------------------------------------------------
+  publish-meta:
+    name: Update release metadata
+    needs: [build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout master
+        uses: actions/checkout@v6
+        with:
+          ref: master
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@v8
+        with:
+          name: droidspaces-lkm-dist
+          path: dist
+
+      - name: Generate update.json and CHANGELOG-latest.md
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            TAG="${{ inputs.tag }}"
+          else
+            TAG="${GITHUB_REF_NAME}"
+          fi
+          echo "tag: $TAG"
+          test -f dist/version-code.txt || {
+            echo "::error::dist/version-code.txt 缺失 —— build.yml 的打包步骤没写它，"
+            echo "::error::无法保证 update.json 与包内 versionCode 一致"
+            exit 1
+          }
+          python3 scripts/gen_release_meta.py --version "$TAG" --dist dist
+
+      - name: Commit metadata
+        run: |
+          set -euo pipefail
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add docs/CHANGELOG-latest.md update.json
+          if git diff --cached --quiet; then
+            echo "元数据无变化，跳过提交"
+          else
+            git commit -m "release: 同步 update.json 与 CHANGELOG-latest.md [skip ci]"
+            git push
+            echo "已推送"
+          fi

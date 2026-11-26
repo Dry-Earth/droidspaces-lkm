@@ -11,7 +11,7 @@
  *
  * devtmpfs 依赖 18 个内核未导出的符号 (vfs_kern_mount / register_filesystem /
  * lookup_one_len ...), 全部通过 KallRecon 按名字解析 —— 也就是
- * kr/core.c 里的函数指针 kallrecon_klp。那个指针只有在
+ * kallrecon/core.c 里的函数指针 kallrecon_klp。那个指针只有在
  * find_kallsyms_base() 里才会被赋值:
  *
  *     void find_kallsyms_base(void) {
@@ -44,7 +44,7 @@
 #include <linux/init.h>
 
 #include "devtmpfs.h"
-#include "core.h"
+#include "kallrecon/core.h"
 
 
 static int __init devtmpfs_lkm_init(void)

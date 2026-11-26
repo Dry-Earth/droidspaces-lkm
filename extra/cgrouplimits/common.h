@@ -35,7 +35,35 @@
 #ifndef DROID_LKM_CGROUPLIMITS_COMMON_H
 #define DROID_LKM_CGROUPLIMITS_COMMON_H
 
+#include <linux/kprobes.h>
 #include <linux/types.h>
+
+/*
+ * 探针路由（module_param route）。
+ *
+ *   0 = auto     inline 优先，inline 装不上退回 kprobe（默认）
+ *   1 = inline   只用 inline；装不上就放弃该探针
+ *   2 = kprobe   只用 kprobe（改动前的行为）
+ *
+ * 存在意义：inline 命中是一条 b 指令（几十 ns），kprobe 命中要陷一次异常
+ * （约 1-3 us）。cgroup_can_fork 每次 fork 都命中，是唯一的热路径。
+ * 但 inline 需要精确的原函数签名，而 kprobe 的 pre_handler 只碰 regs、
+ * 天然跨版本。所以只在签名已确认的版本上开放 inline，其余一律 kprobe。
+ *
+ * 为什么没有 ftrace 档：mali_nsfix 曾写过一版 ftrace 后端（完全替代式，
+ * `regs->pc = nshf_get_pid`），但设备内核是 `# CONFIG_FUNCTION_TRACER is not
+ * set`，没有 __fentry__ 补丁点，七个 KMI 上编译出来都是空的，已删除
+ * （见 9c55507 / af07489）。而且那版是**完全替代**（自带 find_get_pid 实现，
+ * 根本不执行原函数）；can_fork 的语义相反 —— 通过时必须执行原函数，只有
+ * 超限才拒绝。ftrace 的 IPMODIFY 只能改 pc 重定向，做不到「只跳过函数体、
+ * 保留返回」这种 kprobe 式的 `pc = lr`。所以这里只能 inline 或 kprobe。
+ */
+extern unsigned int ctl_route;
+
+/* 引擎初始化：hk_init + 用 KallRecon 做 resolve 回调。失败返回负值。
+ * 由 pids 模块实现并调用（cpu 不链引擎）。 */
+int ctl_hk_init(void);
+void ctl_hk_exit(void);
 
 /* 布局锚点符号，运行时解析 */
 struct ctl_anchors {
@@ -62,6 +90,27 @@ bool __nocfi ctl_read_ptr(unsigned long addr, unsigned long *out);
 
 /* 判一个值像不像内核指针（0xffff.... 段且非 0） */
 bool ctl_is_kptr(unsigned long v);
+
+/*
+ * 可选 kprobe。
+ *
+ * register_kprobe / unregister_kprobe / register_kretprobe /
+ * unregister_kretprobe 原先是**静态链接**的：厂商内核只要没导出其中之一
+ * （或干脆没编 CONFIG_KPROBES），insmod 直接 Unknown symbol，整个
+ * droid_lkm_pids / droid_lkm_cpu 装不上 —— 连带文件层、显示层一起没了。
+ *
+ * 现在这 four 个改成经 KallRecon 运行时解析的函数指针：
+ *   - 解析不到时 ctl_probe_register 返回 -ENOSYS，调用方按既有 best-effort
+ *     语义跳过该探针，模块照常加载，只是限额/显示功能降级；
+ *   - 不再产生对内核 kprobe 符号的静态依赖，模块能在无 kprobe 的内核上加载。
+ *
+ * 首次使用时懒解析（与 ZR_SYM / ctl_anchors_resolve 同一模式），
+ * 必须在 find_kallsyms_base() 之后调用。
+ */
+int ctl_probe_register(struct kprobe *p);
+void ctl_probe_unregister(struct kprobe *p);
+int ctl_kretprobe_register(struct kretprobe *rp);
+void ctl_kretprobe_unregister(struct kretprobe *rp);
 
 /*
  * 解析四个锚点符号。缺任何一个就返回 -EOPNOTSUPP —— 调用方据此跳过所有

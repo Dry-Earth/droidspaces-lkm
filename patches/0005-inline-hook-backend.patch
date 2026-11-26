@@ -3,7 +3,7 @@ new file mode 100644
 index 0000000..f8aace5
 --- /dev/null
 +++ b/glue/hk/hk.c
-@@ -0,0 +1,229 @@
+@@ -0,0 +1,230 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +/*
 + * Copyright (C) 2026 dere3046
@@ -169,18 +169,19 @@ index 0000000..f8aace5
 + * half of that: an inline would move the call into whatever caller lto picked, and
 + * the check __nocfi turned off would come back with it
 + */
-+__nocfi noinline void hk_wait_tasks_rcu(void)
++__nocfi noinline bool hk_wait_tasks_rcu(void)
 +{
 +	hk_synchronize_rcu_tasks_fn fn;
 +	unsigned long sym = hk_resolve("synchronize_rcu_tasks");
 +
 +	if (!sym || !hk_ker_addr_ok(sym)) {
 +		pr_warn_once("[lkmhook] synchronize_rcu_tasks not found, "
-+			     "a freed trampoline may still be running\n");
-+		return;
++			     "keeping freed trampoline alive\n");
++		return false;
 +	}
 +	fn = (hk_synchronize_rcu_tasks_fn)sym;
 +	fn();
++	return true;
 +}
 +
 +void hk_exit(void)
@@ -306,7 +307,7 @@ index 0000000..056e134
 + * nothing. the call inside is indirect and cfi is off for it, a direct call from a
 + * consumer needs nothing
 + */
-+void hk_wait_tasks_rcu(void);
++bool hk_wait_tasks_rcu(void);
 +#endif
 diff --git a/glue/hk/hk_cfi.c b/glue/hk/hk_cfi.c
 new file mode 100644
@@ -431,7 +432,7 @@ new file mode 100644
 index 0000000..b8ad7af
 --- /dev/null
 +++ b/glue/hk/hk_inline.c
-@@ -0,0 +1,1663 @@
+@@ -0,0 +1,1675 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +/*
 + * Copyright (C) 2026 dere3046
@@ -1868,7 +1869,14 @@ index 0000000..b8ad7af
 +			h->name ? h->name : "?");
 +		return;
 +	}
-+	hk_wait_tasks_rcu();
++	if (!hk_wait_tasks_rcu()) {
++		/* entry restored, but no grace period to prove no core is still
++		 * inside the trampoline -- keep it (pending blocks rmmod), never
++		 * free on the skip or it is a use-after-free */
++		h->pending = true;
++		hk_inline_pending_add(h);
++		return;
++	}
 +	hk_inline_free(h);
 +	h->pending = false;
 +	hk_inline_pending_del(h);
@@ -1904,7 +1912,12 @@ index 0000000..b8ad7af
 +			list_add(&ent->list, &work);
 +			continue;
 +		}
-+		hk_wait_tasks_rcu();
++		if (!hk_wait_tasks_rcu()) {
++			/* restored but cannot wait for the running core -- keep it
++			 * pending and retry next pass, never free on the skip */
++			list_add(&ent->list, &work);
++			continue;
++		}
 +		hk_inline_free(ent->hook);
 +		ent->hook->pending = false;
 +		kfree(ent);
@@ -6117,7 +6130,7 @@ new file mode 100644
 index 0000000..051d755
 --- /dev/null
 +++ b/glue/shadow_inline.c
-@@ -0,0 +1,163 @@
+@@ -0,0 +1,167 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +/*
 + * shadow_inline.c - inline text-patch backend for the shadow_hook engine.
@@ -6273,7 +6286,11 @@ index 0000000..051d755
 +	 * （它通过 hook->original 进去的，入口改了也追不回来）。等一个宽限期
 +	 * 再释放那一页，避免把正在执行的代码释放掉。
 +	 */
-+	synchronize_rcu();
++	if (!hk_wait_tasks_rcu()) {
++		pr_warn("shadow_inline: %s kept, no tasks-RCU to wait before free\n",
++			hook->resolved_name ? hook->resolved_name : "?");
++		return;
++	}
 +
 +	hk_inline_free(&hook->inline_hook);
 +

@@ -18,24 +18,33 @@
 #   4) macvlan       - 容器独立局域网 IP
 #   5) vkms          - 虚拟 DRM 设备, 提供 /dev/dri/renderD128
 #
-# vkms 是 anland / wayland 桌面的前提:
-#   Hyprland 和 KWin 的 Wayland 后端要一个能 gbm_create_device() 的
-#   DRM render node。厂商内核没开 CONFIG_DRM_VGEM / CONFIG_DRM_VKMS,
-#   只有 card0 (display controller), 没有 render 节点。
+# vkms 的定位（2026-11 实测后修正）
+# ---------------------------------
+# 原先认为 vkms 是 anland / wayland 桌面的前提：Hyprland 和 KWin 的 Wayland
+# 后端要一个能 gbm_create_device() 的 DRM render node，而厂商内核没开
+# CONFIG_DRM_VGEM / CONFIG_DRM_VKMS，只有 card0（display controller）。
 #
-#   为什么是 vkms 而不是 vgem: Mesa 的 GBM 后端按 DRM driver 名字找 dri
-#   驱动, 有 vkms_dri.so 却**没有** vgem_dri.so。用 vgem 时 Hyprland 停在
+# 实测（OPPO PHZ110 / MT6989 / 6.1.157）推翻了这个前提：卸掉 vkms 之后，
+# /dev/dri/renderD128 消失，GL 客户端仍然渲染成功并正常上屏；合成器
+# waylandbridge 映射的是 libGLES_mali.so、打开的是 /dev/mali0，
+# /dev/dri/renderD128 的 fd 数是 0 —— 它从来没被打开过。
+#
+# 所以 Mali 平台（有 /dev/mali0 或 mali_kbase）不再加载 vkms，见下方平台
+# 判定段。非 Mali 且没有 render node 的平台仍然加载，那是它还有意义的地方。
+#
+# 为什么是 vkms 而不是 vgem: Mesa 的 GBM 后端按 DRM driver 名字找 dri
+# 驱动, 有 vkms_dri.so 却**没有** vgem_dri.so。用 vgem 时 Hyprland 停在
 #     openRenderNode got drm device /dev/dri/renderD128
 #     CRIT: Couldn't open a gbm device   (OpenGL.cpp:351)
-#   vkms 是内核自带的虚拟 KMS 驱动 (card + render + CRTC + plane), 配
-#   kms_swrast_dri.so 就能软件渲染出帧。
 #
-#   本仓库对 vkms 打了一个补丁: 上游 driver_features 只有
-#   MODESET|ATOMIC|GEM, 不建 render node; 加上 DRIVER_RENDER 后才会生成
-#   /dev/dri/renderD128。补丁见 scripts/patch_vkms_debugfs.py（同一处改的是
-#   上游 drm_crtc_add_crc_entry 依赖 DEBUG_FS 的问题）。
+# 本仓库对 vkms 打了一个补丁: 上游 driver_features 只有
+# MODESET|ATOMIC|GEM, 不建 render node; 加上 DRIVER_RENDER 后才会生成
+# /dev/dri/renderD128。补丁见 scripts/patch_vkms_debugfs.py（同一处改的是
+# 上游 drm_crtc_add_crc_entry 依赖 DEBUG_FS 的问题）。
 #
-#   必须在容器启动前加载, 否则 Droidspaces 扫描 /dev 时看不到它。
+# 注意 vkms 背后没有 GPU：它提供的 render node 上 Mesa 只能落回 llvmpipe
+# （CPU 软件渲染）。因此它不该被当作「mali_nsfix 失败时的性能 fallback」——
+# 那条路会把用户静默降级到软件渲染，界面上看不出异常。
 #
 # devtmpfs_lkm 必须带 devtmpfs_probe=2:
 #   默认 probe=0 会启动 kthread 并安装 device_add/device_del inline hook,
@@ -44,6 +53,9 @@
 #   因为它只检查 /proc/filesystems 里有没有 devtmpfs。
 
 MODDIR=${0%/*}
+# 模块目录的绝对路径。多处需要判断模块目录下的开关文件（enable_vkms /
+# disable_pids / disable_cpu），而 $0 可能以相对路径传入，所以固定成绝对值。
+DSM_DIR="/data/adb/modules/droidspaces_lkm"
 [ "$MODDIR" = "$0" ] && MODDIR=.
 # ---------------------------------------------------------------------------
 # 日志：三处同时落
@@ -83,7 +95,11 @@ dlog() {
     return 0
 }
 
-dlog "=== Droidspaces LKM 启动 ==="
+# 文案语言目录：必须在任何中文输出之前 source（dlog 里的人读部分按系统语言）。
+# [OK]/[FAIL]/[MISS] 这类标记与符号名不翻译。
+[ -f "$MODDIR/i18n.sh" ] && . "$MODDIR/i18n.sh"
+
+dlog "=== Droidspaces LKM ==="
 dlog "kernel: $(uname -r)"
 dlog "moddir: $MODDIR"
 
@@ -169,7 +185,108 @@ if [ -z "$KMI" ]; then
     fi
     [ -n "$android" ] && [ -n "$major" ] && KMI="$android-$major"
 fi
-dlog "kmi:     ${KMI:-未识别}"
+dlog "kmi:     ${KMI:-unknown}"
+
+# ---------------------------------------------------------------------------
+# 显示路线（route）：auto / anland6 / desktop5
+#
+#   auto      现状：Mali 自动装 mali_nsfix；vkms 仅 enable_vkms 存在时装
+#   anland6   Anland 6.x / waylandbridge：装 mali_nsfix，强制不装 vkms
+#   desktop5  自带标准合成器的桌面（Anland 5.x 路线）：Mali 强制装 vkms，
+#             不装 mali_nsfix；高通不装 vkms（Adreno 有原生 render node）
+#
+# 配置文件 module/route 由安装器写入；老安装缺失时回落 auto。
+# ---------------------------------------------------------------------------
+ROUTE=$(cat "$MODDIR/route" 2>/dev/null)
+case "$ROUTE" in
+    auto|anland6|desktop5) ;;
+    *)
+        [ -n "$ROUTE" ] && dlog "$(msg "$M_ROUTE_INVALID" "$ROUTE")"
+        ROUTE=auto
+        ;;
+esac
+dlog "route:   $ROUTE"
+
+# ---------------------------------------------------------------------------
+# 逐模块加载开关（ko_switch）
+#
+# 文件 $MODDIR/ko_switch 由 WebUI「模块」页写入（每行一条 <name>=<0|1>）。
+# 可用 DSL_KO_SWITCH 覆盖，CI 拿 fixture 测解析逻辑 —— 与 action.sh 里的
+# DSL_KERNEL_CONFIG 同模式。
+#
+# 优先级（从高到低）：
+#   1. ko_switch 里的显式值（1=加载 / 0=不加载）
+#   2. 旧的单文件开关（disable_pids / disable_cpu / disable_uart_guard /
+#      disable_mali / enable_vkms / mali_nsfix_dryrun）—— 向后兼容，仅在
+#      ko_switch 没有该键时生效
+#   3. route 逻辑与各模块默认（默认都加载）
+#
+# 文件缺失 / 为空 / 全畸形 = 全部走默认，启动不受任何影响。未知模块名、值
+# 不是 0/1、缺 = 的行一律忽略并 WARN 一次，绝不因为一行坏数据把别的模块带崩。
+# ---------------------------------------------------------------------------
+# BEGIN_KO_SWITCH_HELPERS  （scripts/ci_static_check.sh 会抽这一段单独跑真值测试，
+#                           改动下面的函数时不要动这一对标记）
+DSL_KO_NAMES="lkm4ctr devtmpfs_lkm ip6table_nat macvlan droid_lkm_pids droid_lkm_cpu uart_guard mali_nsfix vkms"
+DSL_KO_SWITCH=${DSL_KO_SWITCH:-/data/adb/modules/droidspaces_lkm/ko_switch}
+_ko_warned=0
+
+ko_known() {
+    local n
+    for n in $DSL_KO_NAMES; do
+        [ "$n" = "$1" ] && return 0
+    done
+    return 1
+}
+
+# ko_switch_val <name>：打印 1 / 0；未设置或值非法时打印空串（=走默认）。
+# 畸形行只在首次解析时 WARN 一次（_ko_warned 去重）。用 < 重定向而非管道，
+# 保证 while 循环里的赋值不会跑进子 shell 而丢掉。
+ko_switch_val() {
+    local want="$1" line key val out=""
+    [ -r "$DSL_KO_SWITCH" ] || return 0
+    if [ "$_ko_warned" = "0" ]; then
+        _ko_warned=1
+        while IFS= read -r line || [ -n "$line" ]; do
+            case "$line" in ''|'#'*) continue ;; esac
+            case "$line" in
+                *=*) : ;;
+                *) dlog "[WARN] ko_switch: ${M_KO_NOEQ} $line"; continue ;;
+            esac
+            key=${line%%=*}; val=${line#*=}
+            ko_known "$key" || dlog "[WARN] ko_switch: ${M_KO_UNKNOWN} $key"
+            case "$val" in
+                0|1) : ;;
+                *) dlog "[WARN] ko_switch: ${M_KO_BADVAL} $key=$val" ;;
+            esac
+        done < "$DSL_KO_SWITCH"
+    fi
+    while IFS= read -r line || [ -n "$line" ]; do
+        case "$line" in ''|'#'*) continue ;; esac
+        case "$line" in *=*) : ;; *) continue ;; esac
+        key=${line%%=*}; val=${line#*=}
+        [ "$key" = "$want" ] || continue
+        case "$val" in 0|1) out="$val" ;; esac
+    done < "$DSL_KO_SWITCH"
+    [ -n "$out" ] && printf '%s' "$out"
+    return 0
+}
+
+# ko_gate <base> [legacy_disable_file]：综合 ko_switch 与旧开关给出是否加载。
+# 返回 0=加载，1=跳过（并打日志说明原因）。
+ko_gate() {
+    local base="$1" legacy="$2" v
+    v=$(ko_switch_val "$base")
+    case "$v" in
+        0) dlog "[SKIP] $base ${M_KO_OFF_SWITCH}"; return 1 ;;
+        1) return 0 ;;
+    esac
+    if [ -n "$legacy" ] && [ -f "$legacy" ]; then
+        dlog "[SKIP] $base ${M_KO_OFF_LEGACY} ($(basename "$legacy"))"
+        return 1
+    fi
+    return 0
+}
+# END_KO_SWITCH_HELPERS
 
 # 选 ko: 优先精确 KMI, 否则退回目录里唯一的一组
 # 读 .ko 的 vermagic，和 uname -r 比"主版本.次版本"。只在无法确定 KMI
@@ -206,7 +323,7 @@ find_sibling_ko() {
     n="$MODDIR/ko/$base-$sib.ko"
     [ -f "$n" ] || return 1
     ko_vermagic_ok "$n" || return 1
-    dlog "[KMI] $base: $cur 的 vermagic 不符，改用 $sib"
+    dlog "[KMI] $base: vermagic mismatch on $cur, using $sib"
     echo "$n"
 }
 
@@ -221,7 +338,7 @@ find_ko() {
         if f2=$(find_sibling_ko "$base" "$KMI"); then
             echo "$f2"; return 0
         fi
-        dlog "[MISS] $base: $KMI 的 vermagic 与 $(uname -r) 不符，且没有能对上的同代 ko"
+        dlog "[MISS] $base: ${M_LOG_VERMAGIC} $(uname -r) ${M_LOG_VERMAGIC_TAIL}"
         return 1
     fi
     # 不再"随便挑一个 KMI 的 ko"。之前 KMI 没识别出来时，ls | head -1 会
@@ -233,11 +350,25 @@ find_ko() {
     all=$(ls "$MODDIR/ko/$base"-*.ko 2>/dev/null)
     [ -z "$all" ] && return 1
     if [ "$(echo "$all" | wc -l)" -ne 1 ]; then
-        dlog "[MISS] $base: KMI=${KMI:-未识别}，目录里有多份候选，拒绝猜"
+        dlog "[MISS] $base: $(msg "$M_LOG_KMI_AMBIG" "${KMI:-?}")"
         return 1
     fi
+    # 单文件回退还要核对**代际**。5.10/5.15 有两代共用同一个内核版本号，
+    # vermagic 只比到 5.10 这一层，所以拿错代的包也能装；装错代不会报错，
+    # 但模块在 namespace 路径上卡死（issue #1 的两位报告者都是拿了
+    # android12 包装到出厂 API level=33 的 android13 设备上）。
+    case "$KMI" in
+        android*-*)
+            f_android=$(echo "$all" | sed -E 's/.*-(android[0-9]+)-.*/\1/')
+            kmi_android=${KMI%%-*}
+            if [ -n "$f_android" ] && [ "$f_android" != "$kmi_android" ]; then
+                dlog "[MISS] $base: generation mismatch (package=$f_android device=$kmi_android)"
+                return 1
+            fi
+            ;;
+    esac
     if ! ko_vermagic_ok "$all"; then
-        dlog "[MISS] $base: KMI=${KMI:-未识别}，$(basename "$all") 的 vermagic 与 $(uname -r) 不符"
+        dlog "[MISS] $base: $(basename "$all") ${M_LOG_VERMAGIC} != $(uname -r)"
         return 1
     fi
     echo "$all"
@@ -262,6 +393,61 @@ ko_has_param() {
 ko_load_error() {
     local mod="$1"
     dmesg 2>/dev/null | grep -E "Unknown symbol|unknown parameter|disagrees about version"         | tail -3 | while read -r _l; do dlog "  [kernel] $_l"; done
+
+    # 上面的 dmesg 抓取不是所有设备都能用：issue #2 里 Meizu 那台抓到了具体符号，
+    # 另一台 6.1.75 的设备一条都没抓到，用户只能看到笼统的 "unknown symbol in module"。
+    #
+    # 所以构建期已经把每个 .ko 的未定义符号导成 ko/symcheck-<kmi>.txt 打进包里，
+    # 这里拿清单逐条查 /proc/kallsyms 的 __ksymtab_ 条目 —— 不依赖 dmesg，
+    # 也不依赖设备上有 nm。查不到的就是这个内核没导出的符号。
+    local f="$MODDIR/ko/symcheck-${KMI:-}.txt"
+    if [ ! -f "$f" ]; then
+        return 0
+    fi
+    local miss="" m sym
+    # /proc/kallsyms 只读一次再比对。
+    # 逐条 grep 整个文件的写法在 CONFIG_KALLSYMS_ALL=y 的设备上要扫二十多万行，
+    # 一个模块就是上百次全表扫描 —— 开机阶段这么干会明显拖慢。
+    local have
+    have=$(mktemp 2>/dev/null) || have=""
+    if [ -n "$have" ]; then
+        grep -a '__ksymtab_' /proc/kallsyms 2>/dev/null \
+            | sed 's/.*__ksymtab_//' | sort -u > "$have"
+        miss=$(awk -v m="$mod" '
+            FNR == NR { have[$1] = 1; next }
+            $1 == m && NF >= 2 && !($2 in have) { printf " %s", $2 }
+        ' "$have" "$f" 2>/dev/null)
+        rm -f "$have"
+    fi
+    if [ -n "$miss" ]; then
+        dlog "  [SYM] $mod ${M_LOG_MISSING_SYM}$miss"
+        dlog "           ${M_LOG_MISSING_SYM_TAIL}"
+    fi
+}
+
+# 判断是否已加载: 用模块名而不是文件名, 因为文件名带 KMI 后缀。
+#
+# /proc/modules 里的名字把 '-' 换成 '_'。按带连字符的 base 或文件名去 grep
+# 会漏判, 而漏判的后果是重复 insmod（内核拒绝, 日志里多一条假失败）。
+mod_loaded() {
+    local n
+    n=$(echo "$1" | tr '-' '_')
+    grep -q "^${n} " /proc/modules 2>/dev/null
+}
+
+# 有界重试加载。给"依赖别的模块先就绪"的模块用（vkms 依赖 drm.ko 导出,
+# mali_nsfix 依赖 find_get_pid 可解析）。每趟之间 sleep, 日志沿用 load_mod
+# 的 [OK]/[TRY]/[FAIL] 标记; tries<=0 时退化成一次, 等同 load_mod。
+load_mod_retry() {
+    local base="$1" params="$2" tries="${3:-1}" i=1
+    while [ "$i" -le "$tries" ]; do
+        if load_mod "$base" "$params"; then
+            return 0
+        fi
+        [ "$i" -lt "$tries" ] && sleep 2
+        i=$((i + 1))
+    done
+    return 1
 }
 
 load_mod() {
@@ -279,7 +465,7 @@ load_mod() {
     if ! ko_vermagic_ok "$ko"; then
         local vm
         vm=$(grep -ao 'vermagic=[^ ]*' "$ko" 2>/dev/null | head -1 | sed 's/^vermagic=//')
-        dlog "[FAIL] $base: $(basename "$ko") 的 vermagic (${vm:-未知}) 与内核 $(uname -r) 不匹配，跳过"
+        dlog "[FAIL] $base: $(basename "$ko") ${M_LOG_VERMAGIC} (${vm:-?}) != $(uname -r), skipped"
         return 1
     fi
 
@@ -291,22 +477,22 @@ load_mod() {
             if ko_has_param "$ko" "$pname"; then
                 kept="$kept $p"
             else
-                dlog "[WARN] $base 不支持参数 $pname，已忽略"
+                dlog "[WARN] $base: unsupported param $pname ignored"
             fi
         done
         params=${kept# }
     fi
 
     # 判断是否已加载: 用模块名而不是文件名, 因为文件名带 KMI 后缀
-    if grep -q "^${base} " /proc/modules 2>/dev/null; then
-        dlog "[SKIP] $base 已加载"
+    if mod_loaded "$base"; then
+        dlog "[SKIP] $base already loaded"
         return 0
     fi
 
     # 黑名单：上一次开机死在加载这个模块上，就不再试。
     # 宁可少一个功能，也不要让设备再卡一次开机。
     if [ -f "$STATE_DIR/blacklist" ] && grep -qx "$base" "$STATE_DIR/blacklist" 2>/dev/null; then
-        dlog "[SKIP] $base 在上次开机的黑名单里（加载它会卡死），跳过"
+        dlog "[SKIP] $base is blacklisted from last boot (it hung), skipped"
         return 1
     fi
 
@@ -337,7 +523,7 @@ load_mod() {
             o=$(insmod "$k" 2>&1)
         fi
         out="$o"
-        grep -q "^${base} " /proc/modules 2>/dev/null
+        mod_loaded "$base"
     }
 
     if _try_load "$ko"; then
@@ -348,10 +534,10 @@ load_mod() {
 
     if [ -n "$_sib" ] && [ -f "$MODDIR/ko/$base-$_sib.ko" ]; then
         _tryko="$MODDIR/ko/$base-$_sib.ko"
-        dlog "[TRY] $base: $(basename "$ko") 失败，换 $_sib 再试"
+        dlog "[TRY] $base: $(basename "$ko") failed, retry with $_sib"
         if _try_load "$_tryko"; then
             rm -f "$STATE_DIR/loading" 2>/dev/null
-            dlog "[KMI] $base: ${KMI} 不符，实际用的是 $(basename "$_tryko")"
+            dlog "[KMI] $base: ${KMI} mismatch, actually used $(basename "$_tryko")"
             dlog "[OK]   $base  ($(basename "$_tryko"))${params:+ $params}"
             return 0
         fi
@@ -362,38 +548,196 @@ load_mod() {
     return 1
 }
 
-dlog "--- 加载 ---"
-load_mod lkm4ctr ""
-load_mod devtmpfs_lkm "devtmpfs_probe=2"
-load_mod ip6table_nat ""
-load_mod macvlan ""
+dlog "${M_LOG_LOADING}"
+# lkm4ctr 有两个变体：
+#   lkm4ctr-<kmi>.ko       带 vendored overlayfs
+#   lkm4ctr-lite-<kmi>.ko  不带（给裁了 VFS 导出表的厂商内核）
+# 先试完整版；失败且 lite 存在时回退。lite 至少保住 PID/IPC/UTS namespace，
+# 也就是 Droidspaces 的硬性前提。
+#
+# lite 只是完整版的内部回退，不是给用户单独选的开关；所以 ko_switch 只认
+# lkm4ctr 这一个键。关掉它 = 两个变体都不加载，并在日志里显著提示后果。
+if ko_gate lkm4ctr ""; then
+    _v=$(ko_switch_val lkm4ctr)
+    [ "$_v" = "1" ] && dlog "[INFO] lkm4ctr ${M_KO_ON_SWITCH}"
+    load_mod lkm4ctr ""
+    if ! mod_loaded lkm4ctr; then
+        if [ -f "$MODDIR/ko/lkm4ctr-lite-$KMI.ko" ]; then
+            dlog "$M_LITE_FALLBACK"
+            load_mod lkm4ctr-lite ""
+            if mod_loaded lkm4ctr-lite; then
+                dlog "$M_LITE_OK"
+            else
+                dlog "$M_LITE_FAIL"
+            fi
+        else
+            dlog "$M_LITE_ABSENT"
+        fi
+    fi
+else
+    # 用户显式关掉 lkm4ctr：尊重选择，但它是容器 namespace 的前提，
+    # 后果必须在日志里说清楚（这是 9 个模块里唯一关掉会废掉核心功能的）。
+    [ "$(ko_switch_val lkm4ctr)" = "0" ] && dlog "[WARN] ${M_KO_LKM4CTR_WARN}"
+fi
+ko_gate devtmpfs_lkm "" && load_mod devtmpfs_lkm "devtmpfs_probe=2"
+ko_gate ip6table_nat "" && load_mod ip6table_nat ""
+ko_gate macvlan "" && load_mod macvlan ""
+# ---------------------------------------------------------------------------
+# 平台判定
+#
+# 这里只判定一件事：有没有 Mali GPU。判据用可观测的事实（/dev/mali0 或
+# mali_kbase 模块），不写死厂商名 —— 三星 Exynos、Google Tensor、海思麒麟
+# 都是 Mali，走的也是同一条路。
+#
+# mali_nsfix 只在 Mali 平台上加载：它修的本来就是 mali_kbase 的 find_get_pid，
+# 没有 Mali 的设备装上纯属浪费。
+#
+# vkms 不参与这个判定，见下面那段 —— 它已改成默认不加载、由用户显式开启。
+# ---------------------------------------------------------------------------
+GPU_HAS_MALI=0
+if [ -e /dev/mali0 ] || lsmod 2>/dev/null | grep -q '^mali_kbase'; then
+    GPU_HAS_MALI=1
+fi
+
+dlog "platform: mali=${GPU_HAS_MALI} renderD128=$([ -e /dev/dri/renderD128 ] && echo present || echo absent)"
+dlog "$(msg "$M_ROUTE_DEFAULT" "$ROUTE" "$([ -f "$MODDIR/route" ] || msg "$M_ROUTE_DEFAULT_MARK")")"
+
+# vkms —— 默认不加载，需要者显式开启
+# ------------------------------------
+# 判断依据从「有没有 render node」改成「用户要不要」。
+#
+# 实测（OPPO PHZ110 / MT6989 / 6.1.157）：
+#   卸掉 vkms -> /dev/dri/renderD128 消失 -> GL 客户端仍然渲染成功并正常上屏
+#   合成器 waylandbridge: libGLES_mali.so 已映射、/dev/mali0 fd=1、
+#                        /dev/dri/renderD128 fd=0 —— 从来没打开过
+#
+# 也就是说 anland 在 Mali 平台上直接用 /dev/mali0，不需要 renderD128。
+#
+# 为什么不按平台自动判断：能观测到的事实只有「有没有 /dev/mali0」和
+# 「有没有 renderD128」，而「某个第三方合成器 / 某个容器内程序是否要求
+# renderD128 存在」观测不到。高通有原生节点所以本来就不会走到这里；其余
+# 平台几乎都是 Mali，同样不需要。少数例外的代价是不对称的：
+#
+#   猜「需要」-> 多加载一个无 GPU 的虚拟设备，Mesa 落回 llvmpipe（CPU 软件
+#               渲染），用户会觉得卡但看不出原因
+#   猜「不需要」-> 依赖它的程序起不来，报错明确
+#
+# 后者更容易排查，所以默认不加载。
+#
+# 启用方式：在模块目录放一个空文件
+#   touch /data/adb/modules/droidspaces_lkm/enable_vkms
+# 然后重启设备或重启容器。
+#
 # vkms 依赖 drm.ko 导出的 drm_crtc_add_crc_entry。5.10 里这个符号是导出的，
 # 但它属于 drm.ko 的**模块依赖**：drm 还没加载时 insmod 只会报
-# "Unknown symbol"，而这里跑在 late_start，drm 未必已经就绪。
-# 所以失败后重试几次，而不是一次就放弃。
-if ! load_mod vkms ""; then
-    for _try in 1 2 3 4 5; do
-        sleep 2
-        if load_mod vkms ""; then
-            break
-        fi
-        # find_ko 每轮都会重新判断，但已加载的模块会被 [SKIP]，
-        # 这里只需处理"还没加载成功"的情况
-    done
+# "Unknown symbol"，而这里跑在 late_start，drm 未必已经就绪。所以失败后
+# 重试几次。
+#
+# 注意卸载行为：容器运行期间 rmmod vkms，容器的 bind mount 会留下指向已删除
+# inode 的节点 —— ls 看得见、open() 报 EPERM。只做「节点是否存在」判断的程序
+# 会通过检查再失败。这也是不该把它做成运行时自动决策的理由。
+# 用绝对路径：此处 MODDIR 还是 ${0%/*} 的相对形式，脚本被以相对路径调用时
+# 会解析错；下面 L499 那处也重新赋成了绝对值，这里保持一致。
+_vks=$(ko_switch_val vkms)
+if [ "$_vks" = "0" ]; then
+    # 显式关闭：覆盖所有路线（包括 desktop5 的强制加载）
+    dlog "[SKIP] vkms ${M_KO_OFF_SWITCH} ${M_KO_OV_ROUTE}($ROUTE)"
+elif [ "$_vks" = "1" ]; then
+    # 显式开启：覆盖所有路线（包括 anland6/auto 的默认不加载）
+    dlog "[INFO] vkms ${M_KO_ON_SWITCH} ${M_KO_OV_ROUTE}($ROUTE)"
+    load_mod_retry vkms "" 6 || true
+else
+    case "$ROUTE" in
+        anland6)
+            dlog "$M_VKMS_ANLAND6"
+            ;;
+        desktop5)
+            if [ "$GPU_HAS_MALI" = "1" ]; then
+                dlog "$M_VKMS_FORCE"
+                load_mod_retry vkms "" 6 || true
+            else
+                dlog "$M_VKMS_ADRENO"
+            fi
+            ;;
+        *)
+            # auto：沿用 enable_vkms 开关
+            if [ -f "$DSM_DIR/enable_vkms" ]; then
+                # 原来是 load_mod + for 1..5 重试（共 6 次）。改用统一的有界重试，
+                # 次数保持一致（tries=6），日志标记不变。
+                load_mod_retry vkms "" 6 || true
+            else
+                dlog "[SKIP] ${M_SKIP_VKMS_OFF}"
+            fi
+            ;;
+    esac
 fi
 
 # cgroup 限流仿真（--cpus / --pids-limit）。
 # 装 kprobe 并在运行时解析符号，最坏表现是加载失败；
 # 放最后，失败不挡前面五个模块。
-# 想临时关掉：在模块目录放 disable_pids / disable_cpu。
+# 想临时关掉：ko_switch 里写 droid_lkm_pids=0 / droid_lkm_cpu=0，
+# 或在模块目录放旧开关 disable_pids / disable_cpu（二者等价，ko_switch 优先）。
 MODDIR="/data/adb/modules/droidspaces_lkm"
-[ -f "$MODDIR/disable_pids" ] || load_mod droid_lkm_pids ""
-[ -f "$MODDIR/disable_cpu" ] || load_mod droid_lkm_cpu ""
+ko_gate droid_lkm_pids "$MODDIR/disable_pids" && load_mod droid_lkm_pids ""
+ko_gate droid_lkm_cpu   "$MODDIR/disable_cpu" && load_mod droid_lkm_cpu ""
 
 # uart_guard：串口 sysfs 属性会去锁一个可能已损坏的 tty_port mutex，
 # 容器里的 udev 扫一遍 /sys/class/tty 就能把宿主打 panic。
 # 放最后，钩不上也不影响容器本身；想排查时看 dmesg 里的 uart_guard 行。
-[ -f "$MODDIR/disable_uart_guard" ] || load_mod uart_guard ""
+ko_gate uart_guard "$MODDIR/disable_uart_guard" && load_mod uart_guard ""
+
+# mali_nsfix：把 mali_kbase 的 find_get_pid 重定向到 group leader。
+# 只在 Mali 平台上加载 —— 它在 find_get_pid 这个热点函数上挂 kprobe，
+# 没有 mali_kbase 的设备装上纯属浪费。
+# 它在 GPU context 创建路径上，失败不影响容器本身。
+if [ "$GPU_HAS_MALI" = "1" ]; then
+    _ms=$(ko_switch_val mali_nsfix)
+    case "$ROUTE" in
+        desktop5)
+            # desktop5 默认不装 mali_nsfix；ko_switch=1 时用户显式要求覆盖
+            if [ "$_ms" = "0" ]; then
+                dlog "[SKIP] mali_nsfix ${M_KO_OFF_SWITCH}"
+            elif [ "$_ms" = "1" ]; then
+                dlog "[INFO] mali_nsfix ${M_KO_ON_SWITCH} ${M_KO_OV_ROUTE}(desktop5)"
+                load_mod mali_nsfix ""
+            else
+                dlog "$M_MALI_NS_FIX"
+            fi
+            ;;
+        *)
+            if [ "$_ms" = "0" ]; then
+                dlog "[SKIP] mali_nsfix ${M_KO_OFF_SWITCH}"
+            elif [ -f "$MODDIR/disable_mali" ]; then
+                dlog "[SKIP] ${M_SKIP_MALI_DISABLE}"
+            elif [ -f "$MODDIR/mali_nsfix_dryrun" ]; then
+                # 干跑：模块留在内核里但不挂钩，用来在没验证过的设备上先回答
+                # 「这里能不能生效」。判据看 nshf_active / nshf_probe_ok /
+                # nshf_layout_valid，见 extra/mali_nsfix/README.md。
+                if load_mod mali_nsfix "nshf_activate=0"; then
+                    dlog "[INFO] mali_nsfix dry-run: ${M_MALI_DRYRUN_OK}"
+                fi
+            else
+                load_mod mali_nsfix ""
+            fi
+            ;;
+    esac
+else
+    dlog "[SKIP] ${M_SKIP_MALI}"
+fi
+
+# mali_nsfix 的状态面：armed / 干跑 / 探针可用性 / 绑定的驱动。
+# 只报事实，不替用户下结论。
+if mod_loaded mali_nsfix; then
+    _ns_act=$(cat /sys/module/mali_nsfix/parameters/nshf_active 2>/dev/null)
+    _ns_probe=$(cat /sys/module/mali_nsfix/parameters/nshf_probe_ok 2>/dev/null)
+    _ns_drv=$(cat /sys/module/mali_nsfix/parameters/nshf_driver 2>/dev/null)
+    case "$_ns_act" in
+        1) dlog "[OK]   mali_nsfix armed (driver=${_ns_drv:-?})" ;;
+        *) dlog "[WARN] mali_nsfix loaded, not armed ${M_MALI_NOT_ARMED} (probe_ok=${_ns_probe:-?}, driver=${_ns_drv:-?})" ;;
+    esac
+else
+    dlog "[--]   mali_nsfix not loaded"
+fi
 
 # 注意：这里**不清零**开机计数器。
 # service.sh 只代表"模块加载流程跑完"，不代表系统能正常起来 —— 加载成功后
@@ -401,9 +745,9 @@ MODDIR="/data/adb/modules/droidspaces_lkm"
 # 完成的信号。
 
 dlog "--- lsmod ---"
-lsmod 2>/dev/null | grep -E '^(lkm4ctr|devtmpfs_lkm|ip6table_nat|macvlan|vkms|droid_lkm_pids|droid_lkm_cpu|uart_guard)' | while read -r _l; do dlog "  $_l"; done
+lsmod 2>/dev/null | grep -E '^(lkm4ctr|devtmpfs_lkm|ip6table_nat|macvlan|vkms|droid_lkm_pids|droid_lkm_cpu|uart_guard|mali_nsfix)' | while read -r _l; do dlog "  $_l"; done
 
-dlog "--- 能力验证 ---"
+dlog "${M_LOG_CAPS}"
 unshare -pf true 2>/dev/null \
     && dlog "[OK] PID namespace" \
     || dlog "[FAIL] PID namespace"
@@ -412,19 +756,24 @@ unshare -i true 2>/dev/null \
     || dlog "[FAIL] IPC namespace"
 grep -q devtmpfs /proc/filesystems 2>/dev/null \
     && dlog "[OK] devtmpfs" \
-    || dlog "[--] devtmpfs 未注册"
-grep -q "^droid_lkm_pids " /proc/modules 2>/dev/null \
-    && dlog "[OK] pids 控制器仿真" \
-    || dlog "[--] pids 控制器仿真未加载"
-grep -q "^droid_lkm_cpu " /proc/modules 2>/dev/null \
-    && dlog "[OK] cpu.max 仿真" \
-    || dlog "[--] cpu.max 仿真未加载"
+    || dlog "[--] ${M_CAP_DEVTMPFS_NO}"
+mod_loaded droid_lkm_pids \
+    && dlog "[OK] pids controller emulation" \
+    || dlog "[--] pids controller emulation not loaded"
+mod_loaded droid_lkm_cpu \
+    && dlog "[OK] cpu.max emulation" \
+    || dlog "[--] cpu.max emulation not loaded"
 
-# vkms 提供的 render node: anland / wayland 合成器的前提
+# /dev/dri/renderD128 的状态。
+#
+# 不能说「缺失 = 有问题」：vkms 现在默认不加载，Mali 平台又不需要它，所以
+# absent 是正常状态。只在用户显式开了 enable_vkms 却没拿到节点时才算失败。
 if [ -e /dev/dri/renderD128 ]; then
-    dlog "[OK] /dev/dri/renderD128 (vkms)"
+    dlog "[OK] /dev/dri/renderD128"
+elif [ -f "$DSM_DIR/enable_vkms" ]; then
+    dlog "[FAIL] /dev/dri/renderD128 ${M_CAP_VKMS_NO} (enable_vkms is set)"
 else
-    dlog "[--] /dev/dri/renderD128 缺失 (anland 桌面不可用)"
+    dlog "[--] /dev/dri/renderD128 absent (vkms off by default, not required on Mali)"
 fi
 
 # ---------------------------------------------------------------------------
@@ -448,19 +797,19 @@ snapshot_once() {
         printf '=== %s ===\n' "$(date '+%m-%d %H:%M:%S')"
         printf -- '-- uptime: %s\n' "$(cut -d' ' -f1 /proc/uptime 2>/dev/null)"
         printf -- '-- load  : %s\n' "$(cut -d' ' -f1-3 /proc/loadavg 2>/dev/null)"
-        printf -- '-- droidspaces 模块:\n'
-        grep -E '^(lkm4ctr|devtmpfs_lkm|ip6table_nat|macvlan|vkms|droid_lkm_pids|droid_lkm_cpu|uart_guard) ' \
+        printf -- '%s\n' "$M_DOC_MOD"
+        grep -E '^(lkm4ctr|devtmpfs_lkm|ip6table_nat|macvlan|vkms|droid_lkm_pids|droid_lkm_cpu|uart_guard|mali_nsfix) ' \
             /proc/modules 2>/dev/null \
             | awk '{printf "   %-14s ref=%-4s size=%s\n", $1, $3, $2}'
-        printf -- '-- renderD128: %s\n' "$([ -e /dev/dri/renderD128 ] && echo 有 || echo 无)"
-        printf -- '-- dmesg 尾部:\n'
+        printf -- '%s\n' "$(msg "$M_DOC_R128" "$([ -e /dev/dri/renderD128 ] && msg "$M_DOC_YES" || msg "$M_DOC_NO")")"
+        printf -- '%s\n' "$M_DOC_DMESG"
         dmesg 2>/dev/null | tail -40
 
         #
         # 自家日志单独再放一份：dmesg 尾部很容易被充电/蓝牙/CCCI 刷屏挤满，
         # 真正要看的"service.sh 走到哪一步"反而被冲掉。快照自带这一段，
         # 事后只看 hang-report.txt 一个文件就够。
-        printf -- '-- 模块日志尾部:\n'
+        printf -- '%s\n' "$M_DOC_MLOG"
         tail -30 "$LOG" 2>/dev/null
     } > "$SNAP.tmp" 2>/dev/null
     mv -f "$SNAP.tmp" "$SNAP" 2>/dev/null
@@ -480,5 +829,5 @@ snapshot_watchdog() {
 # 立刻做一份"加载完成时"的快照（在后台跑，不挡退出）
 ( snapshot_watchdog ) >/dev/null 2>&1 &
 
-dlog "=== 完成 ===（快照守卫已启动，10 分钟内每 15 秒落盘一次）"
+dlog "${M_LOG_DONE}${M_LOG_DONE_HINT}"
 exit 0

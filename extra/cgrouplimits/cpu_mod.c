@@ -50,14 +50,8 @@
 #include <linux/file.h>
 #include <linux/vmalloc.h>
 
-#include "kr/core.h"
+#include "kallrecon/core.h"
 #include "common.h"
-
-/*
- * 这个 6.6 厂商内核把 kern_path/backing_file_open 等 VFS 辅助函数放在
- * Android 的 VFS 符号命名空间里导出；modpost 要求模块显式声明导入。
- */
-MODULE_IMPORT_NS(VFS_internal_I_am_really_a_filesystem_and_am_NOT_a_driver);
 
 #define TAG "droid_lkm_cpu"
 #define cpu_info(fmt, ...)  pr_info("[" TAG "] " fmt, ##__VA_ARGS__)
@@ -307,10 +301,57 @@ static int (*p_send_sig_info)(int sig, struct kernel_siginfo *info,
  * 时摘不掉，cgroup 子系统会留着指向已卸载模块的悬空指针（UAF）。
  */
 static int (*p_cgroup_rm_cftypes)(struct cftype *cfts);
+/* [TRIM] 6.12 等厂商内核未导出；未解析时不安装 cftype */
+static int (*p_cgroup_add_dfl_cftypes)(struct cgroup_subsys *ss,
+					struct cftype *cfts);
 
 static void (*p_rstat_flush_hold)(struct cgroup *cgrp);
 static unsigned long long (*p_task_sched_runtime)(struct task_struct *p);
 static void (*p_rstat_flush_release)(void);
+
+/*
+ * [TRIM] kern_path / path_put
+ *
+ * 厂商内核常打开 CONFIG_TRIM_UNUSED_KSYMS，只保留树内模块用到的导出符号。
+ * 这两个名字看着"到处都有"，在裁剪过的内核上却可能完全不在导出表里，
+ * 直接链接会让整个 droid_lkm_cpu 装不上：
+ *
+ *   droid_lkm_cpu: Unknown symbol path_put (err -2)
+ *   droid_lkm_cpu: Unknown symbol kern_path (err -2)
+ *
+ * 实测：Meizu 21 Pro / Flyme 12.7.0.0A / 6.1.25-android14-11（issue #2）。
+ *
+ * 这两处唯一用途是判断 sched_cfs_bandwidth_slice_us 这个 sysctl 是否已存在，
+ * 所以改成运行时解析：解析不到就跳过存在性检查，直接注册。
+ */
+static int (*p_kern_path)(const char *name, unsigned int flags,
+			  struct path *path);
+static void (*p_path_put)(const struct path *path);
+
+/*
+ * 解析一个内核符号，带两道保护。思路借自 _patchHarmony 的 ds_compat_sym()：
+ *
+ *   1. kallrecon_klp() 是内核自己的 kallsyms_lookup_name。有些内核会从它那里
+ *      隐藏地址，这时回退到 kallsyms_name_to_addr()（KallRecon 自己的遍历，
+ *      直接读 kallsyms 表，不经过内核函数）。
+ *
+ *   2. 解析结果如果落在本模块的地址范围内，说明拿到的是我们自己的同名 shim，
+ *      不是内核函数。这种指针一旦调用就是自己调自己，必须当成"解析失败"。
+ *      内核没有某个符号时，kallsyms 查找会顺着模块表找到 shim，
+ *      所以这一步不是防御性代码，是真实会发生的路径。
+ */
+static void *cpu_ksym(const char *name)
+{
+	unsigned long addr = 0;
+
+	if (kallrecon_klp)
+		addr = kallrecon_klp(name);
+	if (!addr)
+		addr = kallsyms_name_to_addr(name);
+	if (addr && within_module(addr, THIS_MODULE))
+		return NULL;
+	return (void *)addr;
+}
 static unsigned long ctl_bstat_off;
 static unsigned long ctl_kn_priv_off;
 
@@ -346,22 +387,27 @@ static bool ctl_cgrp_alive(struct cgroup *cgrp)
 static void cpu_resolve_syms(void)
 {
 	p_css_task_iter_start =
-		(void *)kallrecon_klp("css_task_iter_start");
+		cpu_ksym("css_task_iter_start");
 	p_css_task_iter_next =
-		(void *)kallrecon_klp("css_task_iter_next");
+		cpu_ksym("css_task_iter_next");
 	p_css_task_iter_end =
-		(void *)kallrecon_klp("css_task_iter_end");
+		cpu_ksym("css_task_iter_end");
 	p_send_sig_info =
-		(void *)kallrecon_klp("send_sig_info");
+		cpu_ksym("send_sig_info");
 	p_rstat_flush_hold =
-		(void *)kallrecon_klp("cgroup_rstat_flush_hold");
+		cpu_ksym("cgroup_rstat_flush_hold");
 	p_rstat_flush_release =
-		(void *)kallrecon_klp("cgroup_rstat_flush_release");
+		cpu_ksym("cgroup_rstat_flush_release");
 	p_task_sched_runtime =
-		(void *)kallrecon_klp("task_sched_runtime");
+		cpu_ksym("task_sched_runtime");
 	/* 5.10 未导出，解析不到就不安装 cftype（见声明处注释） */
 	p_cgroup_rm_cftypes =
-		(void *)kallrecon_klp("cgroup_rm_cftypes");
+		cpu_ksym("cgroup_rm_cftypes");
+	p_cgroup_add_dfl_cftypes =
+		cpu_ksym("cgroup_add_dfl_cftypes");
+	/* [TRIM] 裁剪内核上可能不存在，解析不到就跳过 sysctl 存在性检查 */
+	p_kern_path = cpu_ksym("kern_path");
+	p_path_put  = cpu_ksym("path_put");
 }
 
 /*
@@ -582,7 +628,17 @@ static void __nocfi cpu_tick(struct work_struct *w)
 			bool removed = false;
 
 			mutex_lock(&cpu_lock);
-			if (xa_load(&cpu_xa, idx) == p) {
+			/*
+			 * 锁外那个条件只是筛子。读到"该摘"到拿到锁之间，
+			 * 写 cpu.max 的一方（cpu_max_write 全程持 cpu_lock）
+			 * 可能把同一条目重新激活——复用走的就是同一个指针
+			 * （cpu_find 命中就跳过新建，只把 dead 复位），所以
+			 * xa_load==p 挡不住这种复用。拿锁后必须重验条件仍成立
+			 * 才动手，否则会误摘刚设好配额的活条目。
+			 */
+			if (xa_load(&cpu_xa, idx) == p &&
+			    (atomic_read(&p->dead) ||
+			     !ctl_cgrp_alive(cgrp))) {
 				xa_erase(&cpu_xa, idx);
 				removed = true;
 			}
@@ -720,7 +776,7 @@ static void cpu_install_rmdir_probe(void)
 	ctl_kn_priv_off = offsetof(struct kernfs_node, priv);
 	ctl_rmdir_probe.symbol_name = "cgroup_rmdir";
 	ctl_rmdir_probe.pre_handler = ctl_rmdir_pre;
-	ret = register_kprobe(&ctl_rmdir_probe);
+	ret = ctl_probe_register(&ctl_rmdir_probe);
 	if (ret) {
 		cpu_warn("cgroup_rmdir probe failed: %d "
 			 "(dead-entry check stays as the only guard)\n", ret);
@@ -778,18 +834,36 @@ static struct ctl_table cpu_sched_sysctls[] = {
 
 static struct ctl_table_header *cpu_sysctl_hdr;
 
-static void cpu_sysctl_register(void)
+/*
+ * __nocfi 是必需的，不是保险：这个函数通过 p_kern_path/p_path_put 做间接调用，
+ * 而 CONFIG_CFI_CLANG=y 的内核会在每个间接调用点插检查，目标地址的
+ * 类型签名对不上就 panic。解析出来的内核函数指针不经过 kCFI 的类型登记，
+ * 所以凡是"调用解析指针"的函数都必须标 __nocfi —— 本文件里
+ * cpu_sig_cgroup / cpu_read_usage / cpu_layout_init / cpu_tick 都标了，
+ * 这两处是漏的。
+ *
+ * 参照：Dere3046/_patchHarmony 的 issue #12，MT6989 + CFI_CLANG 的内核上
+ * 就是这类间接调用触发的 panic。
+ */
+static void __nocfi cpu_sysctl_register(void)
 {
 	struct path p;
 
 	if (cpu_sysctl_hdr)
 		return;
-	/* 只补上真正缺的那一项；内核自己注册过就别重复建 */
-	if (kern_path("/proc/sys/kernel/sched_cfs_bandwidth_slice_us",
-		      LOOKUP_FOLLOW, &p) == 0) {
-		path_put(&p);
-		cpu_info("sched_cfs_bandwidth_slice_us already present\n");
-		return;
+	/* 只补上真正缺的那一项；内核自己注册过就别重复建。
+	 * [TRIM] 裁剪内核上 kern_path/path_put 可能解析不到 —— 跳过存在性检查
+	 * 直接注册。最坏情况是内核本来就注册过、这里多一个同名条目，功能不受影响；
+	 * 而直接链接的代价是整个模块装不上，两者权衡明显偏向跳过。 */
+	if (p_kern_path && p_path_put) {
+		if (p_kern_path("/proc/sys/kernel/sched_cfs_bandwidth_slice_us",
+				LOOKUP_FOLLOW, &p) == 0) {
+			p_path_put(&p);
+			cpu_info("sched_cfs_bandwidth_slice_us already present\n");
+			return;
+		}
+	} else {
+		cpu_warn("kern_path/path_put 未解析到，跳过 sysctl 存在性检查\n");
 	}
 	cpu_sysctl_hdr = register_sysctl("kernel", cpu_sched_sysctls);
 	if (IS_ERR_OR_NULL(cpu_sysctl_hdr)) {
@@ -812,7 +886,7 @@ static int __init droid_lkm_cpu_init(void)
 		return -ENODATA;
 	}
 
-	mem_ss_addr = kallrecon_klp("memory_cgrp_subsys");
+	mem_ss_addr = (unsigned long)cpu_ksym("memory_cgrp_subsys");
 	if (!mem_ss_addr) {
 		cpu_err("memory_cgrp_subsys not found\n");
 		return -ENODEV;
@@ -822,10 +896,11 @@ static int __init droid_lkm_cpu_init(void)
 	cpu_resolve_syms();
 	cpu_layout_init();
 
-	if (!p_cgroup_rm_cftypes) {
-		cpu_warn("cgroup_rm_cftypes unresolved; skipping cftypes (installing them would leave a dangling cftype on unload)\n");
+	if (!p_cgroup_rm_cftypes || !p_cgroup_add_dfl_cftypes) {
+		cpu_warn("cgroup_rm_cftypes/cgroup_add_dfl_cftypes unresolved; skipping cftypes\n"
+			 "  (installing them without a working rm would leave a dangling cftype on unload)\n");
 	} else {
-		ret = cgroup_add_dfl_cftypes(memory_ss, cpu_max_files);
+		ret = p_cgroup_add_dfl_cftypes(memory_ss, cpu_max_files);
 		if (ret)
 			cpu_err("cgroup_add_dfl_cftypes failed: %d\n", ret);
 		else
@@ -843,7 +918,9 @@ static int __init droid_lkm_cpu_init(void)
 	return 0;
 }
 
-static void __exit droid_lkm_cpu_exit(void)
+/* 同 cpu_sysctl_register：p_cgroup_rm_cftypes 是解析出来的指针，
+ * 间接调用必须绕开 CFI 检查，否则卸载模块时 panic。 */
+static void __exit __nocfi droid_lkm_cpu_exit(void)
 {
 	struct cpu_priv *p;
 	unsigned long idx;
@@ -853,7 +930,7 @@ static void __exit droid_lkm_cpu_exit(void)
 		cpu_tick_running = false;
 	}
 	if (ctl_rmdir_live)
-		unregister_kprobe(&ctl_rmdir_probe);
+		ctl_probe_unregister(&ctl_rmdir_probe);
 	if (cpu_sysctl_hdr) {
 		unregister_sysctl_table(cpu_sysctl_hdr);
 		cpu_sysctl_hdr = NULL;

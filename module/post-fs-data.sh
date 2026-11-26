@@ -13,6 +13,9 @@
 
 MODDIR=${0%/*}
 [ "$MODDIR" = "$0" ] && MODDIR=.
+
+# Catalog: human-readable lines follow the system language.
+[ -f "$MODDIR/i18n.sh" ] && . "$MODDIR/i18n.sh"
 COUNT=/data/adb/droidspaces_lkm.bootcount
 LIMIT=3
 
@@ -42,6 +45,51 @@ if [ -f "$SNAP" ]; then
 fi
 
 # ---------------------------------------------------------------------------
+# pstore 现场：上次启动如果是**内核崩溃**（不是卡死），console-ramoops 会有内容
+#
+# 和下面面包屑的分工：
+#   面包屑  -> 卡死（没有 panic），模块名还留在 loading 里
+#   pstore -> 真 panic（BUG/Oops/panic_on_oops），内核自己落盘的现场
+#
+# 为什么要自动抓：issue #1（5.10.269-gki）报无限重启，请用户手动
+#   cat /sys/fs/pstore/console-ramoops
+# 但一直没等到 —— 多数用户要么 panic 后马上重启把 ramoops 冲掉，要么根本
+# 进不去系统。这里自动做掉：这次启动能读到，就说明上次是崩溃退出的，
+# 复制到状态目录并 sync，之后哪次抓日志都能看到现场。
+#
+# 不主动清空 pstore：那是系统的资源，ramoops 由内核/用户态自己轮转。
+# ---------------------------------------------------------------------------
+_ps=/sys/fs/pstore
+if [ -d "$_ps" ]; then
+    _n=0
+    for _f in "$_ps"/console-ramoops* "$_ps"/dmesg-ramoops*; do
+        [ -f "$_f" ] && [ -s "$_f" ] && _n=$((_n + 1))
+    done
+    if [ "$_n" -gt 0 ]; then
+        _out="$STATE_DIR/pstore-$(date '+%Y%m%d-%H%M%S').txt"
+        {
+            printf '%s\n' "$M_PSTORE_HEAD"
+            printf '%s\n' "$(msg "$M_PSTORE_KERNEL" "$(uname -r)")"
+            printf '%s\n\n' "$M_PSTORE_NOTE"
+            for _f in "$_ps"/console-ramoops* "$_ps"/dmesg-ramoops*; do
+                [ -f "$_f" ] || continue
+                [ -s "$_f" ] || continue
+                printf -- '--- %s ---\n' "$(basename "$_f")"
+                cat "$_f"
+                printf '\n'
+            done
+        } > "$_out" 2>/dev/null
+        sync
+        plog "$(msg "$M_PSTORE_SAVED" "$_out")"
+        plog "$M_PSTORE_ATTACH"
+        # 只保留最近 3 份，避免状态目录无限增长
+        ls -1t "$STATE_DIR"/pstore-*.txt 2>/dev/null | tail -n +4 | while read -r _old; do
+            rm -f "$_old" 2>/dev/null
+        done
+    fi
+fi
+
+# ---------------------------------------------------------------------------
 # 面包屑判定：上次开机是不是死在某个模块的 insmod 上
 #
 # service.sh 在每个 insmod 前把模块名写进 loading 并 sync，成功后删掉。
@@ -53,7 +101,7 @@ fi
 if [ -f "$STATE_DIR/loading" ]; then
     _dead=$(head -1 "$STATE_DIR/loading" 2>/dev/null)
     if [ -n "$_dead" ]; then
-        plog "上次开机死在加载 $_dead 上（面包屑还在），已加入黑名单"
+        plog "$(msg "$M_BLACKLIST_ADD" "$_dead")"
         printf '%s\n' "$_dead" >> "$STATE_DIR/blacklist" 2>/dev/null
         sort -u "$STATE_DIR/blacklist" -o "$STATE_DIR/blacklist" 2>/dev/null
         cp -f "$STATE_DIR/loading" "$STATE_DIR/crash-module.txt" 2>/dev/null
@@ -80,8 +128,8 @@ if [ "$cur" -gt "$LIMIT" ]; then
         cp -f "$SNAP" "$HANG" 2>/dev/null
     fi
     touch "$MODDIR/disable"
-    plog "连续 $((cur - 1)) 次开机未成功加载，已自动禁用本模块"
-    plog "排查：adb pull /data/adb/droidspaces_lkm.d/hang-report.txt"
+    plog "$(msg "$M_AUTO_DISABLE" "$((cur - 1))")"
+    plog "$M_AUTO_DISABLE_HINT"
     plog "      adb pull /data/adb/droidspaces_lkm.log"
     echo 0 > "$COUNT"
 fi

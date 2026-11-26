@@ -1,16 +1,26 @@
 # anland Linux 桌面部署手册
 
-[English](ANLAND-DEPLOY.en.md) | **简体中文**
+> **在 Mali 设备上部署 Anland 5.x Linux 桌面（Hyprland / KWin 等自带合成器）
+> 的完整手册**——内核侧用 droidspaces-lkm 的 `vkms` 提供 render node，宿主侧
+> 装 anland 模块与 APK，容器侧修 rootfs 的 GPU 配置，最后经 `anlandproxy`
+> 把画面接到 Android 显示端。
 
-在 **ARM Mali 平台（G720 级 GPU）** 上运行 Linux 桌面，
-画面通过 anland 显示在 Android 屏幕上。
-
-本文档记录的是**实际验证过的步骤**，每一条都有对应的实测证据。
-适用前提：不想重编内核，只能靠 LKM 补能力。
+> **[English](ANLAND-DEPLOY.en.md)**
 
 ---
 
-## 先读这里：本文档讲的是 anland 5.x
+## 相关文档
+
+| 文档 | 内容 |
+|---|---|
+| [README.zh-CN.md](../README.zh-CN.md) | 本模块总览：模块表、安装、显示路线 |
+| [KMI-COVERAGE.md](KMI-COVERAGE.md) | 每个 KMI 的构建矩阵与陷阱 |
+| [6.x 镜像构建器](https://github.com/misaka5202/droidspaces-anland6-rootfs) | anland 6.x 路线（waylandbridge，不需要 vkms） |
+| [桌面与 Anland 指南](https://github.com/misaka5202/Droidspaces-anland6-rootfs/blob/main/docs/zh/桌面与Anland.md) | 6.x 宿主侧完整步骤 |
+
+---
+
+## 1. 先读这里：5.x 与 6.x 是两条路线
 
 anland 有两代，容器侧的部署方式**完全不同**，别混着看：
 
@@ -21,7 +31,7 @@ anland 有两代，容器侧的部署方式**完全不同**，别混着看：
 | 连接方式 | `/run/display.sock` + bind mount | binder 传 fd，**没有 socket 文件** |
 | 窗口 | 整块屏幕投到一个 Android 窗口 | **每个窗口一个真正的 Android 窗口** |
 | 容器内组件 | 无（靠 patched 合成器） | `anlandx` 会话（wayland 链接 + rootless Xwayland + mini-wm） |
-| 宿主产物 | `anland-daemon.zip` + `anland-v5.apk`（`com.anland.consumer`） | `module/anland-awl.zip` + `anland-wayland.apk` + `anlandx.tar.gz` |
+| 宿主产物 | `anland-daemon.zip` + `anland-v5.apk`（`com.anland.consumer`） | `anland-awl.zip` + `anland-wayland.apk` + `anlandx.tar.gz`（6.x 从 **改版** `misaka5202/anland` 取，见下） |
 
 **5.x 的痛点**：那个 patched 合成器并不在公开的 `anland-kde-packages` 里。
 实测装了那批 deb 之后，`kwin_wayland` 二进制里一个 anland 字样都没有 —— 会话起来了、
@@ -31,13 +41,21 @@ anland 有两代，容器侧的部署方式**完全不同**，别混着看：
 （KernelSU 模块 `anland-awl`）通过 binder 把每个 `xdg_toplevel` 变成真正的
 Android 窗口，所以 stock 合成器不用改。
 
+**6.x 用改版，不要用上游 6.2**：上游的输入链有缺陷（软键盘文本到不了应用、
+xdg configure serial 为 0 导致窗口起不来、X11 应用读不到剪贴板），改版
+`misaka5202/anland` 全部修好，Release 以 `v6.2.N` 标记（shell
+`misaka5202/anland-shell` 为 `v1.1.N`）。镜像构建器见
+[`misaka5202/Droidspaces-anland6-rootfs`](https://github.com/misaka5202/Droidspaces-anland6-rootfs)。
+
 如果你是 **Mali / MTK 设备且拿不到 patched 合成器**，优先考虑 6.x 路线。
 本仓库配套的 6.x 镜像构建器：
 [`misaka5202/Droidspaces-anland6-rootfs`](https://github.com/misaka5202/Droidspaces-anland6-rootfs)。
 
 ---
 
-## 最终效果
+---
+
+## 2. 最终效果
 
 ```
 Android 屏幕显示:
@@ -61,7 +79,9 @@ MobileGL 的价值在于**功能通路已验证**，可承载 OpenGL 4.6 程序�
 
 ---
 
-## 组成部分
+---
+
+## 3. 组成部分
 
 ```
 Android 侧
@@ -77,7 +97,7 @@ Android 侧
 └── /run/display.sock        anland socket（5.x 才有）
 ```
 
-### droidspaces-lkm 的 8 个模块
+### 3.1 droidspaces-lkm 的 9 个模块
 
 | 模块 | 作用 | 补齐的 CONFIG |
 |---|---|---|
@@ -96,10 +116,12 @@ Android 侧
 
 ---
 
-## 前置：LKM 模块
+---
 
-刷入对应 KMI 的 `droidspaces-lkm-<kmi>-arm64.zip`（例如
-`droidspaces-lkm-android14-6.1-arm64.zip`），重启。
+## 4. 前置：LKM 模块
+
+刷入对应 KMI 的 `droidspaces-lkm-<kmi>-arm64-<version>.zip`（例如
+`droidspaces-lkm-android14-6.1-arm64-<version>.zip`），重启。
 
 **KMI 别自己猜。** 5.10 / 5.15 各有两代共用同一个内核版本号
 （`android12-5.10` 与 `android13-5.10`、`android13-5.15` 与 `android14-5.15`），
@@ -136,6 +158,23 @@ getprop ro.board.first_api_level    # 出厂 API level，OTA 不会改它
 [OK] /dev/dri/renderD128 (vkms)
 ```
 
+> [!IMPORTANT]
+> **动手前必读（2026-11 变更）**
+>
+> 本模块里的 `vkms` 已经改成**默认不加载**。原因是 anland **6.x** 的
+> `waylandbridge` 在 Mali 上直接用 `/dev/mali0`，不需要 render node；把它留在
+> 默认加载列表里只会多一个没有 GPU 的虚拟设备。
+>
+> 但**本文档讲的是 5.x + Hyprland/KWin**，那条路仍然硬性要求 render node。
+> 所以在 5.x 上部署时，必须先显式开启：
+>
+> ```sh
+> touch /data/adb/modules/droidspaces_lkm/enable_vkms
+> ```
+>
+> 然后重启设备（或重启容器）。不开启的话 `/dev/dri/renderD128` 不存在，
+> 下面 Hyprland 的那个检查会直接把会话打死。
+
 **`vkms` 是关键。** 厂商内核没开 `CONFIG_DRM_VKMS`，只有 `card0`
 （显示控制器）而没有 render node。Hyprland / KWin 的 Wayland 后端
 硬性要求一个可读写的 DRM render node：
@@ -152,7 +191,7 @@ crw-rw-rw- 1 root graphics 226,  1  card1        ← vkms 显示设备
 crw-rw-rw- 1 root graphics 226, 128  renderD128   ← render node
 ```
 
-### 为什么是 vkms 而不是 vgem
+### 4.1 为什么是 vkms 而不是 vgem
 
 Mesa 的 GBM 后端按 DRM driver 名字找 dri 驱动，完整安装的 Mesa 里有
 `vkms_dri.so` 却**没有** `vgem_dri.so`。用 vgem 时 Hyprland 会停在：
@@ -162,7 +201,7 @@ DEBUG: openRenderNode got drm device /dev/dri/renderD128
 CRIT : Couldn't open a gbm device            (OpenGL.cpp:351)
 ```
 
-### vkms 的两个补丁
+### 4.2 vkms 的两个补丁
 
 **补丁一：`DRIVER_RENDER`。** 上游 vkms 的 `driver_features` 只有
 `MODESET|ATOMIC|GEM`，`drm_dev_register()` 不会为它创建 render minor：
@@ -172,6 +211,7 @@ CRIT : Couldn't open a gbm device            (OpenGL.cpp:351)
                    DRIVER_RENDER,
 ```
 
+> [!NOTE]
 > 早先这份文档说在 `extra/vkms/vkms_drv.c` 改。**那个目录已经删了** ——
 > `extra/vkms/` 和 `extra/vgem/` 从未被构建脚本引用，是死代码。
 > 现在 `vkms` 直接从**内核树自带**的 `drivers/gpu/drm/vkms` 编译并打补丁。
@@ -191,7 +231,9 @@ insmod: failed to load vkms.ko: Unknown symbol drm_crtc_add_crc_entry (err -2)
 
 ---
 
-## 第二步：anland 组件
+---
+
+## 5. anland 组件
 
 ```bash
 # daemon（KernelSU 模块）
@@ -210,9 +252,11 @@ su -c 'nohup /data/adb/modules/anland-daemon/display_daemon \
 
 ---
 
-## 第三步：容器
+---
 
-### 3.1 准备 rootfs
+## 6. 容器
+
+### 6.1 准备 rootfs
 
 用 `Goldzxcbug/Droidspaces-rootfs-Desktop-builder` 的
 **Ubuntu-26-hyprland-Wayland** 版：
@@ -223,7 +267,7 @@ su -c 'cd /data/local/Droidspaces/rootfs-ubuntu && \
        busybox tar xJf /sdcard/Download/Ubuntu-26-hyprland-*.tar.xz'
 ```
 
-### 3.2 修复 rootfs 的 GPU 配置（关键）
+### 6.2 修复 rootfs 的 GPU 配置（关键）
 
 这个 rootfs 是给高通 Adreno 预配置的，`/etc/environment` 里有三行致命配置：
 
@@ -275,7 +319,7 @@ MESA-EGL: warning: egl: failed to create dri2 screen
 | `MESA_LOADER_DRIVER_OVERRIDE=kms_swrast` | ✅ EGL 1.5 |
 | `EGL_PLATFORM=gbm` | ✅ EGL 1.5 |
 
-### 3.3 创建容器
+### 6.3 创建容器
 
 ```bash
 su -c '/data/local/Droidspaces/bin/droidspaces --name=anland \
@@ -304,7 +348,7 @@ stat -c '%F inode=%i' /data/local/Droidspaces/rootfs-ubuntu/run/display.sock
 如果容器内是 `regular empty file`，说明 bind mount 失败——**必须干净重建容器**，
 手动 `mount --bind` 会把 socket 变成普通文件。
 
-### 3.4 启动 Hyprland
+### 6.4 启动 Hyprland
 
 ```bash
 su -c '/data/local/Droidspaces/bin/droidspaces --name=anland run -- /bin/sh /root/hnx.sh'
@@ -348,9 +392,11 @@ xwayland {
 
 ---
 
-## 第四步：连接 app（关键：anlandproxy）
+---
 
-### 为什么需要代理
+## 7. 连接 app（关键：anlandproxy）
+
+### 7.1 为什么需要代理
 
 anland daemon 的校验逻辑：
 
@@ -376,7 +422,7 @@ W Anland: root socket probe failed:
           java.io.IOException: Cannot run program "su": error=2, No such file or directory
 ```
 
-### 代理方案
+### 7.2 代理方案
 
 `anlandproxy` 以 root 运行，监听 app 能访问的路径，转发到真 daemon。
 **关键：必须原样转发 SCM_RIGHTS 附带 dmabuf fd。**
@@ -398,7 +444,7 @@ su -c 'S=$(ls /data/local/Droidspaces/Net/anland-*.sock | head -1)
 
 `anlandproxy.c` 源码见 `C:\nomount\wsl\anlandproxy.c`。
 
-### 配置 app
+### 7.3 配置 app
 
 ```bash
 su -c 'cat > /data/data/com.anland.consumer/shared_prefs/anland_settings.xml <<EOF
@@ -414,7 +460,7 @@ chown u0_a437:u0_a437 /data/data/com.anland.consumer/shared_prefs/anland_setting
 
 `use_root=false` + 自定义 `socket_path` 指向代理。
 
-### 成功标志
+### 7.4 成功标志
 
 daemon 日志（`/data/local/Droidspaces/Logs/anland/anland`）：
 
@@ -436,7 +482,9 @@ Monitor ANLAND-1 (ID 0): 1264x2517@60.00000 at 0x0
 
 ---
 
-## 第五步：启动应用
+---
+
+## 8. 启动应用
 
 **用 shm 渲染的应用，不要用 EGL。**
 
@@ -462,11 +510,13 @@ hyprctl clients    # 应显示 foot 窗口 mapped:1 visible:1 monitor:0
 
 ---
 
-## 可选：MobileGL GPU 加速
+---
+
+## 9. 可选：MobileGL GPU 加速
 
 把容器内的 OpenGL 转译到 Android 侧的 Mali GPU。
 
-### 编译 Android 版（Mali 渲染服务）
+### 9.1 编译 Android 版（Mali 渲染服务）
 
 ```bash
 cd MobileGL
@@ -485,7 +535,7 @@ cmake --build build-android --target MobileGL MobileGLServer -j 8
 llvm-strip --strip-unneeded libMobileGL.so
 ```
 
-### 启动 server（TCP 模式）
+### 9.2 启动 server（TCP 模式）
 
 ```bash
 su -c 'cd /data/local/tmp && setsid env -u MOBILEGL_TRANSPORT \
@@ -505,7 +555,7 @@ netstat -tlnp | grep 40613
 # tcp 0 0.0.0.0:40613 LISTEN <pid>/libMobileGLServer.so
 ```
 
-### 编译容器内 glibc 客户端
+### 9.3 编译容器内 glibc 客户端
 
 **在容器内原生编译**（容器本身就是 aarch64 glibc，天然匹配）：
 
@@ -524,7 +574,7 @@ su -c '/data/local/Droidspaces/bin/droidspaces --name=anland run -- /bin/sh -c "
 产物：`/opt/mobilegl/build-client/libMobileGL.so`（22 MB）+
 `libEGL.so` / `libGL.so` 软链接。
 
-### 验证
+### 9.4 验证
 
 ```bash
 export MOBILEGL_TRANSPORT=spawn
@@ -543,7 +593,7 @@ GL_RENDERER: Espryt (MobileGL Core) (Mali-G720-Immortalis MC12, OpenGL ES 3.2)
 GL_VERSION:  4.6.0 MobileGL 26.11-dev, Direct (GLES) Backend
 ```
 
-### 编译 MobileGL 的坑
+### 9.5 编译 MobileGL 的坑
 
 | 问题 | 解法 |
 |------|------|
@@ -556,9 +606,11 @@ GL_VERSION:  4.6.0 MobileGL 26.11-dev, Direct (GLES) Backend
 
 ---
 
-## 故障排查
+---
 
-### 模块装不上 / 开机卡住
+## 10. 故障排查
+
+### 10.1 模块装不上 / 开机卡住
 
 先看日志和状态目录（新版本才有这套）：
 
@@ -581,7 +633,7 @@ cat /data/adb/droidspaces_lkm.d/hang-report.txt   # 卡死前最后 15 秒的状
 `post-fs-data` 之后、`late_start` 之前，那时我们的模块**还没加载** —— 问题在
 别的模块或内核本身，不在这个模块。用安全模式只留这个模块再开一次即可确认。
 
-### 容器一启动就退出
+### 10.2 容器一启动就退出
 
 ```bash
 # 看 monitor 日志
@@ -591,7 +643,7 @@ tail -20 /data/local/Droidspaces/Logs/<name>/log
 如果看到 `Monitor performing cleanup` 紧跟 `Container is running in background`，
 说明 systemd 退出了。检查 `/etc/environment` 的 kgsl 配置。
 
-### socket 在容器内是普通文件
+### 10.3 socket 在容器内是普通文件
 
 ```bash
 stat -c '%F %i' rootfs/run/display.sock     # 期望 socket
@@ -599,7 +651,7 @@ stat -c '%F %i' rootfs/run/display.sock     # 期望 socket
 
 不是 socket 就**干净重建容器**，手动 bind mount 无效。
 
-### Hyprland 崩溃
+### 10.4 Hyprland 崩溃
 
 ```bash
 grep -aE 'CRIT|ASSERTION|Couldn' /root/hx.log
@@ -610,7 +662,7 @@ grep -aE 'CRIT|ASSERTION|Couldn' /root/hx.log
 - `ZINK: vkEnumeratePhysicalDevices failed` → 设 `MESA_LOADER_DRIVER_OVERRIDE=swrast`
 - Lua 配置语法错误 → 删掉 `/root/.config/hypr/hyprland.lua`
 
-### app 一直跳设置页
+### 10.5 app 一直跳设置页
 
 ```bash
 logcat -d -s Anland:*
@@ -618,7 +670,7 @@ logcat -d -s Anland:*
 
 `root socket probe failed: Cannot run program "su"` → 用 anlandproxy 方案。
 
-### EGL 初始化失败
+### 10.6 EGL 初始化失败
 
 ```
 eglInitialize failed with error 0x3001
@@ -629,7 +681,9 @@ Wayland 平台 EGL 需要 `MESA_LOADER_DRIVER_OVERRIDE=swrast`，
 
 ---
 
-## 已知限制
+---
+
+## 11. 已知限制
 
 | 项 | 状态 | 说明 |
 |---|---|---|
@@ -639,16 +693,72 @@ Wayland 平台 EGL 需要 `MESA_LOADER_DRIVER_OVERRIDE=swrast`，
 | GPU 加速收益 | ⚠️ | MobileGL 通路可用，但瓶颈在 anland 合成 |
 | 音频 | 未验证 | anland 有音频通道，未测试 |
 | 输入法 | 未验证 | fcitx5 已配置，未测试中文输入 |
+| 容器内 tmpfs ACL/xattr | ⚠️ | 取决于内核配置，部分厂商关闭（见下） |
 
+> [!IMPORTANT]
 > **`--pids-limit` / `--cpus` 的附加条件**：两项仿真的 cftype 挂在 cgroup v2
 > 上，容器必须**同时设 `--memory`**（它才会创建独立的 cgroup），否则限额不生效。
 >
 > 早期文档把这两项标成 ❌「需内核重新编译」，那是 `droid_lkm_pids` /
 > `droid_lkm_cpu` 出现之前的情况，已经不成立了。
 
+### 11.1 容器内 tmpfs 的 setfacl / setcap（issue #6）
+
+容器内 systemd 把 /run 挂成 tmpfs，落在这上面的两类调用是否可用，取决于
+内核的 `CONFIG_TMPFS_XATTR` / `CONFIG_TMPFS_POSIX_ACL`：
+
+- Meizu 21 Pro（6.1.25-android14-11）实测**两者都被厂商关闭**（内核内嵌
+  config 证实）：tmpfs 上任何 setxattr 都返回 `Operation not supported`，
+  表现是 NixOS 容器里 resolvconf.service（setfacl）和
+  suid-sgid-wrappers.service（setcap）失败。这是编译期配置，内核模块无法
+  补齐。
+- 「操作」按钮的 tmpfs ACL/xattr 诊断行会如实标注（读 /proc/config.gz，
+  GKI 内核必有；无 config.gz 的内核标 NA）。
+
+规避（容器侧，不碰内核）：
+
+1. resolvconf.service 的 setfacl 失败：禁用该服务，改用静态 resolv.conf
+   （`networking.resolvconf.enable = false;` 并直接提供
+   `environment.etc."resolv.conf"`）
+2. suid-sgid-wrappers.service 的 setcap 失败：`security.wrappers = { };`
+   （特权容器里 newuidmap/newgidmap 本就不需要）
+3. bpf-firewall 的 `Operation not permitted`：cgroup BPF attach 需要宿主
+   特权，容器内天然不可能——仅是警告，`networking.firewall.enable = false;`
+   可消除
+4. 进阶：预挂 /run，让 setfacl/setcap 原样可用——见下节
+
+#### 进阶：预挂 /run（lxc.mount.entry）
+
+systemd 启动时若发现 /run 已被挂载（容器运行时挂的），会跳过自己的 tmpfs。
+在容器的 lxc 配置里加一条 mount entry，把 /run 预挂到 data 分区的 f2fs 上
+（`CONFIG_F2FS_FS_POSIX_ACL=y`，ACL/xattr 可用），resolvconf 和 wrappers
+两个服务**原样工作，无需任何 NixOS 规避**：
+
+```
+lxc.mount.entry = overlay run overlay lowerdir=<rootfs内>/run,upperdir=<容器目录>/run-upper,workdir=<容器目录>/run-work,create=dir 0 0
+```
+
+最简的 bind 版：
+
+```
+lxc.mount.entry = /data/adb/droidspaces/containers/<name>/run run none bind,create=dir 0 0
+```
+
+注意：
+
+1. overlay 版依赖 lkm4ctr 的 vendored overlayfs（模块未加载时 overlay 不可用，bind 版不受影响）
+2. 持久化语义：tmpfs 每次容器启动是空的，overlay/bind 的 upper 会残留旧
+   文件（journald/锁/socket），需配 start hook 清理模拟 tmpfs 语义
+3. 特权容器下 file caps（setcap）直接可用；idmapped/unprivileged 容器内核
+   一律拒绝 file caps（与文件系统无关），那种容器仍需 `security.wrappers = { }`
+4. 手改是否长期生效取决于 Droidspaces 是否重建容器的 lxc 配置：config 创建
+   后不重建则一次生效；会重建则需上游（Droidspaces-OSS）提供该 entry 或开关
+
 ---
 
-## 关键设备信息
+---
+
+## 12. 关键设备信息
 
 本文档的实测环境：
 
@@ -667,7 +777,9 @@ Root:       KernelSU（LKM 模式）
 
 ---
 
-## 参考
+---
+
+## 13. 参考
 
 - [anland](https://github.com/SuperTurtleDev/anland) — 显示协议（**5.x 和 6.x 都在这个仓库**）
 - [anland-shell](https://github.com/SuperTurtleDev/anland-shell) — 6.x 的容器/应用管理
@@ -677,3 +789,4 @@ Root:       KernelSU（LKM 模式）
 - [Droidspaces-anland6-rootfs](https://github.com/misaka5202/Droidspaces-anland6-rootfs) — 6.x 专用镜像构建器（高通 / MTK 双版本，中文）
 - [MobileGL](https://github.com/MobileGL-Dev/MobileGL) — OpenGL 转译
 - [droidspaces-lkm](https://github.com/misaka5202/droidspaces-lkm) — LKM 模块（本项目）
+

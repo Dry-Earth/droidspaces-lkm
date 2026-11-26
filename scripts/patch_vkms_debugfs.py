@@ -26,7 +26,24 @@ vkms 直接 "Unknown symbol" 装不上。GKI 的 CONFIG_DRM=y 是编进内核的
 
 两处都是纯调试功能：CRC 是给 igt 之类的工具用的，debugfs 是把 vkms 配置
 打到 debugfs 里。容器要的是 /dev/dri/renderD128 这个 render node，和它们无关。
+
+第三处（drmm_crtc_init_with_planes）
+-----------------------------------
+6.12 的小米系内核（issue #3 K90PM / #4 一加15）没导出这个符号，vkms 直接装不上。
+换成 `drm_crtc_init_with_planes`：
+
+  * 两者签名**完全相同**（都是 variadic：... funcs, const char *name, ...），
+    上游 6.12 的 drm_crtc.c 里两个都是 EXPORT_SYMBOL，是 drop-in 替换；
+  * 语义差异只有清理方式 —— drmm_ 版注册 devres 自动清理，非 drmm 版依赖
+    调用方。而 vkms 的 CRTC 挂在 drm_mode_config 的 crtc_list 上，
+    drm_mode_config_cleanup() 会统一调 drm_crtc_cleanup()，所以不会泄漏；
+  * 厂商裁的通常是较新的 drmm_ 那个，老的非 drmm 版基本都还导着。
 """
+
+import sys as _sys
+from pathlib import Path as _Path
+_sys.path.insert(0, str(_Path(__file__).resolve().parent))
+from i18n import t  # noqa: E402
 
 import re
 import sys
@@ -42,15 +59,15 @@ DBG_SYM = "drm_debugfs_create_files"
 def patch_composer(root: pathlib.Path) -> bool:
     p = root / COMPOSER
     if not p.exists():
-        print(f"  {COMPOSER}: 文件不存在，跳过")
+        print(t("file_missing", name=COMPOSER))
         return True
 
     s = p.read_text(encoding="utf-8", errors="replace")
     if "VKMS_CRC_DISABLED" in s:
-        print(f"  {COMPOSER}: 已打过补丁")
+        print(t("already_patched", name=COMPOSER))
         return True
     if CRC_SYM not in s:
-        print(f"  {COMPOSER}: 不使用 {CRC_SYM}，无需处理")
+        print(t("sym_unused", name=COMPOSER, sym=CRC_SYM))
         return True
 
     old = ("\twhile (frame_start <= frame_end)\n"
@@ -69,7 +86,7 @@ def patch_composer(root: pathlib.Path) -> bool:
         pat = re.compile(r"^(\s*)" + re.escape(CRC_SYM) + r"\(.*$", re.M)
         m = pat.search(s)
         if not m:
-            print(f"  {COMPOSER}: 引用了 {CRC_SYM} 但找不到调用点")
+            print(t("crc_no_callsite", name=COMPOSER, sym=CRC_SYM))
             return False
         s = pat.sub(
             lambda mm: (mm.group(1) + "/* [VKMS_CRC_DISABLED] 见 patch_vkms_debugfs.py */\n"
@@ -78,22 +95,22 @@ def patch_composer(root: pathlib.Path) -> bool:
         s = s.replace(old, new, 1)
 
     p.write_text(s, encoding="utf-8", newline="\n")
-    print(f"  {COMPOSER}: CRC 上报已移除")
+    print(t("crc_removed", name=COMPOSER))
     return True
 
 
 def patch_drv(root: pathlib.Path) -> bool:
     p = root / DRV
     if not p.exists():
-        print(f"  {DRV}: 文件不存在，跳过")
+        print(t("file_missing", name=DRV))
         return True
 
     s = p.read_text(encoding="utf-8", errors="replace")
     if "VKMS_DEBUGFS_DISABLED" in s:
-        print(f"  {DRV}: 已打过补丁")
+        print(t("already_patched", name=DRV))
         return True
     if DBG_SYM not in s:
-        print(f"  {DRV}: 不使用 {DBG_SYM}，无需处理")
+        print(t("sym_unused", name=DRV, sym=DBG_SYM))
         return True
 
     old = (f"\tdrm_debugfs_create_files(vkms_config_debugfs_list, ARRAY_SIZE(vkms_config_debugfs_list),\n"
@@ -110,23 +127,71 @@ def patch_drv(root: pathlib.Path) -> bool:
 	(void)vkms_config_debugfs_list;"""
 
     if old not in s:
-        print(f"  {DRV}: 引用了 {DBG_SYM} 但调用点形状不匹配")
+        print(t("dbg_shape_mismatch", name=DRV, sym=DBG_SYM))
         return False
 
     s = s.replace(old, new, 1)
     p.write_text(s, encoding="utf-8", newline="\n")
-    print(f"  {DRV}: debugfs 注册已移除")
+    print(t("dbg_removed", name=DRV))
+    return True
+
+
+CRTC_SYM_DRMM = "drmm_crtc_init_with_planes"
+CRTC_SYM_PLAIN = "drm_crtc_init_with_planes"
+CRTC_FILE = "vkms_crtc.c"
+
+
+def patch_crtc(root: pathlib.Path) -> bool:
+    """把 drmm_crtc_init_with_planes 换成 drm_crtc_init_with_planes。
+
+    两者签名相同（都是 variadic），上游都 EXPORT_SYMBOL，所以是纯改名。
+    厂商内核常只裁较新的 drmm_ 版本。
+    """
+    p = root / CRTC_FILE
+    if not p.exists():
+        print(t("file_missing", name=CRTC_FILE))
+        return True
+
+    s = p.read_text(encoding="utf-8", errors="replace")
+    if "VKMS_CRTC_NODRMM" in s:
+        print(t("already_patched", name=CRTC_FILE))
+        return True
+    if CRTC_SYM_DRMM not in s:
+        print(t("sym_unused", name=CRTC_FILE, sym=CRTC_SYM_DRMM))
+        return True
+
+    n = s.count(CRTC_SYM_DRMM + "(")
+    if n == 0:
+        print(t("sym_unused", name=CRTC_FILE, sym=CRTC_SYM_DRMM))
+        return True
+
+    # 注释独占一行放在调用语句之前（不要插在 "ret = " 和函数名之间，
+    # 那样虽然合法但把赋值拆成两行，很难读）。
+    out = []
+    for line in s.split("\n"):
+        if CRTC_SYM_DRMM + "(" in line:
+            indent = line[:len(line) - len(line.lstrip())]
+            out.append(indent + "/* [VKMS_CRTC_NODRMM] 厂商内核可能未导出 drmm_ 版；")
+            out.append(indent + " * 两者签名相同（都 variadic），改用非 drmm 版。 */")
+            out.append(line.replace(CRTC_SYM_DRMM + "(", CRTC_SYM_PLAIN + "("))
+        else:
+            out.append(line)
+    s = "\n".join(out)
+
+    p.write_text(s, encoding="utf-8", newline="\n")
+    print(f"    {CRTC_FILE}: {CRTC_SYM_DRMM} -> {CRTC_SYM_PLAIN} ({n} 处)")
     return True
 
 
 def main() -> int:
     root = pathlib.Path(sys.argv[1] if len(sys.argv) > 1 else ".")
     if not root.is_dir():
-        print(f"  目录不存在: {root}")
+        print(t("dir_missing", path=root))
         return 1
     ok1 = patch_composer(root)
     ok2 = patch_drv(root)
-    return 0 if (ok1 and ok2) else 1
+    ok3 = patch_crtc(root)
+    return 0 if (ok1 and ok2 and ok3) else 1
 
 
 if __name__ == "__main__":

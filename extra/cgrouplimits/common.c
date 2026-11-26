@@ -18,7 +18,7 @@
 /*
  * KallRecon 的解析入口。
  *
- * 注意类型：kallrecon_klp 是一个**函数指针变量**（kr/core.h 里
+ * 注意类型：kallrecon_klp 是一个**函数指针变量**（kallrecon/core.h 里
  * `extern unsigned long (*kallrecon_klp)(const char *name);`），
  * 不是函数。
  *
@@ -44,6 +44,72 @@ bool ctl_is_kptr(unsigned long v)
 		return false;
 	/* arm64 内核虚拟地址最高 16 位全 1 */
 	return (v & 0xffff000000000000UL) == 0xffff000000000000UL;
+}
+
+/* ------------------------------------------------ 可选 kprobe ---
+ *
+ * 见 common.h 的说明。四个函数指针都是运行时解析的，解析不到就是 NULL，
+ * 包装返回 -ENOSYS / 直接返回，调用方按 best-effort 跳过。
+ */
+static int (*ctl_reg_kprobe)(struct kprobe *p);
+static void (*ctl_unreg_kprobe)(struct kprobe *p);
+static int (*ctl_reg_kretprobe)(struct kretprobe *rp);
+static void (*ctl_unreg_kretprobe)(struct kretprobe *rp);
+static bool ctl_probe_tried;
+
+static void ctl_probe_resolve(void)
+{
+	unsigned long a;
+
+	if (ctl_probe_tried)
+		return;
+	ctl_probe_tried = true;
+	if (!kallrecon_klp) {
+		/* kr 还没就绪（find_kallsyms_base 未调用或失败）。留 NULL，
+		 * 调用方拿到 -ENOSYS 后跳过探针。 */
+		return;
+	}
+
+	a = kallrecon_klp("register_kprobe");
+	if (a && ctl_is_kptr(a))
+		ctl_reg_kprobe = (void *)a;
+	a = kallrecon_klp("unregister_kprobe");
+	if (a && ctl_is_kptr(a))
+		ctl_unreg_kprobe = (void *)a;
+	a = kallrecon_klp("register_kretprobe");
+	if (a && ctl_is_kptr(a))
+		ctl_reg_kretprobe = (void *)a;
+	a = kallrecon_klp("unregister_kretprobe");
+	if (a && ctl_is_kptr(a))
+		ctl_unreg_kretprobe = (void *)a;
+}
+
+int ctl_probe_register(struct kprobe *p)
+{
+	ctl_probe_resolve();
+	if (!ctl_reg_kprobe)
+		return -ENOSYS;
+	return ctl_reg_kprobe(p);
+}
+
+void ctl_probe_unregister(struct kprobe *p)
+{
+	if (ctl_unreg_kprobe)
+		ctl_unreg_kprobe(p);
+}
+
+int ctl_kretprobe_register(struct kretprobe *rp)
+{
+	ctl_probe_resolve();
+	if (!ctl_reg_kretprobe)
+		return -ENOSYS;
+	return ctl_reg_kretprobe(rp);
+}
+
+void ctl_kretprobe_unregister(struct kretprobe *rp)
+{
+	if (ctl_unreg_kretprobe)
+		ctl_unreg_kretprobe(rp);
 }
 
 int __nocfi ctl_anchors_resolve(struct ctl_anchors *a)

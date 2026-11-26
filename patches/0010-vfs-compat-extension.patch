@@ -1,0 +1,1573 @@
+diff --git a/glue/lkm4ctr_diagfs.c b/glue/lkm4ctr_diagfs.c
+index d5f5f48..29c05d9 100644
+--- a/glue/lkm4ctr_diagfs.c
++++ b/glue/lkm4ctr_diagfs.c
+@@ -224,6 +224,14 @@
+ #include "lkm4ctr_diagfs.h"
+ #include "lkm4ctr_compat.h"
+ 
++/* [TRIM-COMPAT] VFS helpers this file calls may be trimmed from the
++ * module symbol table on production GKI. The compat header declares
++ * them as runtime pointers and #defines the bare names, so every call
++ * site below goes through the resolved address instead of a static
++ * import. Included after the kernel headers so typeof() sees the real
++ * declarations. */
++#include "vns_vfs_shared_syms.h"
++
+ #define LKM4CTR_DIAGFS_MAGIC	0x4C4B4D34 /* "LKM4" */
+ #define LKM4CTR_DIAGFS_TAG	"diagfs"
+ 
+diff --git a/glue/lkm4ctr_main.c b/glue/lkm4ctr_main.c
+index 457baec..83b98ea 100644
+--- a/glue/lkm4ctr_main.c
++++ b/glue/lkm4ctr_main.c
+@@ -7,6 +7,7 @@
+ #include "shadow_hook.h"
+ 
+ int vns_trim_symbols_init(void);
++int vns_ovl_vfs_compat_resolve(void);
+ int vendor_kernel_init(void);
+ int vendor_kernel_module_exit(void);
+ void vns_user_ns_exit(void);
+@@ -43,6 +45,23 @@ static int __init lkm4ctr_init(void)
+ 	 */
+ 	vns_trim_symbols_init();
+ 
++	/*
++	 * 解析 VFS 兼容清单里的符号。
++	 *
++	 * 这一步原本只在 overlayfs 初始化时做（vendor/fs/overlayfs/super.c），
++	 * 但那发生在 vendor_kernel_init() 之后。而 vendor_kernel_init() 里的
++	 * mqueue 初始化要经过 mqueue_fill_super()，那条路径会调用
++	 * inc_nlink/ihold/d_instantiate/current_umask 等 —— 如果这时指针还是
++	 * NULL，同名转发函数就是空操作，inode 建不出来，
++	 * mq_init_ns 最终返回 -ENOMEM（实测 Qualcomm SM7675 / 6.1.138：
++	 * "failed to init default ipc namespace (-12)"）。
++	 *
++	 * 所以提前到这里。解析失败不阻断加载：overlayfs 会自己再调一次并
++	 * 按需降级，其它子系统各有兜底。
++	 */
++	/* 返回 0 表示「尽力解析完成」；失败数已在函数内部记入日志。 */
++	vns_ovl_vfs_compat_resolve();
++
+ 	ret = vendor_kernel_init();
+ 	if (ret) {
+ 		LKM4CTR_ERR(LKM4CTR_TAG,
+diff --git a/glue/vendor_kernel_ipc_syscalls.c b/glue/vendor_kernel_ipc_syscalls.c
+index 0f951ba..e0c0aa0 100644
+--- a/glue/vendor_kernel_ipc_syscalls.c
++++ b/glue/vendor_kernel_ipc_syscalls.c
+@@ -102,8 +102,9 @@ int vns_ipc_default_init(void)
+ 	vns_ipc_pin_ref(&vns_default_ipc_ns, 0x40000000);
+ 
+ 	err = vns_mqueue_fs_init();
+-	if (err)
++	if (err) {
+ 		return err;
++	}
+ 
+ 	if (!vns_setup_ipc_sysctls(&vns_default_ipc_ns)) {
+ 		err = -ENOMEM;
+@@ -111,8 +113,9 @@ int vns_ipc_default_init(void)
+ 	}
+ 
+ 	err = vns_msg_init_ns(&vns_default_ipc_ns);
+-	if (err)
++	if (err) {
+ 		goto fail_ipc_sysctls;
++	}
+ 
+ 	vns_sem_init_ns(&vns_default_ipc_ns);
+ 	vns_shm_init_ns(&vns_default_ipc_ns);
+diff --git a/glue/vendor_kernel_overlay.c b/glue/vendor_kernel_overlay.c
+index f9c3546..46f9ab9 100644
+--- a/glue/vendor_kernel_overlay.c
++++ b/glue/vendor_kernel_overlay.c
+@@ -58,7 +58,49 @@
+  * not a fatal condition for the rest of vendor_kernel, so vns_overlay_init()
+  * still returns 0 in that case.
+  */
+-#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 10, 0) && LINUX_VERSION_CODE < KERNEL_VERSION(6, 19, 0)
++/*
++ * VNS_NO_OVERLAYFS: 构建「不带 vendored overlayfs」的精简版（lkm4ctr_lite）。
++ *
++ * 动机：厂商内核可能裁掉一批 VFS EXPORT_SYMBOL，而 vendored overlayfs 是这些
++ * 依赖的大户（33 个符号里有 19 个只被它用）。裁剪内核上整个 lkm4ctr 装不上，
++ * 连命名空间一起废掉。精简版把这些源文件全部排除，至少保住核心功能，
++ * overlayfs 用内核自带的那份（绝大多数 GKI 内核都有 CONFIG_OVERLAY_FS=y）。
++ *
++ * 排除后 vns_ovl_fs_type / vns_ovl_init / vns_ovl_exit 都不存在，所以走下面
++ * 那个 stub 分支 —— 和「内核版本不在 vendored 范围内」的处理完全一样。
++ */
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 10, 0) && \
++    LINUX_VERSION_CODE < KERNEL_VERSION(6, 19, 0) && \
++    !defined(VNS_NO_OVERLAYFS)
++
++/*
++ * 默认关闭。
++ *
++ * 这个 hook 把**全局**的 get_fs_type("overlay") 都改成返回模块自己那份
++ * overlayfs。内核本来就有 CONFIG_OVERLAY_FS 时，这不是必要功能，代价却很大：
++ * 它和其它在 VFS 层动手脚的模块会抢同一块状态（典型例子是 NoMount，它劫持
++ * s_d_op / d_op / d_revalidate）。两者叠加后会出现 d_op 与 d_fsdata 不配对的
++ * dentry，表现为一次普通 openat 在内核 ovl_dentry_revalidate_common 里
++ * NULL 解引用（fault at 0x10）。
++ *
++ * 只有在运行内核确实没有 overlayfs 时才需要打开：
++ *
++ *     insmod lkm4ctr.ko overlay_override=Y
++ */
++static bool vns_ovl_override_enabled;
++module_param_named(overlay_override, vns_ovl_override_enabled, bool, 0644);
++MODULE_PARM_DESC(overlay_override,
++	"Take over get_fs_type(\"overlay\") with the vendored overlayfs (default: N). "
++	"Enable only when the running kernel has no overlayfs of its own.");
++
++static bool vns_ovl_ready;
++
++/*
++ * Defined in vendor_kernel_ovl_vfs_compat.c: true if any compat VFS symbol
++ * failed to resolve. The macro-form pointers (*vns_ovl_vfsc_notify_change)(...) 
++ * etc. are a NULL call when unresolved, so the takeover must be refused.
++ */
++bool vns_ovl_vfs_compat_resolve_failed(void);
+ 
+ static struct file_system_type *(*real_get_fs_type)(const char *name);
+ 
+@@ -88,16 +165,41 @@ struct shadow_hook *vendor_kernel_overlay_hooks[] = {
+ 
+ int vns_overlay_init(void)
+ {
+-	int err = vns_ovl_init();
++	int err;
+ 
++	if (!vns_ovl_override_enabled) {
++		LKM4CTR_INFO("vendor_kernel",
++			     "vendored overlayfs override disabled (overlay_override=N); "
++			     "get_fs_type(\"overlay\") resolves to the running kernel's own overlayfs");
++		return 0;
++	}
++
++	/*
++	 * [C1] 若上一轮 compat 符号解析有任何失败，接管 overlay 是危险的：
++	 * 宏形式 (*vns_ovl_vfsc_notify_change)(...) 会是对 NULL 的调用（内核
++	 * 直接 oops），同名转发函数会静默空操作把 VFS 权限/属性判定全废掉。
++	 * 这时宁可继续用运行内核自带的 overlayfs，也不装一个坏掉的。解析本身
++	 * 仍然非致命（lite 版靠这个不中断加载），只有"接管"这个动作要拒绝。
++	 */
++	if (vns_ovl_vfs_compat_resolve_failed()) {
++		LKM4CTR_INFO("vendor_kernel",
++			     "overlayfs takeover refused: VFS compat symbols did not all resolve; "
++			     "get_fs_type(\"overlay\") stays on the running kernel's overlayfs");
++		return 0;
++	}
++
++	err = vns_ovl_init();
+ 	if (err) {
+ 		LKM4CTR_ERR("vendor_kernel", "failed to init vendored overlayfs (%d)", err);
+ 		return err;
+ 	}
++	vns_ovl_ready = true;
++
+ 	err = shadow_hook_install_all(vendor_kernel_overlay_hooks, "vendor_kernel_overlay");
+ 	if (err < 0) {
+ 		LKM4CTR_ERR("vendor_kernel", "failed to install get_fs_type() overlay override hook (%d)", err);
+ 		vns_ovl_exit();
++		vns_ovl_ready = false;
+ 		return err;
+ 	}
+ 	LKM4CTR_INFO("vendor_kernel", "vendored overlayfs now handles every get_fs_type(\"overlay\") lookup");
+@@ -106,14 +219,21 @@ int vns_overlay_init(void)
+ 
+ void vns_overlay_exit(void)
+ {
++	if (!vns_ovl_ready)
++		return;
++
+ 	shadow_hook_remove_all(vendor_kernel_overlay_hooks);
+ 	vns_ovl_exit();
++	vns_ovl_ready = false;
+ 	LKM4CTR_INFO("vendor_kernel", "vendored overlayfs override removed");
+ }
+ 
+ size_t vns_overlay_diag_snprintf(char *buf, size_t buflen)
+ {
+-	return scnprintf(buf, buflen, "overlay_mounts: %d\n",
++	if (!vns_ovl_ready)
++		return scnprintf(buf, buflen,
++				 "overlay_override: off (running kernel's overlayfs in use)\n");
++	return scnprintf(buf, buflen, "overlay_override: on, overlay_mounts: %d\n",
+ 			 atomic_read(&vns_ovl_mount_count));
+ }
+ 
+diff --git a/glue/vendor_kernel_ovl_vfs_compat.c b/glue/vendor_kernel_ovl_vfs_compat.c
+index e9e9549..405fd1c 100644
+--- a/glue/vendor_kernel_ovl_vfs_compat.c
++++ b/glue/vendor_kernel_ovl_vfs_compat.c
+@@ -59,22 +59,457 @@ VNS_OVL_VFS_COMPAT_LIST(VNS_OVL_VFSC_DEFINE)
+ VNS_OVL_VFS_COMPAT_LIST_BF(VNS_OVL_VFSC_DEFINE)
+ #undef VNS_OVL_VFSC_DEFINE
+ 
++/*
++ * get_next_ino - same-name forwarding definition.
++ *
++ * Called from vendor/ipc/mqueue.c and glue/lkm4ctr_diagfs.c as
++ * inode->i_ino = get_next_ino(). Unresolved on some vendor 6.12 kernels
++ * (issue #3 / #4: "lkm4ctr 需要 get_next_ino —— 本内核未导出"), which made the
++ * whole module refuse to load.
++ *
++ * Signature per include/linux/fs.h: unsigned int get_next_ino(void).
++ * __nocfi: the body makes an indirect call.
++ */
++unsigned int __nocfi get_next_ino(void)
++{
++	if (!vns_ovl_vfsc_get_next_ino)
++		return 0;
++	return vns_ovl_vfsc_get_next_ino();
++}
++
++/*
++ * backing_file_user_path - 防御性同名转发。
++ *
++ * 背景（issue #3 K90PM / #4 一加15，6.12.23-android16-5）
++ * ------------------------------------------------------
++ * 这两台设备的 lkm4ctr 报 "Unknown symbol backing_file_user_path"。
++ *
++ * 诡异之处：源码里唯一的调用点在 vendor/fs/overlayfs/file.c 的
++ *   #if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 18, 0)
++ * 分支内，而 CI 的 android16-6.12 实测 vermagic 是 6.12.76（< 6.18），
++ * 兼容头的 VNS_OVL_HAVE_BACKING_FILE_USER_PATH 也是同一条件。按静态分析
++ * 这个符号**不该出现**，但 nm -u 确认它确实在 .ko 的未定义表里。
++ *
++ * 没拿到 DDK 的 include/generated/uapi/linux/version.h 之前无法进一步定位，
++ * 所以先做防御：只要目标内核有这个名字（< 6.18 的树里通常没有声明），
++ * 就提供一个同名函数把它接住；没有引用时靠 __maybe_unused 让编译器丢弃。
++ *
++ * 为什么不用 typeof(&name)：6.12 的标准头里根本没这个声明，typeof 会编不过。
++ * 所以这里手写原型 —— struct path *backing_file_user_path(struct file *)。
++ *
++ * 解析放在 vns_ovl_vfs_compat_resolve() 里（那边已经在遍历符号表）。
++ */
++#if !VNS_OVL_HAVE_BACKING_FILE_USER_PATH && \
++	LINUX_VERSION_CODE >= KERNEL_VERSION(6, 12, 0)
++
++struct file;
++
++/* 前置声明：带 within_module 守卫的解析 helper 在文件后面定义。
++ * 这里必须用守卫版而不是裸 shadow_hook_resolve —— 本函数本身就是
++ * 同名转发，裸解析会命中自己造成无限递归。 */
++static void *vns_ovl_vfsc_resolve(const char *name);
++
++/* 存指针的槽位；由 vns_ovl_vfs_compat_resolve() 填。 */
++static struct path *(*vns_bfup_slot)(struct file *);
++
++__maybe_unused struct path *__nocfi backing_file_user_path(struct file *f)
++{
++	if (!vns_bfup_slot)
++		vns_bfup_slot = (void *)vns_ovl_vfsc_resolve("backing_file_user_path");
++	if (!vns_bfup_slot)
++		return NULL;
++	return vns_bfup_slot(f);
++}
++
++#endif /* !VNS_OVL_HAVE_BACKING_FILE_USER_PATH && >= 6.12 */
++
++/*
++ * kmem_cache_alloc_lru —— 6.0+ 的分配辅助，按版本分两种形态。
++ *
++ *   [6.0, 6.10)  void *kmem_cache_alloc_lru(struct kmem_cache *, struct list_lru *, gfp_t)
++ *   [6.10, ...)  void *kmem_cache_alloc_lru_noprof(...)  + 宏 kmem_cache_alloc_lru
++ *
++ * 为什么必须用同名函数而不是对象式 #define：
++ * include/linux/fs.h 里的 alloc_inode_sb() 是个 inline，它的函数体在头文件
++ * 解析时就展开了，早于我们 compat 头的 #define。所以 6.6 上加的对象式 define
++ * 根本管不到那处调用，符号照样被静态导入（CI #122 实测）。
++ *
++ * 6.10+ 那边内核自己也把 kmem_cache_alloc_lru 定义成宏，我们不能再定义同名
++ * 函数（会被宏展开成语法错误），只能用 _noprof 这个名字。
++ */
++#if VNS_OVL_HAVE_KMEM_CACHE_ALLOC_LRU
++
++#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 10, 0)
++
++void *__nocfi kmem_cache_alloc_lru(struct kmem_cache *s, struct list_lru *lru,
++				   gfp_t gfp)
++{
++	if (!vns_ovl_vfsc_kmem_cache_alloc_lru)
++		return NULL;
++	return vns_ovl_vfsc_kmem_cache_alloc_lru(s, lru, gfp);
++}
++
++#else /* >= 6.10 */
++
++void *__nocfi kmem_cache_alloc_lru_noprof(struct kmem_cache *s,
++					  struct list_lru *lru, gfp_t gfp)
++{
++	if (!vns_ovl_vfsc_kmem_cache_alloc_lru_noprof)
++		return NULL;
++	return vns_ovl_vfsc_kmem_cache_alloc_lru_noprof(s, lru, gfp);
++}
++
++#endif /* < 6.10 */
++
++#endif /* VNS_OVL_HAVE_KMEM_CACHE_ALLOC_LRU */
++
++
++
++/*
++ * 下面这批 VFS 同名转发函数三层都编译：OLD/MID/NEW 的清单里现在都有
++ * 对应的 X() 条目，指针一定存在。
++ *
++ * 为什么用同名函数而不是 #define：
++ *   - generic_read_dir 在 readdir.c 里被取地址（.read = generic_read_dir），
++ *     (*ptr) 不是编译期常量；
++ *   - 其余几个在 vendor/ipc/ 和 glue/lkm4ctr_diagfs.c 里被调用，
++ *     那些文件不在 overlayfs 的 include 链上，够不到 compat 头的 #define。
++ */
++/*
++ * The definitions below forward to pointers that exist only in the MID
++ * tier's compat list, so each is guarded exactly like that list is.
++ * Without the guard, OLD/NEW reference an undeclared vns_ovl_vfsc_* and
++ * the module fails to link -- CI #51 showed this on 5.10/5.15/6.6/6.12.
++ *
++ * The extra >= 6.0 guards mirror VNS_OVL_HAVE_KMEM_CACHE_ALLOC_LRU: those
++ * three names only entered the MID list for 6.0-and-later kernels.
++ */
++
++/*
++ * Same-name forwarding definitions for the VFS helpers in vendor/ipc/ and
++ * glue/lkm4ctr_diagfs.c call.
++ *
++ * These were #define aliases in vns_vfs_shared_syms.h. That is fine in
++ * isolation but broke lkm4ctr on the Qualcomm SM7675 tablet: mq_init_ns()
++ * failed with -ENOMEM inside mq_create_mount() -> fc_mount() ->
++ * mqueue_fill_super(), whose inode setup runs right through these names.
++ *
++ * A real function with the kernel's own name has none of the macro's reach:
++ * every reference inside this module links here, no static import is emitted,
++ * and the call shape is exactly what the kernel expects.
++ *
++ * All are __nocfi: the bodies make indirect calls, and CONFIG_CFI_CLANG checks
++ * those at the call site.
++ */
++
++__nocfi void clear_inode(struct inode *inode)
++{
++	if (vns_ovl_vfsc_clear_inode)
++		vns_ovl_vfsc_clear_inode(inode);
++}
++
++__nocfi void drop_nlink(struct inode *inode)
++{
++	if (vns_ovl_vfsc_drop_nlink)
++		vns_ovl_vfsc_drop_nlink(inode);
++}
++
++__nocfi void inc_nlink(struct inode *inode)
++{
++	if (vns_ovl_vfsc_inc_nlink)
++		vns_ovl_vfsc_inc_nlink(inode);
++}
++
++__nocfi void set_nlink(struct inode *inode, unsigned int nlink)
++{
++	if (vns_ovl_vfsc_set_nlink)
++		vns_ovl_vfsc_set_nlink(inode, nlink);
++}
++
++__nocfi void d_instantiate(struct dentry *dentry, struct inode *inode)
++{
++	if (vns_ovl_vfsc_d_instantiate)
++		vns_ovl_vfsc_d_instantiate(dentry, inode);
++}
++
++__nocfi void ihold(struct inode *inode)
++{
++	if (vns_ovl_vfsc_ihold)
++		vns_ovl_vfsc_ihold(inode);
++}
++
++__nocfi void inode_init_once(struct inode *inode)
++{
++	if (vns_ovl_vfsc_inode_init_once)
++		vns_ovl_vfsc_inode_init_once(inode);
++}
++
++__nocfi int current_umask(void)
++{
++	if (!vns_ovl_vfsc_current_umask)
++		return 0;
++	return vns_ovl_vfsc_current_umask();
++}
++
++__nocfi int in_group_p(kgid_t gid)
++{
++	if (!vns_ovl_vfsc_in_group_p)
++		return 0;
++	return vns_ovl_vfsc_in_group_p(gid);
++}
++
++__nocfi void truncate_inode_pages_final(struct address_space *mapping)
++{
++	if (vns_ovl_vfsc_truncate_inode_pages_final)
++		vns_ovl_vfsc_truncate_inode_pages_final(mapping);
++}
++
++/*
++ * 下面两个只在 MID/NEW 层提供：__percpu_counter_init 和
++ * percpu_counter_destroy 只进了 MID/NEW 的兼容清单，5.10 上
++ * 它们本来就是导出的（实测 5.10 的静态导入清单里没有它们），
++ * 不需要重定向。守卫必须和清单条目一致，否则 OLD 层会引用
++ * 未声明的 vns_ovl_vfsc_* 指针。
++ */
++#if VNS_OVL_TIER_MID
++/*
++ * __percpu_counter_init / percpu_counter_destroy - same-name forwarding
++ * definitions, deliberately not #define aliases.
++ *
++ * percpu_counter_init() is a macro with CONFIG_LOCKDEP and a static inline
++ * without it (<linux/percpu_counter.h>); both spell the underlying call as
++ * __percpu_counter_init(...) and both are parsed before this header can run.
++ * A #define therefore either misses the inline body entirely or perturbs the
++ * argument shuffle -- the latter produced
++ *
++ *   failed to init default ipc namespace (-12)
++ *
++ * on the Qualcomm SM7675 device (vns_msg_accounting_init -> ENOMEM).
++ *
++ * Defining functions with the kernel's own names fixes both cases: every
++ * reference inside this module, from inline bodies and direct calls alike,
++ * links here, so no static import is emitted.
++ *
++ * Needed where a vendor kernel trims these exports (Meizu 6.1.25); harmless
++ * where they are exported (SM7675).
++ *
++ * __nocfi: the bodies make indirect calls.
++ */
++int __nocfi __percpu_counter_init(struct percpu_counter *fbc, s64 amount,
++				  gfp_t gfp, struct lock_class_key *key)
++{
++	if (!vns_ovl_vfsc___percpu_counter_init)
++		return -ENOENT;
++	return vns_ovl_vfsc___percpu_counter_init(fbc, amount, gfp, key);
++}
++
++void __nocfi percpu_counter_destroy(struct percpu_counter *fbc)
++{
++	if (vns_ovl_vfsc_percpu_counter_destroy)
++		vns_ovl_vfsc_percpu_counter_destroy(fbc);
++}
++#endif /* VNS_OVL_TIER_MID: percpu 同名函数只在 MID 提供（指针在 MID 清单里） */
++
++/*
++ * 同名转发函数（第二批）
++ *
++ * 这五个符号即使加了 #define 也仍然被静态导入，原因各不相同：
++ *
++ *   d_add / d_make_root / d_path
++ *       glue/lkm4ctr_diagfs.c 和 glue/lkm4ctr_hotreload.c 调用，那两个文件
++ *       用的是 vns_vfs_shared_syms.h（轻量头），不在 overlayfs 的 include
++ *       链上，够不到 compat 头的 #define，而轻量头原本也没收它们。
++ *
++ *   vfs_getattr_nosec
++ *       vendor/fs/overlayfs/overlayfs.h 里的 inline 函数调用。头文件在所有
++ *       .c 之前展开，那时 compat 头的 #define 还没生效。
++ *
++ *   vfs_fsync_range
++ *       vendor/fs/overlayfs/readdir.c 调用，而那个文件没被加兼容头
++ *       （只有 dir/util/export/copy_up/file 加了）。
++ *
++ * 统一改用同名函数：模块内所有引用都链到这里，不产生静态导入，也不受
++ * 宏展开顺序影响。
++ *
++ * 注意：这几条原本在 compat 头里有 #define，必须先删掉 —— 函数定义会被
++ * 对象式宏展开，变成语法错误。
++ */
++
++__nocfi void d_add(struct dentry *dentry, struct inode *inode)
++{
++	if (vns_ovl_vfsc_d_add)
++		vns_ovl_vfsc_d_add(dentry, inode);
++}
++
++__nocfi struct dentry *d_make_root(struct inode *root_inode)
++{
++	if (!vns_ovl_vfsc_d_make_root)
++		return 0;
++	return vns_ovl_vfsc_d_make_root(root_inode);
++}
++
++__nocfi char *d_path(const struct path *path, char *buf, int buflen)
++{
++	if (!vns_ovl_vfsc_d_path)
++		return 0;
++	return vns_ovl_vfsc_d_path(path, buf, buflen);
++}
++
++__nocfi int vfs_fsync_range(struct file *file, loff_t start, loff_t end, int datasync)
++{
++	if (!vns_ovl_vfsc_vfs_fsync_range)
++		return 0;
++	return vns_ovl_vfsc_vfs_fsync_range(file, start, end, datasync);
++}
++
++__nocfi int vfs_getattr_nosec(const struct path *path, struct kstat *stat, u32 request_mask, unsigned int query_flags)
++{
++	if (!vns_ovl_vfsc_vfs_getattr_nosec)
++		return 0;
++	return vns_ovl_vfsc_vfs_getattr_nosec(path, stat, request_mask, query_flags);
++}
++
++/*
++ * 第二批「inline 体内调用」符号
++ *
++ * 这三个的对象式 #define 无效，因为调用发生在内核头文件的 static inline
++ * 函数体里，那些体在我们 compat 头之前就解析完了：
++ *
++ *   <linux/percpu_counter.h>:
++ *     static inline void percpu_counter_destroy(struct percpu_counter *fbc)
++ *     {
++ *             percpu_counter_destroy_many(fbc, 1);      <-- 直接调用
++ *     }
++ *
++ *   percpu_counter_init() 是宏 -> percpu_counter_init_many() -> __percpu_counter_init_many()
++ *
++ * d_parent_ino 同理（6.12 从 overlayfs 的 inline 里调用）。
++ *
++ * 签名取自上游 v6.12 头文件，不是猜的。
++ */
++
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 6, 0)
++
++int __nocfi __percpu_counter_init_many(struct percpu_counter *fbc, s64 amount,
++				       gfp_t gfp, u32 nr_counters,
++				       struct lock_class_key *key)
++{
++	if (!vns_ovl_vfsc___percpu_counter_init_many)
++		return -ENOENT;
++	return vns_ovl_vfsc___percpu_counter_init_many(fbc, amount, gfp,
++						       nr_counters, key);
++}
++
++void __nocfi percpu_counter_destroy_many(struct percpu_counter *fbc,
++					 u32 nr_counters)
++{
++	if (vns_ovl_vfsc_percpu_counter_destroy_many)
++		vns_ovl_vfsc_percpu_counter_destroy_many(fbc, nr_counters);
++}
++
++#endif /* >= 6.6 */
++
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 12, 0)
++
++ino_t __nocfi d_parent_ino(struct dentry *dentry)
++{
++	if (!vns_ovl_vfsc_d_parent_ino)
++		return 0;
++	return vns_ovl_vfsc_d_parent_ino(dentry);
++}
++
++#endif /* >= 6.12 */
++
++/*
++ * generic_read_dir - same-name forwarding definition, not a #define alias.
++ *
++ * The #define form works for direct calls but not where the name is taken as a
++ * function address: overlayfs puts it in a struct file_operations initialiser
++ * (".read = generic_read_dir"), and (*vns_ovl_vfsc_generic_read_dir) is not a
++ * compile-time constant there. A real function with the kernel's own name is
++ * addressable and callable both ways.
++ *
++ * Signature matches the kernel's (fs.h):
++ *   ssize_t generic_read_dir(struct file *, char __user *, size_t, loff_t *);
++ * It is the legacy read() entry that always returns -EISDIR, not the
++ * iterate_shared() form -- getting that wrong is what CI #47 caught.
++ */
++ssize_t __nocfi generic_read_dir(struct file *filp, char __user *buf,
++				 size_t count, loff_t *ppos)
++{
++	if (!vns_ovl_vfsc_generic_read_dir)
++		return -EIO;
++	return vns_ovl_vfsc_generic_read_dir(filp, buf, count, ppos);
++}
++
++
++static unsigned int vns_ovl_resolve_failed;
++
++/*
++ * 解析守卫（与 0009 的 trim_resolve() 同理，必备而非防御性代码）：
++ *
++ * 本文件定义了 get_next_ino / clear_inode / inc_nlink / generic_read_dir /
++ * backing_file_user_path 等与内核同名的转发函数，而 shadow_hook_resolve()
++ * 查的是 kallsyms 全表 —— **包含本模块自己的符号表**。若它把地址解析回
++ * 我们自己的同名转发定义，指针就自指，第一次调用变成无限递归，内核栈
++ * 一秒钟打穿。0009 的 trim_resolve() 已经记载过这个坑并加了守卫，这里
++ * 必须同样处理。
++ */
++static void *vns_ovl_vfsc_resolve(const char *name)
++{
++	unsigned long addr = shadow_hook_resolve(name);
++
++	if (addr && within_module(addr, THIS_MODULE))
++		return NULL;
++	return (void *)addr;
++}
++
+ int vns_ovl_vfs_compat_resolve(void)
+ {
++/*
++ * 尽力解析，不因为单个符号失败就中止。
++ *
++ * 原先是第一个失败就 return -ENOENT。这在 full 版里没问题，但在精简版
++ * （VNS_NO_OVERLAYFS）里 overlayfs 专用的符号必然解析不到，提前返回会让
++ * 排在后面的核心符号（mqueue 依赖的那些）也留在 NULL —— 于是同名转发函数
++ * 变成空操作，mq_init_ns 返回 -ENOMEM，整个模块装不上。
++ *
++ * 现在每个符号独立解析，全部尝试完再按失败数量报告。这样：
++ *   full 版：全部成功，返回 0
++ *   精简版：overlayfs 那些失败，但它们没人用；核心符号已经解析好
++ * 失败数只用于日志，调用方不需要因为部分失败而放弃整个模块。
++ */
+ #define VNS_OVL_VFSC_RESOLVE(name) \
+ 	do { \
+ 		vns_ovl_vfsc_##name = (typeof(vns_ovl_vfsc_##name)) \
+-			shadow_hook_resolve(#name); \
++			vns_ovl_vfsc_resolve(#name); \
+-		if (!vns_ovl_vfsc_##name) { \
+-			LKM4CTR_ERR("vendor_kernel", \
+-				    "overlayfs: could not resolve VFS symbol '%s'; vendored overlayfs unavailable", \
+-				    #name); \
+-			return -ENOENT; \
+-		} \
++		if (!vns_ovl_vfsc_##name) \
++			vns_ovl_resolve_failed++; \
+ 	} while (0);
++	vns_ovl_resolve_failed = 0;
+ 	VNS_OVL_VFS_COMPAT_LIST(VNS_OVL_VFSC_RESOLVE)
+ 	VNS_OVL_VFS_COMPAT_LIST_BF(VNS_OVL_VFSC_RESOLVE)
+ #undef VNS_OVL_VFSC_RESOLVE
++
++	if (vns_ovl_resolve_failed) {
++		LKM4CTR_INFO("vendor_kernel",
++			     "overlayfs: %u VFS symbol(s) could not be resolved; those that could were kept (vendored overlayfs may be unavailable, the rest of the module is unaffected)",
++			     vns_ovl_resolve_failed);
++	}
+ 	return 0;
+ }
++
++/*
++ * Exposed so vendor_kernel_overlay.c can refuse the overlayfs takeover when
++ * any compat symbol failed to resolve. With a NULL pointer left in place, the
++ * #define form (*vns_ovl_vfsc_notify_change)(...) would be a NULL call, and
++ * the same-name forwarders would silently no-op the VFS permission/attribute
++ * operations the vendored overlayfs depends on -- so takeover is unsafe here.
++ * Returning whether anything failed lets vns_overlay_init() keep the running
++ * kernel's own overlayfs instead of installing a broken one.
++ */
++bool vns_ovl_vfs_compat_resolve_failed(void)
++{
++	return vns_ovl_resolve_failed != 0;
++}
+ 
+diff --git a/glue/vendor_kernel_ovl_vfs_compat.h b/glue/vendor_kernel_ovl_vfs_compat.h
+index f326a9a..6420846 100644
+--- a/glue/vendor_kernel_ovl_vfs_compat.h
++++ b/glue/vendor_kernel_ovl_vfs_compat.h
+@@ -130,11 +130,88 @@ int vfs_path_lookup(struct dentry *dentry, struct vfsmount *mnt,
+  * need the pre-rename name resolved. */
+ #define VNS_OVL_TIER_HAVE_D_MARK_TMPFILE (LINUX_VERSION_CODE >= KERNEL_VERSION(6, 7, 0))
+ #if VNS_OVL_TIER_HAVE_D_MARK_TMPFILE
+-#define VNS_OVL_VFSC_DTMPFILE_ENTRY(X)
++#define VNS_OVL_VFSC_DTMPFILE_ENTRY(X) X(d_mark_tmpfile)
+ #else
+ #define VNS_OVL_VFSC_DTMPFILE_ENTRY(X) X(d_tmpfile)
+ #endif
+ 
++/* d_parent_ino() 是 6.12 新增（fs/dcache.c, EXPORT_SYMBOL）。 */
++#define VNS_OVL_HAVE_D_PARENT_INO (LINUX_VERSION_CODE >= KERNEL_VERSION(6, 12, 0))
++#if VNS_OVL_HAVE_D_PARENT_INO
++#define VNS_OVL_VFSC_PARENT_INO_ENTRY(X) X(d_parent_ino)
++#else
++#define VNS_OVL_VFSC_PARENT_INO_ENTRY(X)
++#endif
++
++/*
++ * generic_encode_ino32_fh()：6.9 引入（fs/exportfs/expfs.c, EXPORT_SYMBOL）。
++ *
++ * ovl 用它做默认编码器的判定：
++ *   if (sb->s_export_op->encode_fh == generic_encode_ino32_fh)
++ * 这是运行时比较，不是编译期初始化器，所以 (*ptr) 形式可用。
++ * 6.9 以下由下面的 #define ... NULL 降级处理（那时默认编码器就是 NULL）。
++ */
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 9, 0)
++#define VNS_OVL_VFSC_INO32FH_ENTRY(X) X(generic_encode_ino32_fh)
++#else
++#define VNS_OVL_VFSC_INO32FH_ENTRY(X)
++#endif
++
++/* kmem_cache_alloc_lru() was introduced at 6.0 (<linux/slab.h>). The MID tier
++ * spans [5.12, 6.3), so 5.15-shaped kernels have no such function at all --
++ * and listing a helper the tier's kernel lacks makes pass 1's typeof() fail
++ * with "use of undeclared identifier". It therefore needs a conditional entry
++ * rather than a plain X(...), same rule as d_tmpfile above. */
++#define VNS_OVL_HAVE_KMEM_CACHE_ALLOC_LRU (LINUX_VERSION_CODE >= KERNEL_VERSION(6, 0, 0))
++#if VNS_OVL_HAVE_KMEM_CACHE_ALLOC_LRU
++#define VNS_OVL_VFSC_KMLRU_ENTRY(X) X(kmem_cache_alloc_lru)
++#else
++#define VNS_OVL_VFSC_KMLRU_ENTRY(X)
++#endif
++
++/*
++ * kmem_cache_alloc_lru 的三种取法：
++ *
++ *   [6.0, 6.10)   普通函数 kmem_cache_alloc_lru
++ *   [6.10, ...)   宏 + kmem_cache_alloc_lru_noprof
++ *   <6.0          没有这个函数
++ *
++ * 分界点是 6.10（不是 6.12）：6.10 引入 alloc_hooks 包装，
++ * kmem_cache_alloc_lru 从此变成宏，真正的符号叫 _noprof。
++ *
++ * 三个宏是**并列**的，不是嵌套 —— 嵌套会让 HAVE 为 false 时
++ * 后面两个未定义。
++ */
++#if VNS_OVL_HAVE_KMEM_CACHE_ALLOC_LRU && \
++	LINUX_VERSION_CODE < KERNEL_VERSION(6, 10, 0)
++#define VNS_OVL_VFSC_KMLRU_NO_PROF_ENTRY(X) X(kmem_cache_alloc_lru)
++#else
++#define VNS_OVL_VFSC_KMLRU_NO_PROF_ENTRY(X)
++#endif
++
++#if VNS_OVL_HAVE_KMEM_CACHE_ALLOC_LRU && \
++	LINUX_VERSION_CODE >= KERNEL_VERSION(6, 10, 0)
++#define VNS_OVL_VFSC_KMLRU_PROF_ENTRY(X) X(kmem_cache_alloc_lru_noprof)
++#else
++#define VNS_OVL_VFSC_KMLRU_PROF_ENTRY(X)
++#endif
++
++/*
++ * percpu_counter 的 _many 变体是 6.6 引入的：
++ *   <6.6   __percpu_counter_init(fbc, amount, gfp, key)
++ *          percpu_counter_destroy(fbc)
++ *   >=6.6  __percpu_counter_init_many(fbc, amount, gfp, nr, key)
++ *          percpu_counter_destroy_many(fbc, nr)
++ * 源码在 6.6+ 会调到 _many 名字（percpu_counter_init 宏展开）。
++ */
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 6, 0)
++#define VNS_OVL_VFSC_PCPU_INIT_ENTRY(X) X(__percpu_counter_init_many)
++#define VNS_OVL_VFSC_PCPU_DESTROY_ENTRY(X) X(percpu_counter_destroy_many)
++#else
++#define VNS_OVL_VFSC_PCPU_INIT_ENTRY(X)
++#define VNS_OVL_VFSC_PCPU_DESTROY_ENTRY(X)
++#endif
++
+ /* backing_file_open() exists since 6.6 (in <linux/fs.h>); the full
+  * backing_file_ctx-based API (backing_file_read_iter()/write_iter()/
+  * splice_read()/splice_write()/mmap(), later moved to its own
+@@ -465,6 +619,9 @@ static inline void generic_fill_statx_attr(struct inode *inode, struct kstat *st
+ 	X(override_creds)
+ #endif
+ #define VNS_OVL_VFS_COMPAT_LIST(X) \
++	VNS_OVL_VFSC_KMLRU_NO_PROF_ENTRY(X) \
++	VNS_OVL_VFSC_KMLRU_PROF_ENTRY(X) \
++	X(finish_open) \
+ 	X(prepare_creds) \
+ 	X(errseq_sample) \
+ 	X(mntput) \
+@@ -534,11 +694,50 @@ static inline void generic_fill_statx_attr(struct inode *inode, struct kstat *st
+ 	X(security_file_ioctl) \
+ 	X(iterate_dir) \
+ 	X(vfs_setpos) \
++	X(get_next_ino) \
++	X(__insert_inode_hash) \
++	X(capable_wrt_inode_uidgid) \
++	X(clear_inode) \
++	X(clear_nlink) \
++	X(current_umask) \
++	X(d_add) \
++	X(d_instantiate) \
++	X(d_make_root) \
++	X(d_obtain_alias) \
++	X(d_path) \
++	X(d_splice_alias) \
++	X(drop_nlink) \
++	X(generic_permission) \
++	X(iget5_locked) \
++	X(ilookup5) \
++	X(in_group_p) \
++	X(inc_nlink) \
++	X(init_special_inode) \
++	X(inode_init_once) \
++	X(inode_init_owner) \
++	X(inode_set_flags) \
++	X(notify_change) \
++	X(set_nlink) \
++	X(setattr_prepare) \
++	X(sync_filesystem) \
++	X(touch_atime) \
++	X(truncate_inode_pages_final) \
++	X(unlock_new_inode) \
++	X(vfs_fsync) \
++	X(vfs_fsync_range) \
++	X(vfs_getattr_nosec) \
+ 	VNS_OVL_VFSC_KFOPEN_ENTRY(X) \
+ 	VNS_OVL_VFSC_BFOPEN_ENTRY(X) \
+ 	VNS_OVL_VFSC_VPMSEP_ENTRY(X) \
+ 	VNS_OVL_VFSC_VMASETFILE_ENTRY(X) \
+-	VNS_OVL_VFSC_DTMPFILE_ENTRY(X)
++	VNS_OVL_VFSC_DTMPFILE_ENTRY(X) \
++	X(ihold) \
++	X(generic_read_dir) \
++	VNS_OVL_VFSC_PARENT_INO_ENTRY(X) \
++	VNS_OVL_VFSC_PCPU_INIT_ENTRY(X) \
++	VNS_OVL_VFSC_PCPU_DESTROY_ENTRY(X) \
++	VNS_OVL_VFSC_INO32FH_ENTRY(X)
++
+ 
+ #if !VNS_OVL_NEED_BACKING_FILE_FALLBACK
+ #define VNS_OVL_VFS_COMPAT_LIST_BF(X) \
+@@ -643,9 +881,48 @@ static inline void generic_fill_statx_attr(struct inode *inode, struct kstat *st
+ 	X(security_file_ioctl) \
+ 	X(iterate_dir) \
+ 	X(vfs_setpos) \
++	X(__insert_inode_hash) \
++	X(capable_wrt_inode_uidgid) \
++	X(clear_inode) \
++	X(clear_nlink) \
++	X(d_instantiate) \
++	X(d_obtain_alias) \
++	X(d_splice_alias) \
++	X(drop_nlink) \
++	X(finish_open) \
++	X(generic_file_splice_read) \
++	X(generic_permission) \
++	X(iget5_locked) \
++	X(ihold) \
++	X(ilookup5) \
++	X(in_group_p) \
++	X(inc_nlink) \
++	X(init_special_inode) \
++	X(inode_init_once) \
++	X(inode_init_owner) \
++	X(inode_set_flags) \
++	X(notify_change) \
++	X(set_nlink) \
++	X(setattr_prepare) \
++	X(sync_filesystem) \
++	X(touch_atime) \
++	X(unlock_new_inode) \
++	X(vfs_fsync) \
++	X(current_umask) \
++	X(generic_read_dir) \
++	X(truncate_inode_pages_final) \
++	X(get_next_ino) \
++	X(percpu_counter_destroy) \
++	X(__percpu_counter_init) \
++	VNS_OVL_VFSC_KMLRU_ENTRY(X) \
+ 	X(lookup_positive_unlocked) \
+ 	VNS_OVL_VFSC_VMASETFILE_ENTRY(X) \
+-	X(d_tmpfile)
++	X(d_tmpfile) \
++	X(d_add) \
++	X(d_make_root) \
++	X(d_path) \
++	X(vfs_fsync_range) \
++	X(vfs_getattr_nosec)
+ 
+ #define VNS_OVL_VFS_COMPAT_LIST_BF(X) \
+ 	X(vfs_iter_read) \
+@@ -656,9 +972,16 @@ static inline void generic_fill_statx_attr(struct inode *inode, struct kstat *st
+ #endif /* MID */
+ 
+ #if VNS_OVL_TIER_OLD
++/*
++ * [OLD-TIER] 下面这批在 5.10 上同样可能被裁：
++ * 它们都不涉及 idmap 参数（5.10 没有 idmapped mounts），
++ * 源码里的 [TIER-OLD] 分支用的是旧签名，typeof() 能取到正确类型。
++ * kmem_cache_alloc_lru 例外 —— 它是 6.0 才引入的，5.10 上不存在。
++ */
+ #define VNS_OVL_VFS_COMPAT_LIST(X) \
+ 	X(mount_nodev) \
+ 	X(prepare_creds) \
++	X(get_next_ino) \
+ 	X(errseq_sample) \
+ 	X(mntput) \
+ 	X(__mnt_is_readonly) \
+@@ -743,8 +1073,38 @@ static inline void generic_fill_statx_attr(struct inode *inode, struct kstat *st
+ 	X(generic_fillattr) \
+ 	X(vfs_path_lookup) \
+ 	X(rw_verify_area) \
+-	X(d_tmpfile)
+-
++	X(d_tmpfile) \
++	X(d_instantiate) \
++	X(d_obtain_alias) \
++	X(d_splice_alias) \
++	X(ihold) \
++	X(clear_inode) \
++	X(clear_nlink) \
++	X(drop_nlink) \
++	X(inc_nlink) \
++	X(set_nlink) \
++	X(inode_init_once) \
++	X(unlock_new_inode) \
++	X(iget5_locked) \
++	X(ilookup5) \
++	X(init_special_inode) \
++	X(inode_set_flags) \
++	X(inode_init_owner) \
++	X(setattr_prepare) \
++	X(touch_atime) \
++	X(sync_filesystem) \
++	X(vfs_fsync) \
++	X(truncate_inode_pages_final) \
++	X(__insert_inode_hash) \
++	X(capable_wrt_inode_uidgid) \
++	X(current_umask) \
++	X(d_add) \
++	X(d_make_root) \
++	X(d_path) \
++	X(generic_file_splice_read) \
++	X(generic_read_dir) \
++	X(in_group_p) \
++	X(vfs_getattr_nosec)
+ #define VNS_OVL_VFS_COMPAT_LIST_BF(X)
+ #endif /* OLD */
+ 
+@@ -848,6 +1238,41 @@ VNS_OVL_VFS_COMPAT_LIST_BF(VNS_OVL_VFSC_DECLARE)
+  */
+ #define down_write_killable (*vns_ovl_vfsc_down_write_killable)
+ #define d_invalidate (*vns_ovl_vfsc_d_invalidate)
++#define finish_open (*vns_ovl_vfsc_finish_open)
++
++/*
++ * kmem_cache_alloc_lru 在 6.12 上是宏（见 VNS_OVL_VFSC_KMLRU_NO_PROF_ENTRY），
++ * 只有 6.0~6.11 能直接用这个符号名。
++ */
++/* generic_encode_ino32_fh：6.9+ 走运行时指针（调用点是运行期比较）。 */
++/*
++ * capable_wrt_inode_uidgid：源码按 3 参数调用（idmap, inode, cap），
++ * MID/NEW 的内核也是 3 参数 —— 只有第一个参数类型随版本变
++ * （5.12~6.2 是 struct user_namespace *，6.3+ 是 struct mnt_idmap *）。
++ * typeof() 取当前内核的真实类型，所以对象式宏就够。
++ *
++ * 实测（Meizu 21 Pro / 6.1.25 的 boot.img 导出表）：这个符号**没有导出**，
++ * 而它是 lkm4ctr 在 6.1 上唯一缺的符号 —— issue #2 的根因。
++ * OLD 块原本有自引用宏（丢 idmap 后调真函数），对 5.10 正确（那边只要
++ * 2 参数），但 MID/NEW 一直没有重定向，所以是静态导入。
++ */
++#define capable_wrt_inode_uidgid (*vns_ovl_vfsc_capable_wrt_inode_uidgid)
++
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 9, 0)
++#define generic_encode_ino32_fh (*vns_ovl_vfsc_generic_encode_ino32_fh)
++#endif
++
++#if VNS_OVL_TIER_HAVE_D_MARK_TMPFILE
++#define d_mark_tmpfile (*vns_ovl_vfsc_d_mark_tmpfile)
++#endif
++#if VNS_OVL_HAVE_D_PARENT_INO
++#endif
++
++#if VNS_OVL_HAVE_KMEM_CACHE_ALLOC_LRU && \
++	LINUX_VERSION_CODE < KERNEL_VERSION(6, 12, 0)
++#define kmem_cache_alloc_lru (*vns_ovl_vfsc_kmem_cache_alloc_lru)
++#endif
++
+ #if LINUX_VERSION_CODE < KERNEL_VERSION(6, 18, 0)
+ #define revert_creds (*vns_ovl_vfsc_revert_creds)
+ #define override_creds (*vns_ovl_vfsc_override_creds)
+@@ -891,6 +1351,35 @@ static inline void vns_ovl_revert_creds_compat(const struct cred *revert_cred)
+ #define vma_set_file (*vns_ovl_vfsc_vma_set_file)
+ #endif
+ 
++/* [NEW-TIER] 6.6 / 6.12 上同样可能被裁的 VFS 辅助函数。
++* generic_read_dir 不在这里 —— 它在 readdir.c 里被取地址，
++* (*ptr) 不是编译期常量，用 compat.c 的同名转发函数。 */
++#define __insert_inode_hash (*vns_ovl_vfsc___insert_inode_hash)
++#define clear_inode (*vns_ovl_vfsc_clear_inode)
++#define clear_nlink (*vns_ovl_vfsc_clear_nlink)
++#define current_umask (*vns_ovl_vfsc_current_umask)
++#define d_instantiate (*vns_ovl_vfsc_d_instantiate)
++#define d_obtain_alias (*vns_ovl_vfsc_d_obtain_alias)
++#define d_splice_alias (*vns_ovl_vfsc_d_splice_alias)
++#define drop_nlink (*vns_ovl_vfsc_drop_nlink)
++#define generic_permission (*vns_ovl_vfsc_generic_permission)
++#define iget5_locked (*vns_ovl_vfsc_iget5_locked)
++#define ilookup5 (*vns_ovl_vfsc_ilookup5)
++#define in_group_p (*vns_ovl_vfsc_in_group_p)
++#define inc_nlink (*vns_ovl_vfsc_inc_nlink)
++#define init_special_inode (*vns_ovl_vfsc_init_special_inode)
++#define inode_init_once (*vns_ovl_vfsc_inode_init_once)
++#define inode_init_owner (*vns_ovl_vfsc_inode_init_owner)
++#define inode_set_flags (*vns_ovl_vfsc_inode_set_flags)
++#define notify_change (*vns_ovl_vfsc_notify_change)
++#define set_nlink (*vns_ovl_vfsc_set_nlink)
++#define setattr_prepare (*vns_ovl_vfsc_setattr_prepare)
++#define sync_filesystem (*vns_ovl_vfsc_sync_filesystem)
++#define touch_atime (*vns_ovl_vfsc_touch_atime)
++#define truncate_inode_pages_final (*vns_ovl_vfsc_truncate_inode_pages_final)
++#define unlock_new_inode (*vns_ovl_vfsc_unlock_new_inode)
++#define vfs_fsync (*vns_ovl_vfsc_vfs_fsync)
++
+ #if !VNS_OVL_NEED_BACKING_FILE_FALLBACK
+ #define backing_file_read_iter (*vns_ovl_vfsc_backing_file_read_iter)
+ #define backing_file_write_iter (*vns_ovl_vfsc_backing_file_write_iter)
+@@ -942,6 +1460,19 @@ static inline void vns_ovl_revert_creds_compat(const struct cred *revert_cred)
+ #define vfs_listxattr (*vns_ovl_vfsc_vfs_listxattr)
+ #define get_cached_acl_rcu (*vns_ovl_vfsc_get_cached_acl_rcu)
+ /* get_acl: not redirected (see header comment). */
++/*
++ * capable_wrt_inode_uidgid：源码按 3 参数调用（idmap, inode, cap），
++ * MID/NEW 的内核也是 3 参数 —— 只有第一个参数类型随版本变
++ * （5.12~6.2 是 struct user_namespace *，6.3+ 是 struct mnt_idmap *）。
++ * typeof() 取当前内核的真实类型，所以对象式宏就够。
++ *
++ * 实测（Meizu 21 Pro / 6.1.25 的 boot.img 导出表）：这个符号**没有导出**，
++ * 而它是 lkm4ctr 在 6.1 上唯一缺的符号 —— issue #2 的根因。
++ * OLD 块原本有自引用宏（丢 idmap 后调真函数），对 5.10 正确（那边只要
++ * 2 参数），但 MID/NEW 一直没有重定向，所以是静态导入。
++ */
++#define capable_wrt_inode_uidgid (*vns_ovl_vfsc_capable_wrt_inode_uidgid)
++
+ #if VNS_OVL_TIER_HAVE_POSIX_ACL_CLONE
+ #define posix_acl_clone (*vns_ovl_vfsc_posix_acl_clone)
+ #endif
+@@ -992,6 +1536,35 @@ static inline void vns_ovl_revert_creds_compat(const struct cred *revert_cred)
+ #define security_file_ioctl (*vns_ovl_vfsc_security_file_ioctl)
+ #define iterate_dir (*vns_ovl_vfsc_iterate_dir)
+ #define vfs_setpos (*vns_ovl_vfsc_vfs_setpos)
++#define __insert_inode_hash (*vns_ovl_vfsc___insert_inode_hash)
++#define clear_inode (*vns_ovl_vfsc_clear_inode)
++#define clear_nlink (*vns_ovl_vfsc_clear_nlink)
++#define d_instantiate (*vns_ovl_vfsc_d_instantiate)
++#define d_obtain_alias (*vns_ovl_vfsc_d_obtain_alias)
++#define d_splice_alias (*vns_ovl_vfsc_d_splice_alias)
++#define drop_nlink (*vns_ovl_vfsc_drop_nlink)
++#define finish_open (*vns_ovl_vfsc_finish_open)
++#define generic_file_splice_read (*vns_ovl_vfsc_generic_file_splice_read)
++#define generic_permission (*vns_ovl_vfsc_generic_permission)
++#define iget5_locked (*vns_ovl_vfsc_iget5_locked)
++#define ihold (*vns_ovl_vfsc_ihold)
++#define ilookup5 (*vns_ovl_vfsc_ilookup5)
++#define in_group_p (*vns_ovl_vfsc_in_group_p)
++#define inc_nlink (*vns_ovl_vfsc_inc_nlink)
++#define init_special_inode (*vns_ovl_vfsc_init_special_inode)
++#define inode_init_once (*vns_ovl_vfsc_inode_init_once)
++#define inode_init_owner (*vns_ovl_vfsc_inode_init_owner)
++#define inode_set_flags (*vns_ovl_vfsc_inode_set_flags)
++#define notify_change (*vns_ovl_vfsc_notify_change)
++#define set_nlink (*vns_ovl_vfsc_set_nlink)
++#define setattr_prepare (*vns_ovl_vfsc_setattr_prepare)
++#define sync_filesystem (*vns_ovl_vfsc_sync_filesystem)
++#define touch_atime (*vns_ovl_vfsc_touch_atime)
++#define unlock_new_inode (*vns_ovl_vfsc_unlock_new_inode)
++#define vfs_fsync (*vns_ovl_vfsc_vfs_fsync)
++#define current_umask (*vns_ovl_vfsc_current_umask)
++#define __percpu_counter_init (*vns_ovl_vfsc___percpu_counter_init)
++#define percpu_counter_destroy (*vns_ovl_vfsc_percpu_counter_destroy)
+ #define d_tmpfile (*vns_ovl_vfsc_d_tmpfile)
+ #define errseq_check (*vns_ovl_vfsc_errseq_check)
+ #define lookup_positive_unlocked (*vns_ovl_vfsc_lookup_positive_unlocked)
+@@ -1004,6 +1606,9 @@ static inline void vns_ovl_revert_creds_compat(const struct cred *revert_cred)
+ #endif /* MID */
+ 
+ #if VNS_OVL_TIER_OLD
++/* generic_read_dir 不在这里 #define：readdir.c 里是
++ * .read = generic_read_dir（取地址），(*ptr) 不是编译期常量，
++ * 所以用 compat.c 里的同名转发函数。同 MID 层的处理。 */
+ #define mount_nodev (*vns_ovl_vfsc_mount_nodev)
+ #define prepare_creds (*vns_ovl_vfsc_prepare_creds)
+ #define errseq_sample (*vns_ovl_vfsc_errseq_sample)
+@@ -1045,15 +1653,19 @@ static inline void vns_ovl_revert_creds_compat(const struct cred *revert_cred)
+ #define inode_owner_or_capable(idmap, inode) \
+ 	(*vns_ovl_vfsc_inode_owner_or_capable)((inode))
+ /*
+- * [BUILD-COMPAT] capable_wrt_inode_uidgid() is a plain, always
+- * exported/linkable symbol on VNS_OVL_TIER_OLD (<5.12) -- it simply
+- * doesn't take a `struct mnt_idmap *` yet (verified against
+- * android.googlesource.com include/linux/capability.h). See the
+- * setattr_prepare()/generic_permission() comment above for why a
+- * self-referencing macro is safe here.
++ * [BUILD-COMPAT] capable_wrt_inode_uidgid() on VNS_OVL_TIER_OLD (<5.12)
++ * doesn't take a `struct mnt_idmap *` yet -- the source calls it with 3
++ * args, so the macro drops the idmap.
++ *
++ * It goes through the runtime pointer, NOT straight to the kernel function.
++ * The previous self-referencing form relied on the blue-paint rule to stop
++ * the recursion and emit a direct call -- which is a *static import*.
++ * Measured on the android12-5.10 build after MID/NEW were fixed: the symbol
++ * was still in nm -u, i.e. this tier would still fail on a kernel that trims
++ * it (Meizu 6.1.25 proves vendors do trim this one).
+  */
+ #define capable_wrt_inode_uidgid(idmap, inode, cap) \
+-	capable_wrt_inode_uidgid((inode), (cap))
++	(*vns_ovl_vfsc_capable_wrt_inode_uidgid)((inode), (cap))
+ #define exportfs_decode_fh (*vns_ovl_vfsc_exportfs_decode_fh)
+ #define is_subdir (*vns_ovl_vfsc_is_subdir)
+ #define vfs_getxattr(idmap, dentry, name, value, size) \
+@@ -1109,7 +1725,6 @@ static inline void vns_ovl_revert_creds_compat(const struct cred *revert_cred)
+ #define vfs_iocb_iter_write (*vns_ovl_vfsc_vfs_iocb_iter_write)
+ #define vfs_iter_write (*vns_ovl_vfsc_vfs_iter_write)
+ #define iter_file_splice_write (*vns_ovl_vfsc_iter_file_splice_write)
+-#define vfs_fsync_range (*vns_ovl_vfsc_vfs_fsync_range)
+ #define vfs_fallocate (*vns_ovl_vfsc_vfs_fallocate)
+ #define dentry_open (*vns_ovl_vfsc_dentry_open)
+ #define open_with_fake_path (*vns_ovl_vfsc_open_with_fake_path)
+@@ -1146,11 +1760,11 @@ static inline void vns_ovl_revert_creds_compat(const struct cred *revert_cred)
+  * this forwards straight to the real symbol.
+  */
+ #define setattr_prepare(idmap, dentry, attr) \
+-	setattr_prepare((dentry), (attr))
++	(*vns_ovl_vfsc_setattr_prepare)((dentry), (attr))
+ #define generic_permission(idmap, inode, mask) \
+ 	(*vns_ovl_vfsc_generic_permission)((inode), (mask))
+ #define inode_init_owner(idmap, inode, dir, mode) \
+-	inode_init_owner((inode), (dir), (mode))
++	(*vns_ovl_vfsc_inode_init_owner)((inode), (dir), (mode))
+ #define security_file_ioctl (*vns_ovl_vfsc_security_file_ioctl)
+ #define vfs_fadvise (*vns_ovl_vfsc_vfs_fadvise)
+ #define vfs_ioctl (*vns_ovl_vfsc_vfs_ioctl)
+@@ -1160,6 +1774,31 @@ static inline void vns_ovl_revert_creds_compat(const struct cred *revert_cred)
+ #define vfs_path_lookup (*vns_ovl_vfsc_vfs_path_lookup)
+ #define rw_verify_area (*vns_ovl_vfsc_rw_verify_area)
+ #define d_tmpfile (*vns_ovl_vfsc_d_tmpfile)
++	/* [OLD-TIER] 5.10 上同样可能被裁的 VFS 辅助函数。
++	 * 这批都不涉及 idmap 参数（5.10 没有 idmapped mounts），
++	 * 直接指向运行时解析的指针即可。 */
++#define __insert_inode_hash (*vns_ovl_vfsc___insert_inode_hash)
++#define clear_inode (*vns_ovl_vfsc_clear_inode)
++#define clear_nlink (*vns_ovl_vfsc_clear_nlink)
++#define current_umask (*vns_ovl_vfsc_current_umask)
++#define d_instantiate (*vns_ovl_vfsc_d_instantiate)
++#define d_obtain_alias (*vns_ovl_vfsc_d_obtain_alias)
++#define d_splice_alias (*vns_ovl_vfsc_d_splice_alias)
++#define drop_nlink (*vns_ovl_vfsc_drop_nlink)
++#define generic_file_splice_read (*vns_ovl_vfsc_generic_file_splice_read)
++#define iget5_locked (*vns_ovl_vfsc_iget5_locked)
++#define ilookup5 (*vns_ovl_vfsc_ilookup5)
++#define in_group_p (*vns_ovl_vfsc_in_group_p)
++#define inc_nlink (*vns_ovl_vfsc_inc_nlink)
++#define init_special_inode (*vns_ovl_vfsc_init_special_inode)
++#define inode_init_once (*vns_ovl_vfsc_inode_init_once)
++#define inode_set_flags (*vns_ovl_vfsc_inode_set_flags)
++#define set_nlink (*vns_ovl_vfsc_set_nlink)
++#define sync_filesystem (*vns_ovl_vfsc_sync_filesystem)
++#define touch_atime (*vns_ovl_vfsc_touch_atime)
++#define truncate_inode_pages_final (*vns_ovl_vfsc_truncate_inode_pages_final)
++#define unlock_new_inode (*vns_ovl_vfsc_unlock_new_inode)
++#define vfs_fsync (*vns_ovl_vfsc_vfs_fsync)
+ #endif /* OLD */
+ 
+ /* ================================================================== */
+diff --git a/glue/vns_vfs_shared_syms.h b/glue/vns_vfs_shared_syms.h
+new file mode 100644
+index 0000000..6b476d6
+--- /dev/null
++++ b/glue/vns_vfs_shared_syms.h
+@@ -0,0 +1,113 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/*
++ * vns_vfs_shared_syms.h - VFS helpers needed outside fs/overlayfs
++ *
++ * Why this exists rather than including vendor_kernel_ovl_vfs_compat.h
++ * --------------------------------------------------------------------
++ * That header assumes its includer already pulled in <linux/xattr.h>,
++ * <linux/exportfs.h>, <linux/posix_acl.h>, <linux/cred.h> and friends, because
++ * its pass-1 `extern typeof(name) *vns_ovl_vfsc_<name>;` needs every function
++ * to be declared. The fs/overlayfs sources do include that set; glue/ and
++ * vendor/ipc/ do not, and including the overlayfs header there fails with
++ * "use of undeclared identifier 'vfs_setxattr'" and similar.
++ *
++ * So this header declares only the pointers those files need, with the exact
++ * types vendor_kernel_ovl_vfs_compat.c defines them as, and aliases the bare
++ * names to them. The overlayfs layer still resolves them; nothing is resolved
++ * twice.
++ *
++ * Scope
++ * -----
++ * Guarded to the tier whose list carries these names (MID), because outside it
++ * `vns_ovl_vfsc_<name>` would not exist and the link would fail. On other tiers
++ * the calls stay ordinary static imports, which is what they were before.
++ *
++ * Naming
++ * ------
++ * Deliberately not `vns_vfs_*`: these are the overlayfs layer's storage, and
++ * keeping the `vns_ovl_vfsc_` name makes it obvious where they are defined and
++ * resolved.
++ */
++/*
++ * Functions, not macros.
++ *
++ * This header used to #define each of these names to (*vns_ovl_vfsc_<name>).
++ * That broke lkm4ctr on the Qualcomm SM7675 tablet:
++ *
++ *   vendor_kernel: failed to init default ipc namespace (-12)
++ *   -> mq_init_ns -> mq_create_mount -> fc_mount -> mqueue_fill_super
++ *
++ * The macros perturbed the VFS inode/superblock setup that mqueue performs
++ * during fc_mount(), and the mount then failed with ENOMEM. Only the extern
++ * declarations live here now; the vendor_kernel_ovl_vfs_compat.c side defines
++ * a real function with the kernel's own name for each, which every reference
++ * inside this module links to -- no static import, and no macro side effects.
++ *
++ * (Same treatment kmem_cache_alloc_lru / generic_read_dir already needed.)
++ */
++#ifndef _VNS_VFS_SHARED_SYMS_H
++#define _VNS_VFS_SHARED_SYMS_H
++
++#include <linux/version.h>
++#include <linux/types.h>
++#include <linux/fs.h>
++#include <linux/dcache.h>
++#include <linux/capability.h>
++
++/*
++ * Signatures here must match vendor_kernel_ovl_vfs_compat.c exactly: that file
++ * defines these pointers with `typeof(&name)`, so a differing declaration in
++ * this header is a type conflict on the same object, not a harmless redeclare.
++ *
++ * Two were wrong and are fixed below:
++ *   ihold()          returns void, not struct inode *
++ *   current_umask()  returns int,  not umode_t
++ */
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 10, 0) && \
++	LINUX_VERSION_CODE < KERNEL_VERSION(6, 3, 0)
++
++struct file;
++struct inode;
++struct dentry;
++struct dir_context;
++struct address_space;
++struct percpu_counter;
++struct lock_class_key;
++
++extern void (*vns_ovl_vfsc_clear_inode)(struct inode *);
++extern void (*vns_ovl_vfsc_drop_nlink)(struct inode *);
++extern void (*vns_ovl_vfsc_inc_nlink)(struct inode *);
++extern void (*vns_ovl_vfsc_set_nlink)(struct inode *, unsigned int);
++extern void (*vns_ovl_vfsc_truncate_inode_pages_final)(struct address_space *);
++extern void (*vns_ovl_vfsc_d_instantiate)(struct dentry *, struct inode *);
++extern void (*vns_ovl_vfsc_ihold)(struct inode *);
++extern void (*vns_ovl_vfsc_inode_init_once)(struct inode *);
++extern int (*vns_ovl_vfsc_current_umask)(void);
++extern int (*vns_ovl_vfsc_in_group_p)(kgid_t);
++extern void (*vns_ovl_vfsc_d_add)(struct dentry *, struct inode *);
++extern struct dentry *(*vns_ovl_vfsc_d_make_root)(struct inode *);
++extern char *(*vns_ovl_vfsc_d_path)(const struct path *, char *, int);
++
++
++/*
++ * percpu_counter_init() / percpu_counter_destroy() are NOT macro-redirected.
++ *
++ * A #define here is wrong for these two. On a !CONFIG_LOCKDEP kernel
++ * percpu_counter_init() is a static inline in <linux/percpu_counter.h> whose
++ * body was parsed long before this header, so a later #define never reaches
++ * it -- it just leaves __percpu_counter_init as a static import anyway. When
++ * the define *did* take effect it produced a call the kernel rejected:
++ *
++ *   lkm4ctr: vendor_kernel: failed to init default ipc namespace (-12)
++ *
++ * (Qualcomm SM7675 / 6.1.138, vns_msg_accounting_init -> percpu_counter_init.)
++ *
++ * Both are handled as same-name forwarding definitions in
++ * vendor_kernel_ovl_vfs_compat.c instead: a real function with the kernel's
++ * own name is reachable from already-parsed inline bodies AND from direct
++ * calls, and it emits no static import. Needed on vendor kernels that trim
++ * these exports (the Meizu 6.1.25 case), harmless where they are exported.
++ */
++#endif /* MID + OLD tier */
++
++#endif /* _VNS_VFS_SHARED_SYMS_H */
+\ No newline at end of file
+diff --git a/vendor/Makefile b/vendor/Makefile
+index e8e465e..6693048 100644
+--- a/vendor/Makefile
++++ b/vendor/Makefile
+@@ -13,12 +13,27 @@
+ 
+ ifneq ($(KERNELRELEASE),)
+ 
++# 两个变体，由 VNS_LITE 选：
++#   VNS_LITE=0（默认）  lkm4ctr.ko      带 vendored overlayfs
++#   VNS_LITE=1          lkm4ctr_lite.ko 不带 overlayfs，给裁剪了 VFS 导出表的
++#                                       厂商内核用（至少保住命名空间/IPC）
++#
++# 必须是两个独立的 KBUILD_MODNAME，不能只改文件名 —— 模块名来自
++# KBUILD_MODNAME，同名会导致第二次 insmod 报 EEXIST。
++ifeq ($(VNS_LITE),1)
++obj-$(CONFIG_LKM4CTR) += lkm4ctr_lite.o
++ifeq ($(CONFIG_LKM4CTR),)
++obj-m += lkm4ctr_lite.o
++endif
++ccflags-y += -DVNS_NO_OVERLAYFS
++else
+ obj-$(CONFIG_LKM4CTR) += lkm4ctr.o
+ ifeq ($(CONFIG_LKM4CTR),)
+ obj-m += lkm4ctr.o
+ endif
++endif
+ 
+-lkm4ctr-objs := \
++LKM4CTR_BASE_OBJS := \
+ 	../glue/vendor_kernel_trim_symbols.o \
+ 	../glue/lkm4ctr_main.o \
+ 	../glue/lkm4ctr_log.o \
+@@ -44,17 +74,6 @@ lkm4ctr-objs := \
+ 	../glue/vendor_kernel_ipc_compat.o \
+ 	../glue/vendor_kernel_ipc_callbacks.o \
+ 	fs/nsfs.o \
+-	fs/overlayfs/super.o \
+-	fs/overlayfs/namei.o \
+-	fs/overlayfs/util.o \
+-	fs/overlayfs/inode.o \
+-	fs/overlayfs/dir.o \
+-	fs/overlayfs/readdir.o \
+-	fs/overlayfs/copy_up.o \
+-	fs/overlayfs/export.o \
+-	fs/overlayfs/file.o \
+-	fs/overlayfs/params.o \
+-	fs/overlayfs/xattrs.o \
+ 	kernel/cgroup/namespace.o \
+ 	kernel/time/namespace.o \
+ 	../glue/vendor_kernel_module.o \
+@@ -68,6 +76,31 @@ lkm4ctr-objs := \
+ 	../glue/vendor_kernel_diag.o \
+ 	../glue/vendor_kernel_compat.o
+ 
++# 只有 full 版才链接的部分
++#
++# 注意：vendor_kernel_overlay.o 必须在 BASE 里，不在这个列表。
++# 它虽然负责「把 vendored overlayfs 挂上去」，但 VNS_NO_OVERLAYFS 时正是它的
++# stub 分支提供 vns_overlay_init/exit/diag_snprintf —— 抽走会让 lite 版报
++# "Unknown symbol vns_overlay_init"（真机实测过）。
++LKM4CTR_OVL_OBJS := \
++	fs/overlayfs/super.o \
++	fs/overlayfs/namei.o \
++	fs/overlayfs/util.o \
++	fs/overlayfs/inode.o \
++	fs/overlayfs/dir.o \
++	fs/overlayfs/readdir.o \
++	fs/overlayfs/copy_up.o \
++	fs/overlayfs/export.o \
++	fs/overlayfs/file.o \
++	fs/overlayfs/params.o \
++	fs/overlayfs/xattrs.o
++
++ifeq ($(VNS_LITE),1)
++lkm4ctr_lite-objs := $(LKM4CTR_BASE_OBJS)
++else
++lkm4ctr-objs := $(LKM4CTR_BASE_OBJS) $(LKM4CTR_OVL_OBJS)
++endif
++
+ OBJECT_FILES_NON_STANDARD_kernel/pid_namespace.o := y
+ 
+ ccflags-y += -I$(src)/../glue
+diff --git a/vendor/fs/overlayfs/copy_up.c b/vendor/fs/overlayfs/copy_up.c
+index 64cb9ba..7d3f242 100644
+--- a/vendor/fs/overlayfs/copy_up.c
++++ b/vendor/fs/overlayfs/copy_up.c
+@@ -68,6 +68,14 @@
+ #include <linux/exportfs.h>
+ #include "overlayfs.h"
+ 
++/* [TRIM-COMPAT] VFS helpers this file calls may be trimmed from the
++ * module symbol table on production GKI. The compat header declares
++ * them as runtime pointers and #defines the bare names, so every call
++ * site below goes through the resolved address instead of a static
++ * import. Included after the kernel headers so typeof() sees the real
++ * declarations. */
++#include "../../../glue/vendor_kernel_ovl_vfs_compat.h"
++
+ #define OVL_COPY_UP_CHUNK_SIZE (1 << 20)
+ 
+ static int ovl_ccup_set(const char *buf, const struct kernel_param *param)
+diff --git a/vendor/fs/overlayfs/dir.c b/vendor/fs/overlayfs/dir.c
+index f3cf652..5de4cc7 100644
+--- a/vendor/fs/overlayfs/dir.c
++++ b/vendor/fs/overlayfs/dir.c
+@@ -67,6 +67,14 @@
+ #endif
+ #include "overlayfs.h"
+ 
++/* [TRIM-COMPAT] VFS helpers this file calls may be trimmed from the
++ * module symbol table on production GKI. The compat header declares
++ * them as runtime pointers and #defines the bare names, so every call
++ * site below goes through the resolved address instead of a static
++ * import. Included after the kernel headers so typeof() sees the real
++ * declarations. */
++#include "../../../glue/vendor_kernel_ovl_vfs_compat.h"
++
+ static unsigned short ovl_redirect_max = 256;
+ module_param_named(redirect_max, ovl_redirect_max, ushort, 0644);
+ MODULE_PARM_DESC(redirect_max,
+diff --git a/vendor/fs/overlayfs/export.c b/vendor/fs/overlayfs/export.c
+index ee100cc..ce627ce 100644
+--- a/vendor/fs/overlayfs/export.c
++++ b/vendor/fs/overlayfs/export.c
+@@ -61,6 +61,14 @@
+ #include <linux/ratelimit.h>
+ #include "overlayfs.h"
+ 
++/* [TRIM-COMPAT] VFS helpers this file calls may be trimmed from the
++ * module symbol table on production GKI. The compat header declares
++ * them as runtime pointers and #defines the bare names, so every call
++ * site below goes through the resolved address instead of a static
++ * import. Included after the kernel headers so typeof() sees the real
++ * declarations. */
++#include "../../../glue/vendor_kernel_ovl_vfs_compat.h"
++
+ static int ovl_encode_maybe_copy_up(struct dentry *dentry)
+ {
+ 	int err;
+diff --git a/vendor/fs/overlayfs/file.c b/vendor/fs/overlayfs/file.c
+index 6234d0d..3e1996b 100644
+--- a/vendor/fs/overlayfs/file.c
++++ b/vendor/fs/overlayfs/file.c
+@@ -65,6 +65,14 @@
+ #endif
+ #include "overlayfs.h"
+ 
++/* [TRIM-COMPAT] VFS helpers this file calls may be trimmed from the
++ * module symbol table on production GKI. The compat header declares
++ * them as runtime pointers and #defines the bare names, so every call
++ * site below goes through the resolved address instead of a static
++ * import. Included after the kernel headers so typeof() sees the real
++ * declarations. */
++#include "../../../glue/vendor_kernel_ovl_vfs_compat.h"
++
+ #if VNS_OVL_NEED_BACKING_FILE_FALLBACK
+ struct ovl_aio_req {
+ 	struct kiocb iocb;
+diff --git a/vendor/fs/overlayfs/super.c b/vendor/fs/overlayfs/super.c
+index 3e2be53..307f0e9 100644
+--- a/vendor/fs/overlayfs/super.c
++++ b/vendor/fs/overlayfs/super.c
+@@ -1726,7 +1726,10 @@ void vns_ovl_exit(void)
+ 	 * destroy cache.
+ 	 */
+ 	rcu_barrier();
+-	kmem_cache_destroy(ovl_inode_cachep);
++	if (ovl_inode_cachep) {
++		kmem_cache_destroy(ovl_inode_cachep);
++		ovl_inode_cachep = NULL;
++	}
+ }
+ 
+ /*
+diff --git a/vendor/fs/overlayfs/util.c b/vendor/fs/overlayfs/util.c
+index 7cc1a34..5a58309 100644
+--- a/vendor/fs/overlayfs/util.c
++++ b/vendor/fs/overlayfs/util.c
+@@ -64,6 +64,14 @@
+ #include <linux/ratelimit.h>
+ #include "overlayfs.h"
+ 
++/* [TRIM-COMPAT] VFS helpers this file calls may be trimmed from the
++ * module symbol table on production GKI. The compat header declares
++ * them as runtime pointers and #defines the bare names, so every call
++ * site below goes through the resolved address instead of a static
++ * import. Included after the kernel headers so typeof() sees the real
++ * declarations. */
++#include "../../../glue/vendor_kernel_ovl_vfs_compat.h"
++
+ /* Get write access to upper mnt - may fail if upper sb was remounted ro */
+ int ovl_get_write_access(struct dentry *dentry)
+ {
+diff --git a/vendor/ipc/mqueue.c b/vendor/ipc/mqueue.c
+index 0473ef5..e63e004 100644
+--- a/vendor/ipc/mqueue.c
++++ b/vendor/ipc/mqueue.c
+@@ -75,6 +75,11 @@
+ #include <net/sock.h>
+ #include "util.h"
+ 
++/* [TRIM-COMPAT] helpers this file calls may be trimmed from the module
++ * symbol table on production GKI; the compat header turns them into
++ * runtime pointers so no static import is emitted. */
++#include "../../glue/vns_vfs_shared_syms.h"
++
+ #undef SYSCALL_METADATA
+ #define SYSCALL_METADATA(sname, nb, ...)
+ 
+@@ -923,7 +933,6 @@ static struct ext_wait_queue *wq_get_first_waiter(
+ 	return list_entry(ptr, struct ext_wait_queue, list);
+ }
+ 
+-
+ static inline void set_cookie(struct sk_buff *skb, char code)
+ {
+ 	((char *)skb->data)[NOTIFY_COOKIE_LEN-1] = code;
+@@ -1940,8 +1948,9 @@ static int init_mqueue_fs(void)
+ 	spin_lock_init(&mq_lock);
+ 
+ 	error = mq_init_ns(&init_ipc_ns);
+-	if (error)
++	if (error) {
+ 		goto out_filesystem;
++	}
+ 
+ 	return 0;
+ 
+diff --git a/vendor/ipc/msg.c b/vendor/ipc/msg.c
+index 0cded6b..faacbaf 100644
+--- a/vendor/ipc/msg.c
++++ b/vendor/ipc/msg.c
+@@ -73,6 +73,11 @@
+ #define free_ipcs vns_free_ipcs
+ #include "util.h"
+ 
++/* [TRIM-COMPAT] helpers this file calls may be trimmed from the module
++ * symbol table on production GKI; the compat header turns them into
++ * runtime pointers so no static import is emitted. */
++#include "../../glue/vns_vfs_shared_syms.h"
++
+ #if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 1, 0)
+ static inline void vns_msg_hdrs_add(struct ipc_namespace *ns, unsigned long delta)
+ {
+diff --git a/vendor/ipc/namespace.c b/vendor/ipc/namespace.c
+index d72a3aa..af29b0d 100644
+--- a/vendor/ipc/namespace.c
++++ b/vendor/ipc/namespace.c
+@@ -37,6 +37,11 @@
+ #include "../include/uapi/vendor_kernel.h"
+ #include "../../glue/lkm4ctr_log.h"
+ 
++/* [TRIM-COMPAT] helpers this file calls may be trimmed from the module
++ * symbol table on production GKI; the compat header turns them into
++ * runtime pointers so no static import is emitted. */
++#include "../../glue/vns_vfs_shared_syms.h"
++
+ #define VNS_IPC_NS_HASH_BITS 8
+ 
+ struct vns_ipc_ns_entry {
+diff --git a/vendor/ipc/util.c b/vendor/ipc/util.c
+index 46c3da0..92c6064 100644
+--- a/vendor/ipc/util.c
++++ b/vendor/ipc/util.c
+@@ -80,6 +80,11 @@
+ #include "util.h"
+ #include "../vendor_kernel.h"
+ 
++/* [TRIM-COMPAT] helpers this file calls may be trimmed from the module
++ * symbol table on production GKI; the compat header turns them into
++ * runtime pointers so no static import is emitted. */
++#include "../../glue/vns_vfs_shared_syms.h"
++
+ struct ipc_proc_iface {
+ 	const char *path;
+ 	const char *header;
+diff --git a/vendor/kernel/nsproxy.c b/vendor/kernel/nsproxy.c
+index 31d9e2a..a7f05bc 100644
+--- a/vendor/kernel/nsproxy.c
++++ b/vendor/kernel/nsproxy.c
+@@ -70,6 +70,11 @@
+ #include "../../glue/shadow_hook.h"
+ #include "../../glue/lkm4ctr_log.h"
+ 
++/* [TRIM-COMPAT] helpers this file calls may be trimmed from the module
++ * symbol table on production GKI; the compat header turns them into
++ * runtime pointers so no static import is emitted. */
++#include "../../glue/vns_vfs_shared_syms.h"
++
+ /* [BUILD-COMPAT] Forward declaration for vendored time_namespace init object. */
+ extern struct time_namespace vns_init_time_ns;
+ 
